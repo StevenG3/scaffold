@@ -93,7 +93,7 @@ docs/
 └── reviews/
 
 tests/
-├── fixtures/
+├── test_template_contract.py
 └── test_validate.py
 
 .github/
@@ -156,6 +156,7 @@ tests/
 
 ### 6.2 路径规则
 
+- Manifest 中的路径统一使用 POSIX `/` 分隔符；校验器在不同操作系统上按路径段转换成本地路径。
 - 所有 Manifest 路径都相对 Manifest 所在目录解析。
 - 禁止绝对路径和任何 `..` 路径段。
 - 路径解析后的真实位置必须位于 Harness 根目录内。
@@ -228,6 +229,7 @@ python3 template/.harness/bin/validate.py --format json
 - Text 输出面向人阅读，每行一项错误。
 - JSON 输出为包含 `valid`、`errors`、`root`、`schema_version` 的对象；`root` 是规范化后的绝对路径，无法读取 Schema 时 `schema_version` 为 `null`。
 - `errors` 始终是数组；每项固定包含字符串字段 `code`、`path`、`message`，验证成功时为空数组。
+- `path` 使用用户可定位的 POSIX 表示：Manifest 结构错误使用 `manifest.json#/...` JSON Pointer，文件系统错误使用 Harness 根目录相对路径，命令级错误使用 `.`。
 - Text 错误格式固定为 `[CODE] path: message`。
 - 退出码 `0`：契约有效。
 - 退出码 `1`：Manifest、组件、模板或 Change Record 违反契约。

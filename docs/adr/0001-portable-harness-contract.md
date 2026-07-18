@@ -18,7 +18,7 @@
 
 ### 2. 使用相对 Manifest 和通用 Component 列表
 
-Manifest 中的路径相对自身解析。组件通过 `id`、`kind`、`path` 描述，不提供强制的 Owner 字段，也不把示例 Coordinator 设为 Schema 保留角色。内置类型保持最小，扩展使用 `x-*` 命名空间。
+Manifest 中的路径使用 POSIX `/` 并相对自身解析，由校验器转换为当前系统的本地路径。组件通过 `id`、`kind`、`path` 描述，不提供强制的 Owner 字段，也不把示例 Coordinator 设为 Schema 保留角色。内置类型保持最小，扩展使用 `x-*` 命名空间。
 
 ### 3. 使用 Python 标准库参考校验器
 
