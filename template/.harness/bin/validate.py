@@ -30,8 +30,17 @@ class ValidationResult:
         return not self.errors
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError(message)
+
+
+class RootUnreadableError(Exception):
+    pass
+
+
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Validate a portable Harness contract.")
+    parser = _ArgumentParser(description="Validate a portable Harness contract.")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--format", choices=("text", "json"), default="text")
     return parser.parse_args(argv)
@@ -568,7 +577,21 @@ def validate_change_management(root, config, errors):
 
 
 def validate_harness(root):
-    root = Path(root).resolve()
+    root_input = Path(root)
+    try:
+        if not root_input.exists() or not root_input.is_dir():
+            raise RootUnreadableError("harness root is missing or not a directory")
+        # Probe readability before resolving content.
+        next(root_input.iterdir(), None)
+        root = root_input.resolve(strict=True)
+    except RootUnreadableError:
+        raise
+    except OSError as error:
+        raise RootUnreadableError(str(error)) from error
+
+    if not root.is_dir():
+        raise RootUnreadableError("harness root is missing or not a directory")
+
     errors = []
     schema_version = None
     manifest_path = root / "manifest.json"
@@ -605,8 +628,16 @@ def validate_harness(root):
 
 
 def main(argv=None):
-    args = parse_args(argv)
-    result = validate_harness(args.root)
+    try:
+        args = parse_args(argv)
+    except ValueError as error:
+        sys.stderr.write(f"[ARGUMENT_INVALID] .: {error}\n")
+        return 2
+    try:
+        result = validate_harness(args.root)
+    except RootUnreadableError as error:
+        sys.stderr.write(f"[ROOT_UNREADABLE] .: {error}\n")
+        return 2
     rendered = render_json(result) if args.format == "json" else render_text(result)
     sys.stdout.write(rendered)
     return 0 if result.valid else 1

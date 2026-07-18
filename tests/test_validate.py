@@ -1,5 +1,8 @@
+import hashlib
 import json
+import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -40,6 +43,27 @@ def write_manifest(root, manifest):
         encoding="utf-8",
     )
 
+
+
+
+def tree_fingerprint(root):
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        metadata = path.lstat()
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        if stat.S_ISLNK(metadata.st_mode):
+            digest.update(b"symlink\0")
+            digest.update(os.readlink(path).encode("utf-8", errors="surrogateescape"))
+        elif stat.S_ISDIR(metadata.st_mode):
+            digest.update(b"directory")
+        elif stat.S_ISREG(metadata.st_mode):
+            digest.update(b"file\0")
+            digest.update(path.read_bytes())
+        else:
+            digest.update(f"other:{stat.S_IFMT(metadata.st_mode)}".encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 class ValidatorTests(unittest.TestCase):
     def test_official_bundle_is_valid(self):
@@ -467,3 +491,89 @@ class ChangeManagementTests(unittest.TestCase):
             self.assertEqual(1, result.returncode)
             _, pairs = error_pairs(result)
             self.assertIn(("PATH_ESCAPE", "changes/example/spec.md"), pairs)
+
+
+class BoundaryTests(unittest.TestCase):
+    def test_validation_is_read_only(self):
+        with copied_harness() as root:
+            before = tree_fingerprint(root)
+            result = run_validator(root=root)
+            after = tree_fingerprint(root)
+        self.assertEqual(0, result.returncode, result.stderr or result.stdout)
+        self.assertEqual(before, after)
+
+    def test_copied_validator_without_root(self):
+        with copied_harness() as root:
+            result = subprocess.run(
+                [sys.executable, str(root / "bin" / "validate.py")],
+                cwd=root.parent,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(0, result.returncode, result.stderr or result.stdout)
+        self.assertEqual("Harness contract is valid.\n", result.stdout)
+
+    def test_error_sort_matches_text_and_json(self):
+        with copied_harness() as root:
+            write_manifest(root, {})
+            text_result = run_validator(root=root, output_format="text")
+            json_result = run_validator(root=root, output_format="json")
+        self.assertEqual(1, text_result.returncode)
+        self.assertEqual(1, json_result.returncode)
+        payload = json.loads(json_result.stdout)
+        json_lines = [
+            f"[{item['code']}] {item['path']}: {item['message']}\n"
+            for item in payload["errors"]
+        ]
+        self.assertEqual("".join(json_lines), text_result.stdout)
+        codes = [item["code"] for item in payload["errors"]]
+        paths = [item["path"] for item in payload["errors"]]
+        messages = [item["message"] for item in payload["errors"]]
+        self.assertEqual(
+            sorted(zip(codes, paths, messages)),
+            list(zip(codes, paths, messages)),
+        )
+
+    def test_missing_root_is_unreadable(self):
+        missing = REPO_ROOT / "tmp-missing-harness-root"
+        result = run_validator(root=missing, output_format="text")
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("[ROOT_UNREADABLE] .:", result.stderr)
+
+    def test_nondirectory_root_is_unreadable(self):
+        with tempfile.NamedTemporaryFile() as handle:
+            result = run_validator(root=Path(handle.name), output_format="text")
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("[ROOT_UNREADABLE] .:", result.stderr)
+
+    def test_invalid_format_argument(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(VALIDATOR),
+                "--root",
+                str(SOURCE_HARNESS),
+                "--format",
+                "xml",
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("[ARGUMENT_INVALID] .:", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_malformed_utf8_is_internal_error(self):
+        with copied_harness() as root:
+            (root / "manifest.json").write_bytes(b'{"schema_version": 1, "bad": "\xff"}')
+            result = run_validator(root=root, output_format="text")
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("[INTERNAL_ERROR] .:", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
