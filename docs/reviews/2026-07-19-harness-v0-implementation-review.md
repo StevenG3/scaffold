@@ -3,7 +3,7 @@
 - 审阅日期：2026-07-19
 - PR：[PR #1 — feat: implement portable Harness v0 vertical slice](https://github.com/StevenG3/scaffold/pull/1)
 - 固定点：`323cd1d7e8afaf223cb118eec16c5438bbc638bc`
-- 已审阅提交：`07aab673afbdf12b3f86fee140bf032605769ba7`
+- 最新已审阅提交：`df1b07ed5683a4de845d06950a303c6c090128a6`
 - 审阅方式：Standards / Spec 双路独立审阅，加本地最小输入复现
 - 结论：Request changes，暂不合入
 
@@ -61,3 +61,41 @@ Python `json.loads` 默认接受 `NaN`、`Infinity` 和 `-Infinity`。实测在 
 2. 建议同时收敛 P3 重复路径逻辑，避免三套实现继续漂移。
 3. 保持 PR 为 Draft，推送新提交并提供完整验证结果。
 4. 新 HEAD 必须重新执行 Standards / Spec 双路独立审阅；本记录不构成对后续提交的批准。
+
+## 第二轮复审
+
+- 复审提交：`df1b07ed5683a4de845d06950a303c6c090128a6`
+- 新增提交：`fix: close harness v0 review boundary gaps`
+- Standards：0 findings，Approve。
+- Spec：1 个 P2，Request changes。
+- 本地完整测试：46 项全部通过。
+- 上轮三个 P2 定向回归：3 项全部通过。
+- GitHub Actions run `29654504735`：validator、tests、whitespace 均为 success。
+
+上轮的三个 P2 与一个 P3 均已关闭：空 `x-` kind 被拒绝，非有限 JSON 常量被拒绝，NUL 路径不再产生 traceback，路径安全逻辑已收敛到共享 helper。
+
+### [P2] Text 错误输出可被控制字符破坏
+
+位置：`template/.harness/bin/validate.py:49,294`
+
+`render_text` 直接拼接用户可控的 `code`、`path` 和 `message`；路径语法只拒绝 NUL、反斜杠和盘符前缀。合法 JSON 字符串中的 CR、LF 或其他控制字符会进入 Text 输出。
+
+已复现组件路径 `agents/missing\nsecond-line.md`：校验器以 `1` 退出，但单个错误被渲染为两行：
+
+```text
+[PATH_MISSING] agents/missing
+second-line.md: referenced path does not exist
+```
+
+这违反设计中“Text 每行一项错误”及固定 `[CODE] path: message` 格式，也会造成日志注入和机器按行解析歧义。
+
+要求：
+
+1. 在 Text 渲染边界统一转义 CR、LF、TAB、其他 C0 控制字符及 DEL，不能只修复 Component path；JSON Pointer、未知字段名、重复 ID 和错误消息同样可能包含用户输入。
+2. 保持可打印 Unicode 可读，并定义确定性的转义表示。
+3. 增加至少覆盖 Component path 和 Manifest 字段名/ID 的回归测试，断言每个错误严格占一行、无原始控制字符且退出码仍为 `1`。
+4. 保持 JSON 输出语义不变。
+
+### 第二轮合入意见
+
+当前 PR 仍不应合入。修复上述 P2 并补齐回归测试后，需要对新的 HEAD 再执行 Standards / Spec 双路复审；第二轮对 `df1b07e` 的审阅结论不能自动批准后续提交。
