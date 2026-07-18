@@ -11,6 +11,7 @@ class TemplateContractTests(unittest.TestCase):
         expected = {
             "README.md",
             "agents/coordinator.md",
+            "bin/validate.py",
             "changes/README.md",
             "manifest.json",
             "rules/delivery.md",
