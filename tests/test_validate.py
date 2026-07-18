@@ -577,3 +577,49 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual("", result.stdout)
         self.assertIn("[INTERNAL_ERROR] .:", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
+
+
+class ReviewRegressionTests(unittest.TestCase):
+    def test_empty_extension_kind_unsupported(self):
+        with copied_harness() as root:
+            manifest = read_manifest(root)
+            manifest["components"][0]["kind"] = "x-"
+            write_manifest(root, manifest)
+            result = run_validator(root=root, output_format="json")
+        self.assertEqual(1, result.returncode)
+        _, pairs = error_pairs(result)
+        self.assertIn(
+            ("COMPONENT_KIND_UNSUPPORTED", "manifest.json#/components/0/kind"),
+            pairs,
+        )
+
+    def test_nonfinite_json_constants_rejected(self):
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(constant=constant):
+                with copied_harness() as root:
+                    manifest = read_manifest(root)
+                    text = json.dumps(manifest, ensure_ascii=False, indent=2)
+                    text = text[:-2] + f',\n  "x-number": {constant}\n}}\n'
+                    (root / "manifest.json").write_text(text, encoding="utf-8")
+                    result = run_validator(root=root, output_format="json")
+                self.assertEqual(1, result.returncode, result.stderr or result.stdout)
+                payload, pairs = error_pairs(result)
+                self.assertFalse(payload["valid"])
+                self.assertIn(("MANIFEST_JSON_INVALID", "manifest.json"), pairs)
+                self.assertEqual("", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_nul_in_component_path_is_syntax_invalid(self):
+        with copied_harness() as root:
+            manifest = read_manifest(root)
+            manifest["components"][0]["path"] = "agents/evil\u0000.md"
+            write_manifest(root, manifest)
+            result = run_validator(root=root, output_format="json")
+        self.assertEqual(1, result.returncode)
+        self.assertEqual("", result.stderr)
+        self.assertNotIn("Traceback", result.stderr + result.stdout)
+        _, pairs = error_pairs(result)
+        self.assertIn(
+            ("PATH_SYNTAX_INVALID", "manifest.json#/components/0/path"),
+            pairs,
+        )

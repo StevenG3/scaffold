@@ -187,7 +187,7 @@ def validate_manifest_structure(manifest):
                     )
                 else:
                     seen_ids[component_id] = index
-            if kind is not None and kind not in BUILTIN_KINDS and not kind.startswith("x-"):
+            if kind is not None and not _is_supported_kind(kind):
                 errors.append(
                     ContractError(
                         "COMPONENT_KIND_UNSUPPORTED",
@@ -238,6 +238,13 @@ def validate_manifest_structure(manifest):
     return errors
 
 
+def _is_supported_kind(kind):
+    if kind in BUILTIN_KINDS:
+        return True
+    # Extension kinds must be "x-" plus at least one character.
+    return kind.startswith("x-") and len(kind) > 2
+
+
 def validate_nonempty_file(path, display_path, errors):
     if not path.read_bytes():
         errors.append(
@@ -276,27 +283,22 @@ def validate_skill_frontmatter(path, display_path, errors):
         errors.append(invalid)
 
 
-def _is_within_root(root, path):
+def _is_within(base, path):
     try:
-        path.relative_to(root)
+        path.relative_to(base)
         return True
     except ValueError:
         return False
 
 
-def resolve_safe_path(root, declared, *, expect, pointer, errors):
-    """Validate Manifest path syntax and filesystem target.
-
-    Syntax/traversal errors use JSON Pointer. Filesystem errors use the
-    declared POSIX relative path. Returns the resolved Path on success,
-    otherwise None.
-    """
-    if "\\" in declared or re.match(r"^[A-Za-z]:", declared):
+def parse_relative_posix_path(declared, pointer, errors):
+    """Shared Manifest path syntax checks. Returns PurePosixPath or None."""
+    if "\0" in declared or "\\" in declared or re.match(r"^[A-Za-z]:", declared):
         errors.append(
             ContractError(
                 "PATH_SYNTAX_INVALID",
                 pointer,
-                "path must use POSIX separators without Windows drive prefixes",
+                "path must use POSIX separators without NUL or Windows drive prefixes",
             )
         )
         return None
@@ -320,39 +322,81 @@ def resolve_safe_path(root, declared, *, expect, pointer, errors):
             )
         )
         return None
+    return pure
 
-    display_path = pure.as_posix()
-    candidate = root.joinpath(*pure.parts)
+
+def resolve_declared_path(
+    root,
+    declared,
+    *,
+    expect,
+    pointer,
+    errors,
+    bases=None,
+    missing_code="PATH_MISSING",
+    display_path=None,
+):
+    """Shared safe-path helper for syntax, resolve, containment and node type.
+
+    Syntax/absolute/traversal errors use JSON Pointer. Filesystem errors use
+    display_path (default: declared POSIX path). Returns resolved Path or None.
+    """
+    pure = parse_relative_posix_path(declared, pointer, errors)
+    if pure is None:
+        return None
+
+    if display_path is None:
+        display_path = pure.as_posix()
+
+    allowed_bases = [root]
+    if bases:
+        for base in bases:
+            if base not in allowed_bases:
+                allowed_bases.append(base)
+        join_root = bases[-1]
+    else:
+        join_root = root
+
+    candidate = join_root.joinpath(*pure.parts)
+
     try:
         resolved = candidate.resolve(strict=True)
     except FileNotFoundError:
-        errors.append(
-            ContractError(
-                "PATH_MISSING",
-                display_path,
-                "referenced path does not exist",
-            )
+        message = (
+            "required change file does not exist"
+            if missing_code == "CHANGE_REQUIRED_FILE_MISSING"
+            else "referenced path does not exist"
         )
+        errors.append(ContractError(missing_code, display_path, message))
         return None
     except OSError as error:
+        message = (
+            f"required change file is unreadable: {error}"
+            if missing_code == "CHANGE_REQUIRED_FILE_MISSING"
+            else f"referenced path is unreadable: {error}"
+        )
+        errors.append(ContractError(missing_code, display_path, message))
+        return None
+    except ValueError:
         errors.append(
             ContractError(
-                "PATH_MISSING",
-                display_path,
-                f"referenced path is unreadable: {error}",
+                "PATH_SYNTAX_INVALID",
+                pointer,
+                "path must use POSIX separators without NUL or Windows drive prefixes",
             )
         )
         return None
 
-    if not _is_within_root(root, resolved):
-        errors.append(
-            ContractError(
-                "PATH_ESCAPE",
-                display_path,
-                "resolved path escapes the Harness root",
+    for base in allowed_bases:
+        if not _is_within(base, resolved):
+            errors.append(
+                ContractError(
+                    "PATH_ESCAPE",
+                    display_path,
+                    "resolved path escapes the Harness root",
+                )
             )
-        )
-        return None
+            return None
 
     if expect == "file":
         if not resolved.is_file():
@@ -382,6 +426,16 @@ def resolve_safe_path(root, declared, *, expect, pointer, errors):
         return resolved
 
     raise RuntimeError(f"unsupported expect value: {expect!r}")
+
+
+def resolve_safe_path(root, declared, *, expect, pointer, errors):
+    return resolve_declared_path(
+        root,
+        declared,
+        expect=expect,
+        pointer=pointer,
+        errors=errors,
+    )
 
 
 def validate_manifest_paths(root, manifest, errors):
@@ -414,11 +468,7 @@ def validate_manifest_paths(root, manifest, errors):
                 errors=errors,
             )
             kind = component.get("kind")
-            if (
-                resolved is not None
-                and type(kind) is str
-                and kind == "skill"
-            ):
+            if resolved is not None and type(kind) is str and kind == "skill":
                 validate_skill_frontmatter(
                     resolved,
                     PurePosixPath(declared).as_posix(),
@@ -447,99 +497,6 @@ def validate_manifest_paths(root, manifest, errors):
             )
 
 
-def _valid_directory(root, declared):
-    if type(declared) is not str or declared == "":
-        return None
-    if "\\" in declared or re.match(r"^[A-Za-z]:", declared):
-        return None
-    pure = PurePosixPath(declared)
-    if pure.is_absolute() or ".." in pure.parts:
-        return None
-    try:
-        resolved = root.joinpath(*pure.parts).resolve(strict=True)
-    except OSError:
-        return None
-    if not _is_within_root(root, resolved) or not resolved.is_dir():
-        return None
-    return resolved
-
-
-def _check_required_path_syntax(declared, pointer, errors):
-    if "\\" in declared or re.match(r"^[A-Za-z]:", declared):
-        errors.append(
-            ContractError(
-                "PATH_SYNTAX_INVALID",
-                pointer,
-                "path must use POSIX separators without Windows drive prefixes",
-            )
-        )
-        return None
-    pure = PurePosixPath(declared)
-    if pure.is_absolute():
-        errors.append(
-            ContractError(
-                "PATH_ABSOLUTE",
-                pointer,
-                "path must be relative to the Harness root",
-            )
-        )
-        return None
-    if ".." in pure.parts:
-        errors.append(
-            ContractError(
-                "PATH_TRAVERSAL",
-                pointer,
-                "path must not contain '..' segments",
-            )
-        )
-        return None
-    return pure
-
-
-def _validate_required_file(root, base, rel_pure, display_path, errors):
-    candidate = base.joinpath(*rel_pure.parts)
-    try:
-        resolved = candidate.resolve(strict=True)
-    except FileNotFoundError:
-        errors.append(
-            ContractError(
-                "CHANGE_REQUIRED_FILE_MISSING",
-                display_path,
-                "required change file does not exist",
-            )
-        )
-        return
-    except OSError as error:
-        errors.append(
-            ContractError(
-                "CHANGE_REQUIRED_FILE_MISSING",
-                display_path,
-                f"required change file is unreadable: {error}",
-            )
-        )
-        return
-
-    if not _is_within_root(root, resolved) or not _is_within_root(base, resolved):
-        errors.append(
-            ContractError(
-                "PATH_ESCAPE",
-                display_path,
-                "resolved path escapes the Harness root",
-            )
-        )
-        return
-    if not resolved.is_file():
-        errors.append(
-            ContractError(
-                "PATH_TYPE_INVALID",
-                display_path,
-                "referenced path must be a regular file",
-            )
-        )
-        return
-    validate_nonempty_file(resolved, display_path, errors)
-
-
 def validate_change_management(root, config, errors):
     if type(config) is not dict:
         return
@@ -548,9 +505,28 @@ def validate_change_management(root, config, errors):
     required_files = config.get("required_files")
     if type(required_files) is not list or len(required_files) == 0:
         return
+    if type(template_declared) is not str or template_declared == "":
+        return
+    if type(records_declared) is not str or records_declared == "":
+        return
 
-    template_dir = _valid_directory(root, template_declared)
-    records_dir = _valid_directory(root, records_declared)
+    # Reuse the shared helper without duplicating syntax checks when dirs are
+    # already invalid; silent probe keeps Change validation from double-reporting.
+    probe_errors = []
+    template_dir = resolve_declared_path(
+        root,
+        template_declared,
+        expect="directory",
+        pointer=json_pointer("change_management", "template"),
+        errors=probe_errors,
+    )
+    records_dir = resolve_declared_path(
+        root,
+        records_declared,
+        expect="directory",
+        pointer=json_pointer("change_management", "records"),
+        errors=probe_errors,
+    )
     if template_dir is None or records_dir is None:
         return
 
@@ -560,20 +536,42 @@ def validate_change_management(root, config, errors):
         if type(item) is not str or item == "":
             continue
         pointer = json_pointer("change_management", "required_files", index)
-        rel_pure = _check_required_path_syntax(item, pointer, errors)
+        rel_pure = parse_relative_posix_path(item, pointer, errors)
         if rel_pure is None:
             continue
         parsed_required.append(rel_pure)
         display = f"{template_prefix}/{rel_pure.as_posix()}"
-        _validate_required_file(root, template_dir, rel_pure, display, errors)
+        resolve_declared_path(
+            root,
+            rel_pure.as_posix(),
+            expect="file",
+            pointer=pointer,
+            errors=errors,
+            bases=[root, template_dir],
+            missing_code="CHANGE_REQUIRED_FILE_MISSING",
+            display_path=display,
+        )
 
     for child in sorted(records_dir.iterdir(), key=lambda path: path.name):
         if not child.is_dir() or child.name.startswith("."):
             continue
+        try:
+            record_dir = child.resolve()
+        except (OSError, ValueError):
+            continue
         record_prefix = f"{PurePosixPath(records_declared).as_posix()}/{child.name}"
         for rel_pure in parsed_required:
             display = f"{record_prefix}/{rel_pure.as_posix()}"
-            _validate_required_file(root, child.resolve(), rel_pure, display, errors)
+            resolve_declared_path(
+                root,
+                rel_pure.as_posix(),
+                expect="file",
+                pointer=json_pointer("change_management", "required_files"),
+                errors=errors,
+                bases=[root, record_dir],
+                missing_code="CHANGE_REQUIRED_FILE_MISSING",
+                display_path=display,
+            )
 
 
 def validate_harness(root):
@@ -606,7 +604,15 @@ def validate_harness(root):
         return ValidationResult(root=root, schema_version=schema_version, errors=tuple(errors))
     try:
         text = manifest_path.read_text(encoding="utf-8")
-        manifest = json.loads(text)
+
+        def reject_nonfinite(token):
+            raise json.JSONDecodeError(
+                f"non-finite constant {token!r} is not allowed",
+                text,
+                0,
+            )
+
+        manifest = json.loads(text, parse_constant=reject_nonfinite)
     except json.JSONDecodeError as error:
         errors.append(
             ContractError(
