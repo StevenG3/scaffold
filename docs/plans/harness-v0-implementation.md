@@ -38,6 +38,7 @@ SCHEMA_VERSION_UNSUPPORTED
 COMPONENT_ID_DUPLICATE
 COMPONENT_KIND_UNSUPPORTED
 PATH_ABSOLUTE
+PATH_SYNTAX_INVALID
 PATH_TRAVERSAL
 PATH_ESCAPE
 PATH_MISSING
@@ -551,13 +552,13 @@ git commit -m "feat: validate harness manifest schema"
 
 - [ ] **Step 1: Add failing path tests**
 
-Test component paths `/tmp/outside.md`, `../outside.md`, and `agents/missing.md`; expect `PATH_ABSOLUTE`, `PATH_TRAVERSAL`, and `PATH_MISSING`. Also test a directory where a file is required (`PATH_TYPE_INVALID`), an empty component (`FILE_EMPTY`), and a symlink escaping the Harness root (`PATH_ESCAPE`; skip only if the platform denies symlink creation).
+Test component paths `/tmp/outside.md`, `../outside.md`, `agents\coordinator.md`, `C:/outside.md`, and `agents/missing.md`; expect `PATH_ABSOLUTE`, `PATH_TRAVERSAL`, `PATH_SYNTAX_INVALID`, `PATH_SYNTAX_INVALID`, and `PATH_MISSING`. Also test a directory where a file is required (`PATH_TYPE_INVALID`), an empty component (`FILE_EMPTY`), and a symlink escaping the Harness root (`PATH_ESCAPE`; skip only if the platform denies symlink creation).
 
 For the Skill, separately remove the opening delimiter, closing delimiter, `name:` and `description:`; expect `SKILL_FRONTMATTER_INVALID` at `skills/change-delivery/SKILL.md`.
 
 - [ ] **Step 2: Implement POSIX path resolution**
 
-Use `PurePosixPath` for Manifest syntax. Reject absolute paths and any `..` part before touching the filesystem. Convert POSIX parts with `root.joinpath(*pure.parts)`, resolve strictly, require the resolved result to remain under resolved root, then require the declared file/directory type.
+Use `PurePosixPath` for Manifest syntax, but first reject `\\` and Windows drive prefixes matching `^[A-Za-z]:` with `PATH_SYNTAX_INVALID`. Reject absolute paths with `PATH_ABSOLUTE` and any `..` part with `PATH_TRAVERSAL` before touching the filesystem. Convert POSIX parts with `root.joinpath(*pure.parts)`, resolve strictly, require the resolved result to remain under resolved root, then require the declared file/directory type. This ordering and error mapping must be identical on POSIX and Windows.
 
 Implement:
 
@@ -600,6 +601,9 @@ Add tests that:
 3. Add both missing files and expect exit `0`.
 4. Add hidden incomplete directory `changes/.draft/` and expect exit `0`.
 5. Set a required file to an absolute path and then `../outside.md`; expect `PATH_ABSOLUTE` and `PATH_TRAVERSAL`.
+6. Replace a required template file first with an empty file and then a directory; expect `FILE_EMPTY` and `PATH_TYPE_INVALID` at its template-relative path.
+7. Replace a required record file first with an empty file and then a directory; expect `FILE_EMPTY` and `PATH_TYPE_INVALID` at its Harness-root-relative record path.
+8. Replace required template and record files, one at a time, with symlinks escaping their respective allowed roots; expect `PATH_ESCAPE` (skip only if the platform denies symlink creation).
 
 Run the new methods directly. Expected: non-zero exit because Change validation is not implemented.
 
@@ -608,8 +612,9 @@ Run the new methods directly. Expected: non-zero exit because Change validation 
 Implement `validate_change_management(root, config, errors)` with these exact behaviors:
 
 - Resolve `template` and `records` through the shared safe-path helper.
-- For each `required_files` POSIX path, reject absolute paths, `..` and resolved root escape using the shared safety rules; require a non-empty regular file under the template, but map an absent file to `CHANGE_REQUIRED_FILE_MISSING` instead of generic `PATH_MISSING`.
+- For each `required_files` POSIX path, reject backslashes, Windows drive prefixes, absolute paths, `..` and resolved root escape using the shared safety rules; require a non-empty regular file under the template, but map an absent file to `CHANGE_REQUIRED_FILE_MISSING` instead of generic `PATH_MISSING`.
 - For each sorted, non-hidden immediate child directory under records, require the same non-empty file set.
+- Apply the same path-syntax, containment, regular-file and non-empty checks to template files and actual record files. A required file may not escape either its template/record base or the Harness root through a symlink.
 - Emit one `CHANGE_REQUIRED_FILE_MISSING` per absent file.
 - Ignore hidden child directories and ordinary files directly under records.
 - Never inspect Markdown headings or prose.
@@ -634,18 +639,30 @@ git commit -m "feat: validate harness change records"
 - Modify: `tests/test_validate.py`
 - Modify: `template/.harness/bin/validate.py`
 
-- [ ] **Step 1: Add the tree hash helper**
+- [ ] **Step 1: Add the complete tree fingerprint helper**
 
 ```python
 import hashlib
+import os
+import stat
 
 
-def tree_hash(root):
+def tree_fingerprint(root):
     digest = hashlib.sha256()
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        metadata = path.lstat()
         digest.update(path.relative_to(root).as_posix().encode("utf-8"))
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        if stat.S_ISLNK(metadata.st_mode):
+            digest.update(b"symlink\0")
+            digest.update(os.readlink(path).encode("utf-8", errors="surrogateescape"))
+        elif stat.S_ISDIR(metadata.st_mode):
+            digest.update(b"directory")
+        elif stat.S_ISREG(metadata.st_mode):
+            digest.update(b"file\0")
+            digest.update(path.read_bytes())
+        else:
+            digest.update(f"other:{stat.S_IFMT(metadata.st_mode)}".encode("ascii"))
         digest.update(b"\0")
     return digest.hexdigest()
 ```
@@ -654,7 +671,7 @@ def tree_hash(root):
 
 Test that:
 
-- tree hash is identical before and after validation;
+- complete tree fingerprint is identical before and after validation, including paths, empty directories, node types, symlink targets and regular-file contents;
 - a copied Harness validates with its copied `bin/validate.py` and no `--root`;
 - multiple errors sort identically in Text and JSON by `(code, path, message)`;
 - missing or non-directory root exits `2`, writes no stdout and writes `[ROOT_UNREADABLE] .:` to stderr;

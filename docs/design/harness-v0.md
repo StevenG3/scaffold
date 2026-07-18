@@ -156,7 +156,7 @@ tests/
 
 ### 6.2 路径规则
 
-- Manifest 中的路径统一使用 POSIX `/` 分隔符；校验器在不同操作系统上按路径段转换成本地路径。
+- Manifest 中的路径统一使用 POSIX `/` 分隔符；反斜杠和 Windows 盘符前缀（如 `C:`）均非法，校验器在不同操作系统上按路径段转换成本地路径。
 - 所有 Manifest 路径都相对 Manifest 所在目录解析。
 - 禁止绝对路径和任何 `..` 路径段。
 - 路径解析后的真实位置必须位于 Harness 根目录内。
@@ -253,14 +253,14 @@ python3 template/.harness/bin/validate.py --format json
 2. Manifest 缺失、JSON 损坏和 schema 版本错误。
 3. Component ID 重复。
 4. 未知普通 `kind` 被拒绝，`x-*` 扩展被接受。
-5. 绝对路径、目录穿越和符号链接逃逸被拒绝。
+5. 反斜杠、Windows 盘符前缀、绝对路径、目录穿越和符号链接逃逸被拒绝，且跨平台错误映射一致。
 6. Component 文件缺失、类型错误或为空。
 7. Skill frontmatter 缺少 `name` 或 `description`。
 8. Change Template 缺少必需文件。
 9. 实际 Change Record 不完整。
 10. Text、JSON 输出和退出码稳定。
 11. 将 `template/.harness/` 复制到临时项目后仍能独立验证。
-12. 校验前后文件树与内容哈希一致，证明校验器只读。
+12. 校验前后完整文件树指纹一致；指纹覆盖相对路径、空目录、节点类型、符号链接目标和普通文件内容，证明校验器只读。
 
 ## 11. CI 门禁
 
