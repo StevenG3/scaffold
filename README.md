@@ -28,7 +28,12 @@ AI Coding 正从 Prompt Engineering、Context Engineering 走向 **Harness Engin
 
 ## 状态
 
-仓库已初始化，当前仅包含工程说明与参考摘要。`.harness/` 体系与其他交付物待后续决策后补充。
+仓库已初始化，当前包含工程说明、参考摘要以及已批准的 Harness v0 设计与架构决策。可移植 `.harness/` 分发包尚待后续实现。
+
+## 设计与决策
+
+- [Harness v0 设计规格](docs/design/harness-v0.md)
+- [ADR-0001：可移植 Harness 契约](docs/adr/0001-portable-harness-contract.md)
 
 ## License
 
