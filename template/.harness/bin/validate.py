@@ -346,10 +346,6 @@ def resolve_safe_path(root, declared, *, expect, pointer, errors):
         return None
 
     if expect == "file":
-        if not resolved.is_file() or resolved.is_symlink():
-            # is_file follows symlinks; after resolve, symlink targets are regular paths.
-            # Use the resolved node type.
-            pass
         if not resolved.is_file():
             errors.append(
                 ContractError(
@@ -360,10 +356,6 @@ def resolve_safe_path(root, declared, *, expect, pointer, errors):
             )
             return None
         validate_nonempty_file(resolved, display_path, errors)
-        # If empty, still return path? Frontmatter should not run on empty.
-        # Check if FILE_EMPTY was just added - validate_nonempty_file appends.
-        # Caller should check: only apply frontmatter if file non-empty.
-        # Return resolved even if empty so caller can inspect; or return None if empty.
         if not resolved.read_bytes():
             return None
         return resolved
@@ -446,6 +438,135 @@ def validate_manifest_paths(root, manifest, errors):
             )
 
 
+def _valid_directory(root, declared):
+    if type(declared) is not str or declared == "":
+        return None
+    if "\\" in declared or re.match(r"^[A-Za-z]:", declared):
+        return None
+    pure = PurePosixPath(declared)
+    if pure.is_absolute() or ".." in pure.parts:
+        return None
+    try:
+        resolved = root.joinpath(*pure.parts).resolve(strict=True)
+    except OSError:
+        return None
+    if not _is_within_root(root, resolved) or not resolved.is_dir():
+        return None
+    return resolved
+
+
+def _check_required_path_syntax(declared, pointer, errors):
+    if "\\" in declared or re.match(r"^[A-Za-z]:", declared):
+        errors.append(
+            ContractError(
+                "PATH_SYNTAX_INVALID",
+                pointer,
+                "path must use POSIX separators without Windows drive prefixes",
+            )
+        )
+        return None
+    pure = PurePosixPath(declared)
+    if pure.is_absolute():
+        errors.append(
+            ContractError(
+                "PATH_ABSOLUTE",
+                pointer,
+                "path must be relative to the Harness root",
+            )
+        )
+        return None
+    if ".." in pure.parts:
+        errors.append(
+            ContractError(
+                "PATH_TRAVERSAL",
+                pointer,
+                "path must not contain '..' segments",
+            )
+        )
+        return None
+    return pure
+
+
+def _validate_required_file(root, base, rel_pure, display_path, errors):
+    candidate = base.joinpath(*rel_pure.parts)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError:
+        errors.append(
+            ContractError(
+                "CHANGE_REQUIRED_FILE_MISSING",
+                display_path,
+                "required change file does not exist",
+            )
+        )
+        return
+    except OSError as error:
+        errors.append(
+            ContractError(
+                "CHANGE_REQUIRED_FILE_MISSING",
+                display_path,
+                f"required change file is unreadable: {error}",
+            )
+        )
+        return
+
+    if not _is_within_root(root, resolved) or not _is_within_root(base, resolved):
+        errors.append(
+            ContractError(
+                "PATH_ESCAPE",
+                display_path,
+                "resolved path escapes the Harness root",
+            )
+        )
+        return
+    if not resolved.is_file():
+        errors.append(
+            ContractError(
+                "PATH_TYPE_INVALID",
+                display_path,
+                "referenced path must be a regular file",
+            )
+        )
+        return
+    validate_nonempty_file(resolved, display_path, errors)
+
+
+def validate_change_management(root, config, errors):
+    if type(config) is not dict:
+        return
+    template_declared = config.get("template")
+    records_declared = config.get("records")
+    required_files = config.get("required_files")
+    if type(required_files) is not list or len(required_files) == 0:
+        return
+
+    template_dir = _valid_directory(root, template_declared)
+    records_dir = _valid_directory(root, records_declared)
+    if template_dir is None or records_dir is None:
+        return
+
+    template_prefix = PurePosixPath(template_declared).as_posix()
+    parsed_required = []
+    for index, item in enumerate(required_files):
+        if type(item) is not str or item == "":
+            continue
+        pointer = json_pointer("change_management", "required_files", index)
+        rel_pure = _check_required_path_syntax(item, pointer, errors)
+        if rel_pure is None:
+            continue
+        parsed_required.append(rel_pure)
+        display = f"{template_prefix}/{rel_pure.as_posix()}"
+        _validate_required_file(root, template_dir, rel_pure, display, errors)
+
+    for child in sorted(records_dir.iterdir(), key=lambda path: path.name):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        record_prefix = f"{PurePosixPath(records_declared).as_posix()}/{child.name}"
+        for rel_pure in parsed_required:
+            display = f"{record_prefix}/{rel_pure.as_posix()}"
+            _validate_required_file(root, child.resolve(), rel_pure, display, errors)
+
+
 def validate_harness(root):
     root = Path(root).resolve()
     errors = []
@@ -478,6 +599,8 @@ def validate_harness(root):
 
     errors.extend(validate_manifest_structure(manifest))
     validate_manifest_paths(root, manifest, errors)
+    if type(manifest) is dict:
+        validate_change_management(root, manifest.get("change_management"), errors)
     return ValidationResult(root=root, schema_version=schema_version, errors=tuple(errors))
 
 

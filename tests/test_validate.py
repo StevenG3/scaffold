@@ -325,3 +325,145 @@ class PathAndFrontmatterTests(unittest.TestCase):
             )
 
         self._assert_frontmatter_invalid(mutate)
+
+
+class ChangeManagementTests(unittest.TestCase):
+    def test_missing_required_template_file(self):
+        with copied_harness() as root:
+            (root / "templates" / "change" / "spec.md").unlink()
+            result = run_validator(root=root, output_format="json")
+        self.assertEqual(1, result.returncode)
+        _, pairs = error_pairs(result)
+        self.assertIn(("CHANGE_REQUIRED_FILE_MISSING", "templates/change/spec.md"), pairs)
+
+    def test_incomplete_change_record_then_complete(self):
+        with copied_harness() as root:
+            record = root / "changes" / "example"
+            record.mkdir()
+            (record / "summary.md").write_text("summary\n", encoding="utf-8")
+            result = run_validator(root=root, output_format="json")
+            self.assertEqual(1, result.returncode)
+            payload, pairs = error_pairs(result)
+            self.assertEqual(
+                [
+                    ("CHANGE_REQUIRED_FILE_MISSING", "changes/example/spec.md"),
+                    ("CHANGE_REQUIRED_FILE_MISSING", "changes/example/tasks.md"),
+                ],
+                sorted(pairs),
+            )
+            (record / "spec.md").write_text("spec\n", encoding="utf-8")
+            (record / "tasks.md").write_text("tasks\n", encoding="utf-8")
+            result = run_validator(root=root, output_format="json")
+            self.assertEqual(0, result.returncode, result.stderr or result.stdout)
+
+    def test_hidden_incomplete_record_ignored(self):
+        with copied_harness() as root:
+            draft = root / "changes" / ".draft"
+            draft.mkdir()
+            (draft / "summary.md").write_text("summary\n", encoding="utf-8")
+            result = run_validator(root=root, output_format="json")
+        self.assertEqual(0, result.returncode, result.stderr or result.stdout)
+
+    def test_required_file_path_safety(self):
+        with copied_harness() as root:
+            manifest = read_manifest(root)
+            manifest["change_management"]["required_files"] = [
+                "/tmp/outside.md",
+                "summary.md",
+            ]
+            write_manifest(root, manifest)
+            result = run_validator(root=root, output_format="json")
+            self.assertEqual(1, result.returncode)
+            _, pairs = error_pairs(result)
+            self.assertIn(
+                ("PATH_ABSOLUTE", "manifest.json#/change_management/required_files/0"),
+                pairs,
+            )
+
+        with copied_harness() as root:
+            manifest = read_manifest(root)
+            manifest["change_management"]["required_files"] = [
+                "../outside.md",
+                "summary.md",
+            ]
+            write_manifest(root, manifest)
+            result = run_validator(root=root, output_format="json")
+            self.assertEqual(1, result.returncode)
+            _, pairs = error_pairs(result)
+            self.assertIn(
+                ("PATH_TRAVERSAL", "manifest.json#/change_management/required_files/0"),
+                pairs,
+            )
+
+    def test_template_required_file_empty_and_directory(self):
+        with copied_harness() as root:
+            target = root / "templates" / "change" / "spec.md"
+            target.write_text("", encoding="utf-8")
+            result = run_validator(root=root, output_format="json")
+            self.assertEqual(1, result.returncode)
+            _, pairs = error_pairs(result)
+            self.assertIn(("FILE_EMPTY", "templates/change/spec.md"), pairs)
+
+        with copied_harness() as root:
+            target = root / "templates" / "change" / "spec.md"
+            target.unlink()
+            target.mkdir()
+            result = run_validator(root=root, output_format="json")
+            self.assertEqual(1, result.returncode)
+            _, pairs = error_pairs(result)
+            self.assertIn(("PATH_TYPE_INVALID", "templates/change/spec.md"), pairs)
+
+    def test_record_required_file_empty_and_directory(self):
+        with copied_harness() as root:
+            record = root / "changes" / "example"
+            record.mkdir()
+            for name in ("summary.md", "spec.md", "tasks.md"):
+                (record / name).write_text(f"{name}\n", encoding="utf-8")
+            (record / "spec.md").write_text("", encoding="utf-8")
+            result = run_validator(root=root, output_format="json")
+            self.assertEqual(1, result.returncode)
+            _, pairs = error_pairs(result)
+            self.assertIn(("FILE_EMPTY", "changes/example/spec.md"), pairs)
+
+        with copied_harness() as root:
+            record = root / "changes" / "example"
+            record.mkdir()
+            for name in ("summary.md", "tasks.md"):
+                (record / name).write_text(f"{name}\n", encoding="utf-8")
+            (record / "spec.md").mkdir()
+            result = run_validator(root=root, output_format="json")
+            self.assertEqual(1, result.returncode)
+            _, pairs = error_pairs(result)
+            self.assertIn(("PATH_TYPE_INVALID", "changes/example/spec.md"), pairs)
+
+    def test_required_file_symlink_escape(self):
+        with copied_harness() as root:
+            outside = root.parent / "outside-template.md"
+            outside.write_text("secret\n", encoding="utf-8")
+            target = root / "templates" / "change" / "spec.md"
+            target.unlink()
+            try:
+                target.symlink_to(outside)
+            except OSError:
+                self.skipTest("platform denied symlink creation")
+            result = run_validator(root=root, output_format="json")
+            self.assertEqual(1, result.returncode)
+            _, pairs = error_pairs(result)
+            self.assertIn(("PATH_ESCAPE", "templates/change/spec.md"), pairs)
+
+        with copied_harness() as root:
+            outside = root.parent / "outside-record.md"
+            outside.write_text("secret\n", encoding="utf-8")
+            record = root / "changes" / "example"
+            record.mkdir()
+            for name in ("summary.md", "tasks.md"):
+                (record / name).write_text(f"{name}\n", encoding="utf-8")
+            link = record / "spec.md"
+            try:
+                link.symlink_to(outside)
+            except OSError:
+                self.skipTest("platform denied symlink creation")
+            result = run_validator(root=root, output_format="json")
+            self.assertEqual(1, result.returncode)
+            _, pairs = error_pairs(result)
+            self.assertIn(("PATH_ESCAPE", "changes/example/spec.md"), pairs)
