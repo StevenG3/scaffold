@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import re
 import sys
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 BUILTIN_KINDS = {"agent", "rule", "skill"}
 TOP_LEVEL_FIELDS = {"schema_version", "entrypoint", "components", "change_management"}
@@ -228,6 +229,223 @@ def validate_manifest_structure(manifest):
     return errors
 
 
+def validate_nonempty_file(path, display_path, errors):
+    if not path.read_bytes():
+        errors.append(
+            ContractError("FILE_EMPTY", display_path, "referenced file is empty")
+        )
+
+
+def validate_skill_frontmatter(path, display_path, errors):
+    lines = path.read_text(encoding="utf-8").splitlines()
+    invalid = ContractError(
+        "SKILL_FRONTMATTER_INVALID",
+        display_path,
+        "skill frontmatter must start and end with --- and declare non-empty name and description",
+    )
+    if not lines or lines[0] != "---":
+        errors.append(invalid)
+        return
+    closing = None
+    for index in range(1, len(lines)):
+        if lines[index] == "---":
+            closing = index
+            break
+    if closing is None:
+        errors.append(invalid)
+        return
+    has_name = False
+    has_description = False
+    for line in lines[1:closing]:
+        if line.startswith("name:"):
+            if line[5:].strip():
+                has_name = True
+        elif line.startswith("description:"):
+            if line[12:].strip():
+                has_description = True
+    if not has_name or not has_description:
+        errors.append(invalid)
+
+
+def _is_within_root(root, path):
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_safe_path(root, declared, *, expect, pointer, errors):
+    """Validate Manifest path syntax and filesystem target.
+
+    Syntax/traversal errors use JSON Pointer. Filesystem errors use the
+    declared POSIX relative path. Returns the resolved Path on success,
+    otherwise None.
+    """
+    if "\\" in declared or re.match(r"^[A-Za-z]:", declared):
+        errors.append(
+            ContractError(
+                "PATH_SYNTAX_INVALID",
+                pointer,
+                "path must use POSIX separators without Windows drive prefixes",
+            )
+        )
+        return None
+
+    pure = PurePosixPath(declared)
+    if pure.is_absolute():
+        errors.append(
+            ContractError(
+                "PATH_ABSOLUTE",
+                pointer,
+                "path must be relative to the Harness root",
+            )
+        )
+        return None
+    if ".." in pure.parts:
+        errors.append(
+            ContractError(
+                "PATH_TRAVERSAL",
+                pointer,
+                "path must not contain '..' segments",
+            )
+        )
+        return None
+
+    display_path = pure.as_posix()
+    candidate = root.joinpath(*pure.parts)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError:
+        errors.append(
+            ContractError(
+                "PATH_MISSING",
+                display_path,
+                "referenced path does not exist",
+            )
+        )
+        return None
+    except OSError as error:
+        errors.append(
+            ContractError(
+                "PATH_MISSING",
+                display_path,
+                f"referenced path is unreadable: {error}",
+            )
+        )
+        return None
+
+    if not _is_within_root(root, resolved):
+        errors.append(
+            ContractError(
+                "PATH_ESCAPE",
+                display_path,
+                "resolved path escapes the Harness root",
+            )
+        )
+        return None
+
+    if expect == "file":
+        if not resolved.is_file() or resolved.is_symlink():
+            # is_file follows symlinks; after resolve, symlink targets are regular paths.
+            # Use the resolved node type.
+            pass
+        if not resolved.is_file():
+            errors.append(
+                ContractError(
+                    "PATH_TYPE_INVALID",
+                    display_path,
+                    "referenced path must be a regular file",
+                )
+            )
+            return None
+        validate_nonempty_file(resolved, display_path, errors)
+        # If empty, still return path? Frontmatter should not run on empty.
+        # Check if FILE_EMPTY was just added - validate_nonempty_file appends.
+        # Caller should check: only apply frontmatter if file non-empty.
+        # Return resolved even if empty so caller can inspect; or return None if empty.
+        if not resolved.read_bytes():
+            return None
+        return resolved
+
+    if expect == "directory":
+        if not resolved.is_dir():
+            errors.append(
+                ContractError(
+                    "PATH_TYPE_INVALID",
+                    display_path,
+                    "referenced path must be a directory",
+                )
+            )
+            return None
+        return resolved
+
+    raise RuntimeError(f"unsupported expect value: {expect!r}")
+
+
+def validate_manifest_paths(root, manifest, errors):
+    if type(manifest) is not dict:
+        return
+
+    entrypoint = manifest.get("entrypoint")
+    if type(entrypoint) is str and entrypoint != "":
+        resolve_safe_path(
+            root,
+            entrypoint,
+            expect="file",
+            pointer=json_pointer("entrypoint"),
+            errors=errors,
+        )
+
+    components = manifest.get("components")
+    if type(components) is list:
+        for index, component in enumerate(components):
+            if type(component) is not dict:
+                continue
+            declared = component.get("path")
+            if type(declared) is not str or declared == "":
+                continue
+            resolved = resolve_safe_path(
+                root,
+                declared,
+                expect="file",
+                pointer=json_pointer("components", index, "path"),
+                errors=errors,
+            )
+            kind = component.get("kind")
+            if (
+                resolved is not None
+                and type(kind) is str
+                and kind == "skill"
+            ):
+                validate_skill_frontmatter(
+                    resolved,
+                    PurePosixPath(declared).as_posix(),
+                    errors,
+                )
+
+    change = manifest.get("change_management")
+    if type(change) is dict:
+        template = change.get("template")
+        if type(template) is str and template != "":
+            resolve_safe_path(
+                root,
+                template,
+                expect="directory",
+                pointer=json_pointer("change_management", "template"),
+                errors=errors,
+            )
+        records = change.get("records")
+        if type(records) is str and records != "":
+            resolve_safe_path(
+                root,
+                records,
+                expect="directory",
+                pointer=json_pointer("change_management", "records"),
+                errors=errors,
+            )
+
+
 def validate_harness(root):
     root = Path(root).resolve()
     errors = []
@@ -255,12 +473,11 @@ def validate_harness(root):
         )
         return ValidationResult(root=root, schema_version=schema_version, errors=tuple(errors))
 
-    if type(manifest) is dict and type(manifest.get("schema_version")) is int:
-        schema_version = manifest.get("schema_version")
-    elif type(manifest) is dict and "schema_version" in manifest:
+    if type(manifest) is dict and "schema_version" in manifest:
         schema_version = manifest.get("schema_version")
 
     errors.extend(validate_manifest_structure(manifest))
+    validate_manifest_paths(root, manifest, errors)
     return ValidationResult(root=root, schema_version=schema_version, errors=tuple(errors))
 
 

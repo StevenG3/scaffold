@@ -191,3 +191,137 @@ class ManifestStructureTests(unittest.TestCase):
             ("FIELD_TYPE_INVALID", "manifest.json#/change_management/required_files"),
             pairs,
         )
+
+
+class PathAndFrontmatterTests(unittest.TestCase):
+    def _set_component_path(self, root, path_value):
+        manifest = read_manifest(root)
+        manifest["components"][0]["path"] = path_value
+        write_manifest(root, manifest)
+
+    def test_absolute_component_path(self):
+        with copied_harness() as root:
+            self._set_component_path(root, "/tmp/outside.md")
+            result = run_validator(root=root, output_format="json")
+        self.assertEqual(1, result.returncode)
+        _, pairs = error_pairs(result)
+        self.assertIn(("PATH_ABSOLUTE", "manifest.json#/components/0/path"), pairs)
+
+    def test_traversal_component_path(self):
+        with copied_harness() as root:
+            self._set_component_path(root, "../outside.md")
+            result = run_validator(root=root, output_format="json")
+        self.assertEqual(1, result.returncode)
+        _, pairs = error_pairs(result)
+        self.assertIn(("PATH_TRAVERSAL", "manifest.json#/components/0/path"), pairs)
+
+    def test_backslash_component_path(self):
+        with copied_harness() as root:
+            self._set_component_path(root, "agents\\coordinator.md")
+            result = run_validator(root=root, output_format="json")
+        self.assertEqual(1, result.returncode)
+        _, pairs = error_pairs(result)
+        self.assertIn(("PATH_SYNTAX_INVALID", "manifest.json#/components/0/path"), pairs)
+
+    def test_windows_drive_component_path(self):
+        with copied_harness() as root:
+            self._set_component_path(root, "C:/outside.md")
+            result = run_validator(root=root, output_format="json")
+        self.assertEqual(1, result.returncode)
+        _, pairs = error_pairs(result)
+        self.assertIn(("PATH_SYNTAX_INVALID", "manifest.json#/components/0/path"), pairs)
+
+    def test_missing_component_path(self):
+        with copied_harness() as root:
+            self._set_component_path(root, "agents/missing.md")
+            result = run_validator(root=root, output_format="json")
+        self.assertEqual(1, result.returncode)
+        _, pairs = error_pairs(result)
+        self.assertIn(("PATH_MISSING", "agents/missing.md"), pairs)
+
+    def test_component_path_directory_type_invalid(self):
+        with copied_harness() as root:
+            self._set_component_path(root, "agents")
+            result = run_validator(root=root, output_format="json")
+        self.assertEqual(1, result.returncode)
+        _, pairs = error_pairs(result)
+        self.assertIn(("PATH_TYPE_INVALID", "agents"), pairs)
+
+    def test_empty_component_file(self):
+        with copied_harness() as root:
+            target = root / "agents" / "coordinator.md"
+            target.write_text("", encoding="utf-8")
+            result = run_validator(root=root, output_format="json")
+        self.assertEqual(1, result.returncode)
+        _, pairs = error_pairs(result)
+        self.assertIn(("FILE_EMPTY", "agents/coordinator.md"), pairs)
+
+    def test_symlink_escape_component_path(self):
+        with copied_harness() as root:
+            outside = root.parent / "outside.md"
+            outside.write_text("secret", encoding="utf-8")
+            link = root / "agents" / "escaped.md"
+            try:
+                link.symlink_to(outside)
+            except OSError:
+                self.skipTest("platform denied symlink creation")
+            self._set_component_path(root, "agents/escaped.md")
+            result = run_validator(root=root, output_format="json")
+        self.assertEqual(1, result.returncode)
+        _, pairs = error_pairs(result)
+        self.assertIn(("PATH_ESCAPE", "agents/escaped.md"), pairs)
+
+    def _assert_frontmatter_invalid(self, mutate):
+        with copied_harness() as root:
+            path = root / "skills" / "change-delivery" / "SKILL.md"
+            mutate(path)
+            result = run_validator(root=root, output_format="json")
+        self.assertEqual(1, result.returncode)
+        _, pairs = error_pairs(result)
+        self.assertIn(
+            ("SKILL_FRONTMATTER_INVALID", "skills/change-delivery/SKILL.md"),
+            pairs,
+        )
+
+    def test_skill_missing_opening_delimiter(self):
+        def mutate(path):
+            text = path.read_text(encoding="utf-8")
+            path.write_text(text.replace("---\n", "xxxx\n", 1), encoding="utf-8")
+
+        self._assert_frontmatter_invalid(mutate)
+
+    def test_skill_missing_closing_delimiter(self):
+        def mutate(path):
+            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+            # Remove the second --- line
+            removed = 0
+            out = []
+            for line in lines:
+                if line.strip() == "---":
+                    removed += 1
+                    if removed == 2:
+                        continue
+                out.append(line)
+            path.write_text("".join(out), encoding="utf-8")
+
+        self._assert_frontmatter_invalid(mutate)
+
+    def test_skill_missing_name(self):
+        def mutate(path):
+            text = path.read_text(encoding="utf-8")
+            path.write_text(text.replace("name: change-delivery\n", ""), encoding="utf-8")
+
+        self._assert_frontmatter_invalid(mutate)
+
+    def test_skill_missing_description(self):
+        def mutate(path):
+            text = path.read_text(encoding="utf-8")
+            path.write_text(
+                text.replace(
+                    "description: Deliver a repository change through an explicit record, scoped execution, and reproducible verification.\n",
+                    "",
+                ),
+                encoding="utf-8",
+            )
+
+        self._assert_frontmatter_invalid(mutate)
