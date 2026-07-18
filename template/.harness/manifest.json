@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "entrypoint": "README.md",
+  "components": [
+    {
+      "id": "coordinator",
+      "kind": "agent",
+      "path": "agents/coordinator.md"
+    },
+    {
+      "id": "delivery-rule",
+      "kind": "rule",
+      "path": "rules/delivery.md"
+    },
+    {
+      "id": "change-delivery",
+      "kind": "skill",
+      "path": "skills/change-delivery/SKILL.md"
+    }
+  ],
+  "change_management": {
+    "template": "templates/change",
+    "records": "changes",
+    "required_files": [
+      "summary.md",
+      "spec.md",
+      "tasks.md"
+    ]
+  }
+}
