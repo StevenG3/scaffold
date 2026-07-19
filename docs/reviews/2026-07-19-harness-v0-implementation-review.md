@@ -3,7 +3,7 @@
 - 审阅日期：2026-07-19
 - PR：[PR #1 — feat: implement portable Harness v0 vertical slice](https://github.com/StevenG3/scaffold/pull/1)
 - 固定点：`323cd1d7e8afaf223cb118eec16c5438bbc638bc`
-- 最新已审阅提交：`50c8db3a714e341f08e57f246799ba7f200b389d`
+- 最新已审阅提交：`eb4b1a52bc9103eea7999921143f011ccaa44738`
 - 审阅方式：Standards / Spec 双路独立审阅，加本地最小输入复现
 - 结论：Request changes，暂不合入
 
@@ -144,3 +144,45 @@ second-line.md: referenced path does not exist
 ### 第三轮合入意见
 
 当前 PR 仍不应合入。修复以上两个 P2 并补充回归测试后，对新 HEAD 执行第四轮 Standards / Spec 复审。现有绿色测试与 CI 没有覆盖这两个边界，不能替代契约验收。
+
+## 第四轮复审
+
+- 复审提交：`eb4b1a52bc9103eea7999921143f011ccaa44738`
+- 新增提交：`fix: harden text escaping and restore duplicate-id JSON message`
+- Standards：1 个 P2，Request changes。
+- Spec：1 个 P2，Request changes。
+- 本地完整测试：49 项全部通过。
+- 官方 Text / JSON 校验：均退出 `0`。
+- Python 3.9 语法解析：通过。
+- GitHub Actions run `29680038842`：validator、tests、whitespace 均为 success。
+
+第三轮的两个 P2 均已关闭：Text 渲染覆盖 Python `splitlines()` 识别的全部行边界字符，重复 Component ID 的结构化 JSON message 也恢复为与 `df1b07e` 逐字一致。
+
+### [P2] 完整验证序列污染 Git 工作区
+
+位置：`.gitignore:1`、`docs/plans/harness-v0-implementation.md:790-800`
+
+在真实 Git 工作区按计划原样执行：
+
+```bash
+python3 template/.harness/bin/validate.py
+python3 template/.harness/bin/validate.py --format json
+python3 -m unittest discover -s tests -v
+git diff --check
+git status --short
+```
+
+测试虽然全部通过，但会生成未跟踪的 `tests/__pycache__/*.pyc`；导入 validator 的验证方式还可能生成 `template/.harness/bin/__pycache__/*.pyc`。当前 `.gitignore` 未覆盖 Python 字节码，因此最终 `git status --short` 非空，直接违反实施计划的 clean-worktree 验收结果。
+
+要求：
+
+1. 在生产者侧 `.gitignore` 增加通用 `__pycache__/` 和 `*.py[cod]` 规则。
+2. 清理已生成的缓存，并在真实 Git checkout 中重新执行完整验证序列。
+3. 最终 `git status --short` 必须为空。
+4. 不修改 Harness 外部契约、设计、ADR 或实施计划。
+
+实施计划 Task 8 原本把允许改动范围限定为 workflow、README、`template/.harness/` 和 `tests/`。本审阅记录作为规划者/Reviewer 的明确批准，为修复该生产者侧验收缺口增加唯一范围例外：允许修改根目录 `.gitignore`，仅加入上述通用 Python 缓存规则；不得借此扩大其他范围。
+
+### 第四轮合入意见
+
+当前 PR 仍不应合入。本地集成验证中创建的合并提交未推送远端 `main`。开发者完成 `.gitignore` 修复并推送新 HEAD 后，需要执行第五轮复审和合并结果验证。
