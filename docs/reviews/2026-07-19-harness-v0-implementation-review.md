@@ -3,7 +3,7 @@
 - 审阅日期：2026-07-19
 - PR：[PR #1 — feat: implement portable Harness v0 vertical slice](https://github.com/StevenG3/scaffold/pull/1)
 - 固定点：`323cd1d7e8afaf223cb118eec16c5438bbc638bc`
-- 最新已审阅提交：`df1b07ed5683a4de845d06950a303c6c090128a6`
+- 最新已审阅提交：`50c8db3a714e341f08e57f246799ba7f200b389d`
 - 审阅方式：Standards / Spec 双路独立审阅，加本地最小输入复现
 - 结论：Request changes，暂不合入
 
@@ -99,3 +99,48 @@ second-line.md: referenced path does not exist
 ### 第二轮合入意见
 
 当前 PR 仍不应合入。修复上述 P2 并补齐回归测试后，需要对新的 HEAD 再执行 Standards / Spec 双路复审；第二轮对 `df1b07e` 的审阅结论不能自动批准后续提交。
+
+## 第三轮复审
+
+- 复审提交：`50c8db3a714e341f08e57f246799ba7f200b389d`
+- 新增提交：`fix: escape control characters in text errors`
+- Standards：1 个 P2，Request changes。
+- Spec：2 个 P2，Request changes。
+- 去重后阻塞问题：2 个 P2。
+- 本地完整测试：48 项全部通过。
+- GitHub Actions run `29679703626`：success。
+- `git diff --check 323cd1d...50c8db3`：通过。
+
+上一轮针对 CR、LF、TAB、其他 C0 控制字符及 DEL 的 Text 转义已实现，但复审发现 Unicode 行分隔符仍能破坏单行契约，并且修复意外改变了 JSON 错误消息语义。
+
+### [P2] Unicode 行分隔符仍能拆分 Text 错误
+
+位置：`template/.harness/bin/validate.py:49`
+
+`escape_text_field()` 只转义 C0 和 DEL，保留 `U+0085`（NEL）、`U+2028`（Line Separator）和 `U+2029`（Paragraph Separator）。这三个字符都会被 Python `splitlines()` 识别为行边界；终端和日志处理器也可能按行解释。
+
+独立探针确认三个输入均从一个字段拆成两行，因此仍违反“Text 每行一项错误”及固定格式契约。
+
+要求：
+
+1. 在 Text 渲染边界额外转义 `U+0085`、`U+2028`、`U+2029`，使用确定性的可见表示。
+2. 为三个 Unicode 行分隔符增加回归测试，断言一个错误严格占一个物理行。
+3. 保持普通可打印 Unicode 可读，保持 JSON 输出不变。
+
+### [P2] 重复 ID 的 JSON 错误消息语义发生变化
+
+位置：`template/.harness/bin/validate.py:205`、`tests/test_validate.py:674`
+
+实现把重复 ID 消息从 `f"duplicate component id {component_id!r}"` 改成 `f"duplicate component id {component_id}"`。相同的 `coord\tinator` 输入在 `df1b07e` 中为带引号且由 repr 表示的消息，当前 HEAD 则变成包含原始 TAB 的裸值。
+
+这违反第二轮任务“保持 JSON 输出语义不变”。Text 安全应只由 `escape_text_field()` 在渲染边界实现，不应改动结构化 `ContractError.message`。
+
+要求：
+
+1. 恢复 `{component_id!r}` 的原始消息构造。
+2. 调整测试，分别断言 JSON message 保持旧语义、Text 输出仍为单行可见表示。
+3. 不改变其他稳定错误 code、path 或 message。
+
+### 第三轮合入意见
+
+当前 PR 仍不应合入。修复以上两个 P2 并补充回归测试后，对新 HEAD 执行第四轮 Standards / Spec 复审。现有绿色测试与 CI 没有覆盖这两个边界，不能替代契约验收。
