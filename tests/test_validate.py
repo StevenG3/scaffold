@@ -623,3 +623,52 @@ class ReviewRegressionTests(unittest.TestCase):
             ("PATH_SYNTAX_INVALID", "manifest.json#/components/0/path"),
             pairs,
         )
+
+
+    def _assert_single_line_text_errors(self, result):
+        self.assertEqual(1, result.returncode, result.stderr or result.stdout)
+        self.assertEqual("", result.stderr)
+        lines = result.stdout.splitlines(keepends=True)
+        self.assertGreaterEqual(len(lines), 1)
+        for line in lines:
+            self.assertTrue(line.endswith("\n"), line)
+            body = line[:-1]
+            self.assertNotRegex(body, r"[\x00-\x1f\x7f]")
+            self.assertRegex(body, r"^\[([A-Z0-9_]+)\] .+: .+$")
+        self.assertEqual(len(lines), result.stdout.count("\n"))
+
+    def test_text_escapes_control_chars_in_component_path(self):
+        with copied_harness() as root:
+            manifest = read_manifest(root)
+            manifest["components"][0]["path"] = "agents/missing\nsecond-line.md"
+            write_manifest(root, manifest)
+            text_result = run_validator(root=root, output_format="text")
+            json_result = run_validator(root=root, output_format="json")
+        self._assert_single_line_text_errors(text_result)
+        self.assertIn("agents/missing\\u000asecond-line.md", text_result.stdout)
+        self.assertNotIn("\nsecond-line", text_result.stdout.replace("\\u000a", ""))
+        payload = json.loads(json_result.stdout)
+        self.assertEqual(1, json_result.returncode)
+        self.assertEqual(
+            "agents/missing\nsecond-line.md",
+            payload["errors"][0]["path"],
+        )
+
+    def test_text_escapes_control_chars_in_manifest_field_and_id(self):
+        with copied_harness() as root:
+            manifest = read_manifest(root)
+            manifest["bad\rfield"] = True
+            manifest["components"][0]["id"] = "coord\tinator"
+            manifest["components"].append(dict(manifest["components"][0]))
+            write_manifest(root, manifest)
+            text_result = run_validator(root=root, output_format="text")
+            json_result = run_validator(root=root, output_format="json")
+        self._assert_single_line_text_errors(text_result)
+        self.assertIn("manifest.json#/bad\\u000dfield", text_result.stdout)
+        self.assertIn("coord\\u0009inator", text_result.stdout)
+        payload = json.loads(json_result.stdout)
+        self.assertEqual(1, json_result.returncode)
+        paths = [item["path"] for item in payload["errors"]]
+        messages = [item["message"] for item in payload["errors"]]
+        self.assertTrue(any("bad\rfield" in path for path in paths))
+        self.assertTrue(any("coord\tinator" in message for message in messages))

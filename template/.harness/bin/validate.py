@@ -46,11 +46,31 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def escape_text_field(value):
+    """Escape C0 controls and DEL for single-line Text output.
+
+    Printable Unicode is unchanged. Deterministic form: ``\\u00XX`` for
+    code points ``U+0000``–``U+001F`` and ``U+007F``.
+    """
+    parts = []
+    for char in str(value):
+        code = ord(char)
+        if code < 0x20 or code == 0x7F:
+            parts.append(f"\\u{code:04x}")
+        else:
+            parts.append(char)
+    return "".join(parts)
+
+
 def render_text(result):
     if result.valid:
         return "Harness contract is valid.\n"
     return "".join(
-        f"[{item.code}] {item.path}: {item.message}\n"
+        (
+            f"[{escape_text_field(item.code)}] "
+            f"{escape_text_field(item.path)}: "
+            f"{escape_text_field(item.message)}\n"
+        )
         for item in sorted(result.errors)
     )
 
@@ -182,7 +202,7 @@ def validate_manifest_structure(manifest):
                         ContractError(
                             "COMPONENT_ID_DUPLICATE",
                             json_pointer(*location, "id"),
-                            f"duplicate component id {component_id!r}",
+                            f"duplicate component id {component_id}",
                         )
                     )
                 else:
