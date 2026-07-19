@@ -46,16 +46,22 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def escape_text_field(value):
-    """Escape C0 controls and DEL for single-line Text output.
+_TEXT_ESCAPE_CODES = frozenset(
+    {0x7F, 0x85, 0x2028, 0x2029} | set(range(0x20))
+)
 
-    Printable Unicode is unchanged. Deterministic form: ``\\u00XX`` for
-    code points ``U+0000``–``U+001F`` and ``U+007F``.
+
+def escape_text_field(value):
+    """Escape line-breaking and C0 controls for single-line Text output.
+
+    Printable Unicode is unchanged. Deterministic form: ``\\uXXXX`` for
+    ``U+0000``–``U+001F``, ``U+007F`` (DEL), ``U+0085`` (NEL),
+    ``U+2028`` (Line Separator) and ``U+2029`` (Paragraph Separator).
     """
     parts = []
     for char in str(value):
         code = ord(char)
-        if code < 0x20 or code == 0x7F:
+        if code in _TEXT_ESCAPE_CODES:
             parts.append(f"\\u{code:04x}")
         else:
             parts.append(char)
@@ -202,7 +208,7 @@ def validate_manifest_structure(manifest):
                         ContractError(
                             "COMPONENT_ID_DUPLICATE",
                             json_pointer(*location, "id"),
-                            f"duplicate component id {component_id}",
+                            f"duplicate component id {component_id!r}",
                         )
                     )
                 else:

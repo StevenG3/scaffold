@@ -628,14 +628,12 @@ class ReviewRegressionTests(unittest.TestCase):
     def _assert_single_line_text_errors(self, result):
         self.assertEqual(1, result.returncode, result.stderr or result.stdout)
         self.assertEqual("", result.stderr)
-        lines = result.stdout.splitlines(keepends=True)
+        lines = result.stdout.splitlines()
         self.assertGreaterEqual(len(lines), 1)
-        for line in lines:
-            self.assertTrue(line.endswith("\n"), line)
-            body = line[:-1]
-            self.assertNotRegex(body, r"[\x00-\x1f\x7f]")
-            self.assertRegex(body, r"^\[([A-Z0-9_]+)\] .+: .+$")
         self.assertEqual(len(lines), result.stdout.count("\n"))
+        for line in lines:
+            self.assertNotRegex(line, r"[\x00-\x1f\x7f\u0085\u2028\u2029]")
+            self.assertRegex(line, r"^\[([A-Z0-9_]+)\] .+: .+$")
 
     def test_text_escapes_control_chars_in_component_path(self):
         with copied_harness() as root:
@@ -654,21 +652,52 @@ class ReviewRegressionTests(unittest.TestCase):
             payload["errors"][0]["path"],
         )
 
+    def test_text_escapes_unicode_line_separators_in_component_path(self):
+        separators = {
+            "\u0085": "\\u0085",
+            "\u2028": "\\u2028",
+            "\u2029": "\\u2029",
+        }
+        for separator, escaped in separators.items():
+            with self.subTest(separator=hex(ord(separator))):
+                with copied_harness() as root:
+                    manifest = read_manifest(root)
+                    manifest["components"][0]["path"] = (
+                        f"agents/missing{separator}second-line.md"
+                    )
+                    write_manifest(root, manifest)
+                    text_result = run_validator(root=root, output_format="text")
+                    json_result = run_validator(root=root, output_format="json")
+                self._assert_single_line_text_errors(text_result)
+                self.assertEqual(1, len(text_result.stdout.splitlines()))
+                self.assertIn(
+                    f"agents/missing{escaped}second-line.md",
+                    text_result.stdout,
+                )
+                payload = json.loads(json_result.stdout)
+                self.assertEqual(1, json_result.returncode)
+                self.assertEqual(
+                    f"agents/missing{separator}second-line.md",
+                    payload["errors"][0]["path"],
+                )
+
     def test_text_escapes_control_chars_in_manifest_field_and_id(self):
+        duplicate_id = "coord\tinator"
         with copied_harness() as root:
             manifest = read_manifest(root)
             manifest["bad\rfield"] = True
-            manifest["components"][0]["id"] = "coord\tinator"
+            manifest["components"][0]["id"] = duplicate_id
             manifest["components"].append(dict(manifest["components"][0]))
             write_manifest(root, manifest)
             text_result = run_validator(root=root, output_format="text")
             json_result = run_validator(root=root, output_format="json")
         self._assert_single_line_text_errors(text_result)
         self.assertIn("manifest.json#/bad\\u000dfield", text_result.stdout)
-        self.assertIn("coord\\u0009inator", text_result.stdout)
+        expected_message = f"duplicate component id {duplicate_id!r}"
+        self.assertIn(expected_message, text_result.stdout)
         payload = json.loads(json_result.stdout)
         self.assertEqual(1, json_result.returncode)
         paths = [item["path"] for item in payload["errors"]]
         messages = [item["message"] for item in payload["errors"]]
         self.assertTrue(any("bad\rfield" in path for path in paths))
-        self.assertTrue(any("coord\tinator" in message for message in messages))
+        self.assertIn(expected_message, messages)
