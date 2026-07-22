@@ -28,13 +28,17 @@ AI Coding 正从 Prompt Engineering、Context Engineering 走向 **Harness Engin
 
 ## 状态
 
-仓库已初始化，当前包含工程说明、参考摘要以及已批准的 Harness v0 设计与架构决策。可移植 `.harness/` 分发包尚待后续实现。
+仓库已交付 Harness v0 可移植垂直切片：包含自包含分发包、版本化 Manifest、最小 Agent / Rule / Skill / Change Template、标准库校验器及 CI 门禁。完整流水线、MCP 和安装器不在 v0 范围内。
 
 ## 设计与决策
 
 - [Harness v0 设计规格](docs/design/harness-v0.md)
 - [ADR-0001：可移植 Harness 契约](docs/adr/0001-portable-harness-contract.md)
 - [Harness v0 实施计划](docs/plans/harness-v0-implementation.md)
+
+## 快速验证
+
+运行 `python3 template/.harness/bin/validate.py` 验证分发契约，运行 `python3 -m unittest discover -s tests -v` 执行完整测试。将 `template/.harness/` 复制到目标项目即可开始项目级定制；分发包要求 Python 3.9 或更高版本。
 
 ## License
 
