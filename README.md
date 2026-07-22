@@ -14,7 +14,7 @@ AI Coding 正从 Prompt Engineering、Context Engineering 走向 **Harness Engin
 - 用 Git 版本化管理上述资产，便于团队复用与持续迭代
 - 将设计参考与演进决策留在仓库内，保证「发现一次 Agent 错误 → 工程化消除同类错误」可追溯
 
-> 具体目录布局、流程阶段与 Skill 清单仍在设计中，将按决策逐步落地。
+> v0 已固定分发包的目录布局与 Manifest 契约（见下文「设计与决策」）；完整流程阶段与 Skill 清单仍在演进中，将按决策逐步扩充。
 
 ## 参考资料
 
@@ -35,6 +35,11 @@ AI Coding 正从 Prompt Engineering、Context Engineering 走向 **Harness Engin
 - [Harness v0 设计规格](docs/design/harness-v0.md)
 - [ADR-0001：可移植 Harness 契约](docs/adr/0001-portable-harness-contract.md)
 - [Harness v0 实施计划](docs/plans/harness-v0-implementation.md)
+
+审阅记录（「发现一次 Agent 错误 → 工程化消除同类错误」的可追溯依据）：
+
+- [Harness v0 设计审阅](docs/reviews/2026-07-19-harness-v0-design-review.md)
+- [Harness v0 实现审阅](docs/reviews/2026-07-19-harness-v0-implementation-review.md) — 六轮 Standards / Spec 双路复审，逐轮记录 P2 边界缺陷与对应回归测试
 
 ## 快速验证
 
