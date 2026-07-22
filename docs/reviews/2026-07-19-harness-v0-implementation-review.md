@@ -3,7 +3,7 @@
 - 审阅日期：2026-07-19
 - PR：[PR #1 — feat: implement portable Harness v0 vertical slice](https://github.com/StevenG3/scaffold/pull/1)
 - 固定点：`323cd1d7e8afaf223cb118eec16c5438bbc638bc`
-- 最新已审阅提交：`eb4b1a52bc9103eea7999921143f011ccaa44738`
+- 最新已审阅提交：`3507ca0b541ca6ddddfd252ddfc2b540506612ca`
 - 审阅方式：Standards / Spec 双路独立审阅，加本地最小输入复现
 - 结论：Request changes，暂不合入
 
@@ -186,3 +186,44 @@ git status --short
 ### 第四轮合入意见
 
 当前 PR 仍不应合入。本地集成验证中创建的合并提交未推送远端 `main`。开发者完成 `.gitignore` 修复并推送新 HEAD 后，需要执行第五轮复审和合并结果验证。
+
+## 第五轮复审
+
+- 复审提交：`3507ca0b541ca6ddddfd252ddfc2b540506612ca`
+- 新增提交：`chore: ignore python bytecode caches`
+- Standards：0 findings，Approve。
+- Spec：1 个 P2，Request changes。
+- 本地完整测试：49 项全部通过。
+- 计划原样验证序列：退出码均为 `0`，最终 `git status --short` 为空。
+- Python 缓存：已生成且正确归入 ignored。
+- Python 3.9 语法解析：通过。
+- GitHub Actions run `29880130380`：validator、tests、whitespace 均为 success。
+
+第四轮的 clean-worktree P2 已关闭：最新提交只在根目录 `.gitignore` 增加 `__pycache__/` 与 `*.py[cod]`，与授权例外完全一致，没有扩大范围或修改 Harness 外部契约。
+
+### [P2] 未配对 Unicode surrogate 破坏稳定输出契约
+
+位置：`template/.harness/bin/validate.py:54-68,84-91,673-675`
+
+在 Manifest 增加未知字段名 `"\ud800"`。文件仍由合法 ASCII/UTF-8 字节组成，Python `json.loads` 可以解析，但解码结果包含未配对 surrogate。该字符随后进入 Text/JSON 渲染并在 UTF-8 输出编码阶段失败。
+
+独立复现结果：
+
+```text
+Text: exit 2, stdout empty, stderr [INTERNAL_ERROR] ... surrogates not allowed
+JSON: exit 2, stdout empty, stderr [INTERNAL_ERROR] ... surrogates not allowed
+```
+
+未知字段属于 Manifest 契约错误，不应升级为 validator 内部故障。该行为违反稳定输出及退出码契约：Manifest 错误应以 `1` 退出并写入 stdout，不应产生 `INTERNAL_ERROR`。
+
+要求：
+
+1. `json.loads` 后、结构校验前递归检查所有对象键及字符串值；拒绝仍包含 `U+D800`–`U+DFFF` surrogate code unit 的结果。
+2. 合法代理对会被 JSON 解码器组合为 Unicode scalar，不应被误拒绝。
+3. 将未配对 surrogate 稳定映射为 `MANIFEST_JSON_INVALID`、`schema_version: null`、exit `1`。
+4. 为未知字段名和扩展字段值中的 high/low unpaired surrogate 增加 Text 与 JSON 回归测试；断言 stdout 合法 UTF-8、stderr 为空、无 traceback。
+5. 不改变普通 Unicode、合法代理对、既有错误 code/path/message 或 JSON 顶层语义。
+
+### 第五轮合入意见
+
+当前 PR 仍不应合入。`.gitignore` 修复已通过，但上述 P2 仍会把可解析 Manifest 输入升级为内部故障。开发者修复并推送新 HEAD 后，需要执行第六轮 Standards / Spec 复审及真实合并结果验证。
