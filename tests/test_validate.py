@@ -701,3 +701,63 @@ class ReviewRegressionTests(unittest.TestCase):
         messages = [item["message"] for item in payload["errors"]]
         self.assertTrue(any("bad\rfield" in path for path in paths))
         self.assertIn(expected_message, messages)
+
+    def test_unpaired_surrogate_is_manifest_json_invalid(self):
+        placements = {
+            "unknown-field-name": lambda manifest, char: manifest.update({char: 1}),
+            "extension-field-value": lambda manifest, char: manifest.update(
+                {"x-value": char}
+            ),
+        }
+        surrogates = {"high": "\ud800", "low": "\udfff"}
+        for placement, mutate in placements.items():
+            for kind, char in surrogates.items():
+                for output_format in ("text", "json"):
+                    with self.subTest(
+                        placement=placement, surrogate=kind, format=output_format
+                    ):
+                        with copied_harness() as root:
+                            manifest = read_manifest(root)
+                            mutate(manifest, char)
+                            # ensure_ascii keeps the file itself pure ASCII, so the
+                            # surrogate only appears after json.loads decodes it.
+                            (root / "manifest.json").write_text(
+                                json.dumps(manifest, ensure_ascii=True, indent=2) + "\n",
+                                encoding="ascii",
+                            )
+                            result = run_validator(root=root, output_format=output_format)
+                        self.assertEqual(1, result.returncode, result.stderr)
+                        self.assertEqual("", result.stderr)
+                        self.assertNotIn("Traceback", result.stderr + result.stdout)
+                        # stdout must be encodable as UTF-8, which is what failed before.
+                        result.stdout.encode("utf-8")
+                        if output_format == "json":
+                            payload = json.loads(result.stdout)
+                            self.assertFalse(payload["valid"])
+                            self.assertIsNone(payload["schema_version"])
+                            self.assertEqual(
+                                [("MANIFEST_JSON_INVALID", "manifest.json")],
+                                [(i["code"], i["path"]) for i in payload["errors"]],
+                            )
+                        else:
+                            self._assert_single_line_text_errors(result)
+                            self.assertIn("[MANIFEST_JSON_INVALID] manifest.json:", result.stdout)
+
+    def test_valid_surrogate_pair_is_not_rejected(self):
+        # U+1F600 is written to disk as the escaped pair 😀; json.loads
+        # combines it into one scalar, so it must not trip the surrogate check.
+        with copied_harness() as root:
+            manifest = read_manifest(root)
+            manifest["x-emoji"] = "\U0001f600"
+            (root / "manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=True, indent=2) + "\n",
+                encoding="ascii",
+            )
+            raw = (root / "manifest.json").read_text(encoding="ascii")
+            result = run_validator(root=root, output_format="json")
+        self.assertIn("\\ud83d\\ude00", raw)
+        self.assertEqual(0, result.returncode, result.stderr or result.stdout)
+        self.assertEqual("", result.stderr)
+        payload, pairs = error_pairs(result)
+        self.assertTrue(payload["valid"])
+        self.assertEqual([], pairs)

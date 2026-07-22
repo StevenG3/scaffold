@@ -50,6 +50,40 @@ _TEXT_ESCAPE_CODES = frozenset(
     {0x7F, 0x85, 0x2028, 0x2029} | set(range(0x20))
 )
 
+_SURROGATE_FIRST = 0xD800
+_SURROGATE_LAST = 0xDFFF
+
+
+def _has_surrogate(text):
+    return any(_SURROGATE_FIRST <= ord(char) <= _SURROGATE_LAST for char in text)
+
+
+def contains_unpaired_surrogate(value):
+    """Report whether decoded JSON still holds a surrogate code unit.
+
+    ``json.loads`` combines a valid ``\\uD800``-``\\uDC00`` style pair into
+    one Unicode scalar, so anything still in ``U+D800``-``U+DFFF`` was
+    unpaired in the source. Such a string cannot be encoded as UTF-8, which
+    would otherwise surface as an ``INTERNAL_ERROR`` at render time instead
+    of a Manifest contract error.
+
+    Walks an explicit stack so deep nesting cannot raise ``RecursionError``.
+    """
+    stack = [value]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            if _has_surrogate(node):
+                return True
+        elif isinstance(node, dict):
+            for key, item in node.items():
+                if isinstance(key, str) and _has_surrogate(key):
+                    return True
+                stack.append(item)
+        elif isinstance(node, list):
+            stack.extend(node)
+    return False
+
 
 def escape_text_field(value):
     """Escape line-breaking and C0 controls for single-line Text output.
@@ -645,6 +679,16 @@ def validate_harness(root):
                 "MANIFEST_JSON_INVALID",
                 "manifest.json",
                 f"invalid JSON at line {error.lineno} column {error.colno}",
+            )
+        )
+        return ValidationResult(root=root, schema_version=schema_version, errors=tuple(errors))
+
+    if contains_unpaired_surrogate(manifest):
+        errors.append(
+            ContractError(
+                "MANIFEST_JSON_INVALID",
+                "manifest.json",
+                "invalid JSON: unpaired surrogate code unit is not valid UTF-8",
             )
         )
         return ValidationResult(root=root, schema_version=schema_version, errors=tuple(errors))
