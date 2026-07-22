@@ -1,0 +1,40 @@
+name: Branch Hygiene
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stale-merged-branches:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect remote branches already merged into main
+        run: |
+          set -euo pipefail
+          stale=""
+          while IFS= read -r ref; do
+            case "$ref" in
+              refs/remotes/origin/HEAD|refs/remotes/origin/main) continue ;;
+            esac
+            if git merge-base --is-ancestor "$ref" "$GITHUB_SHA"; then
+              stale="${stale}  - ${ref#refs/remotes/}"$'\n'
+            fi
+          done < <(git for-each-ref --format='%(refname)' refs/remotes/origin)
+
+          if [ -n "$stale" ]; then
+            echo "These remote branches are fully merged into main and should be deleted:"
+            printf '%s' "$stale"
+            echo
+            echo "Delete them with:"
+            echo "  git push origin --delete <branch>..."
+            exit 1
+          fi
+          echo "No merged branches left behind."
