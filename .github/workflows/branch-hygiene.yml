@@ -1,0 +1,49 @@
+name: Branch Hygiene
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stale-merged-branches:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect remote branches already merged into main
+        run: |
+          set -euo pipefail
+          # Always compare against main itself. On workflow_dispatch the run may
+          # be started from any branch or tag, and $GITHUB_SHA would then be that
+          # ref's tip -- which would report in-flight work as merged.
+          main_ref="refs/remotes/origin/main"
+          if ! git rev-parse --verify --quiet "$main_ref" >/dev/null; then
+            echo "Cannot resolve $main_ref; actions/checkout needs fetch-depth: 0." >&2
+            exit 1
+          fi
+
+          stale=""
+          while IFS= read -r ref; do
+            case "$ref" in
+              refs/remotes/origin/HEAD|"$main_ref") continue ;;
+            esac
+            if git merge-base --is-ancestor "$ref" "$main_ref"; then
+              stale="${stale}  - ${ref#refs/remotes/}"$'\n'
+            fi
+          done < <(git for-each-ref --format='%(refname)' refs/remotes/origin)
+
+          if [ -n "$stale" ]; then
+            echo "These remote branches are fully merged into main and should be deleted:"
+            printf '%s' "$stale"
+            echo
+            echo "Delete them with:"
+            echo "  git push origin --delete <branch>..."
+            exit 1
+          fi
+          echo "No merged branches left behind."
