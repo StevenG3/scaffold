@@ -3,7 +3,7 @@
 - 审阅日期：2026-07-19
 - PR：[PR #1 — feat: implement portable Harness v0 vertical slice](https://github.com/StevenG3/scaffold/pull/1)
 - 固定点：`323cd1d7e8afaf223cb118eec16c5438bbc638bc`
-- 最新已审阅提交：`3507ca0b541ca6ddddfd252ddfc2b540506612ca`
+- 最新已审阅提交：`defb6e26d3abc1796d2eeea7f8ac338fa4b2a848`
 - 审阅方式：Standards / Spec 双路独立审阅，加本地最小输入复现
 - 结论：Request changes，暂不合入
 
@@ -227,3 +227,27 @@ JSON: exit 2, stdout empty, stderr [INTERNAL_ERROR] ... surrogates not allowed
 ### 第五轮合入意见
 
 当前 PR 仍不应合入。`.gitignore` 修复已通过，但上述 P2 仍会把可解析 Manifest 输入升级为内部故障。开发者修复并推送新 HEAD 后，需要执行第六轮 Standards / Spec 复审及真实合并结果验证。
+
+## 第六轮复审
+
+- 复审提交：`defb6e26d3abc1796d2eeea7f8ac338fa4b2a848`
+- 新增提交：`fix: reject unpaired surrogates in manifest JSON`
+- Standards：0 findings，Approve。
+- Spec：0 findings，Approve。
+- 本地完整测试：51 项全部通过。
+- 官方 Text / JSON 校验：均退出 `0`。
+- 计划原样验证序列：通过，最终 `git status --short` 为空。
+- Python 3.9 语法解析：通过。
+- 全部 Unicode 行边界独立探针：无泄漏。
+- High / low 未配对 surrogate 独立探针：均被识别；合法代理对不误拒。
+- `git diff --check 323cd1d...defb6e2`：通过。
+- GitHub Actions run `29881416235`：success。
+- PR #1：HEAD 与已审阅提交一致，Draft、未合入、mergeable。
+
+第五轮 P2 已关闭：校验器在 `json.loads` 后以迭代方式检查所有对象键及字符串值，残留 surrogate code unit 稳定映射为 `MANIFEST_JSON_INVALID`、`schema_version: null`、exit `1`；Text/JSON stdout 可编码为 UTF-8，stderr 为空。合法代理对会先组合为 Unicode scalar，因此保持有效。
+
+完整复扫未发现新的 Schema、路径与符号链接、Change Management、Text/JSON 输出、退出码、只读性、自包含、Python 3.9、CI 或 clean-worktree 偏差，也未发现达到报告门槛的代码异味。
+
+### 第六轮合入意见
+
+`defb6e2` 满足已批准的 Harness v0 设计、ADR、实施计划及历次审阅修复要求，建议合入 `main`。批准仅绑定该精确 HEAD；任何新增提交都会使本结论失效并要求重新审阅。
