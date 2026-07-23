@@ -732,17 +732,40 @@ def cmd_init(target, adapters_raw, fmt):
             notices=copy_notices,
         )
 
-    manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
-    manifest["origin"] = {
-        "template_name": TEMPLATE_NAME,
-        "template_version": source_manifest["template_version"],
-        "initialized_at_schema": manifest["schema_version"],
-    }
-    if adapters_override is not None:
-        manifest["adapters"] = adapters_override
-    (destination / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    # Read/stamp/write the copied manifest. This runs after copytree, so the
+    # destination .harness is fully on disk; an I/O fault here is a command-level
+    # error per §7.2 step 3, rendered like the copy stage (INIT_IO_ERROR, exit 2,
+    # cleanup hint). A JSONDecodeError is effectively impossible (the source was
+    # just validated) but is routed to the same code for belt-and-braces.
+    try:
+        manifest = json.loads(
+            (destination / "manifest.json").read_text(encoding="utf-8")
+        )
+        manifest["origin"] = {
+            "template_name": TEMPLATE_NAME,
+            "template_version": source_manifest["template_version"],
+            "initialized_at_schema": manifest["schema_version"],
+        }
+        if adapters_override is not None:
+            manifest["adapters"] = adapters_override
+        (destination / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        return emit_command_error(
+            fmt,
+            "init",
+            [
+                validate.ContractError(
+                    "INIT_IO_ERROR",
+                    str(destination),
+                    f"failed to stamp project manifest: {error}",
+                )
+            ],
+            {"target": str(destination), "projected_files": []},
+            notices=[cleanup_hint],
+        )
 
     try:
         errors, notices, written, unchanged, stale = run_adapt(

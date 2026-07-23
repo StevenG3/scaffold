@@ -1,4 +1,6 @@
 import hashlib
+import importlib.util
+import io
 import json
 import os
 import shutil
@@ -7,13 +9,22 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_HARNESS = REPO_ROOT / "template" / ".harness"
 HARNESS_CLI = SOURCE_HARNESS / "bin" / "harness.py"
 VALIDATOR = SOURCE_HARNESS / "bin" / "validate.py"
+
+# Import harness.py in-process (some tests drive cmd_init directly to inject
+# faults). Suppress bytecode BEFORE the import so the loader never writes a .pyc
+# into the read-only bundle tree, mirroring tests/test_adapters.py.
+sys.dont_write_bytecode = True
+_spec = importlib.util.spec_from_file_location("harness", HARNESS_CLI)
+harness = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(harness)
 
 
 def run_cli(cli, *args):
@@ -296,6 +307,36 @@ class InitCommandTests(unittest.TestCase):
                 .read_text(encoding="utf-8")
                 .startswith("user notes\n")
             )
+
+    def test_init_manifest_stamp_io_failure_emits_envelope_and_cleanup_hint(self):
+        # The manifest read/stamp/write stage runs after copytree, so .harness is
+        # fully on disk. An OSError there must render as INIT_IO_ERROR (exit 2)
+        # with an INIT_CLEANUP_HINT notice, not a bare INTERNAL_ERROR.
+        with temp_project() as project:
+            real_write_text = Path.write_text
+
+            def fail_manifest_write(self, *args, **kwargs):
+                if self.name == "manifest.json":
+                    raise OSError("simulated manifest write failure")
+                return real_write_text(self, *args, **kwargs)
+
+            buffer = io.StringIO()
+            with mock.patch.object(Path, "write_text", fail_manifest_write):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_init(project, None, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertEqual("init", payload["command"])
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertIn(
+                "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
+            )
+            self.assertEqual([], payload["projected_files"])
+            # The copied tree is left in place for the user to inspect/remove.
+            self.assertTrue((project / ".harness").is_dir())
 
     @unittest.skipIf(sys.platform == "win32", "POSIX surrogateescape argv only")
     def test_non_utf8_argv_rejected_before_json_envelope(self):
