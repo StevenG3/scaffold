@@ -611,3 +611,200 @@ $ git diff --check 8d0c8ac...87cea4f
 新 HEAD 需重新执行双路审阅、本文三轮全部探针、全量测试、v0 字节兼容、只读
 指纹、Python 3.9 grammar、`git diff --check` 与精确 HEAD CI。本记录不批准
 任何后续提交。
+
+## 第四轮复审（2026-07-24，`bbec6c9`）
+
+- 复审 HEAD：`bbec6c928530f9c426ccf858a357bc6a8f798ecc`
+- 上轮 HEAD：`87cea4f9f9e794649035eb25337af9c646869971`
+- 新增提交：`18b13f1`、`ce3459f`、`9bbb83b`、`b3e5b3c`、`9e7b3c5`、`bbec6c9`
+- 审阅方式：Standards / Spec 双路独立审阅、第三轮全部探针、manifest
+  stamp 故障、全部历史探针和相邻阶段故障注入
+- 结论：**Request changes，仍不得合入**
+
+第三轮五个 finding 及本轮披露的 manifest stamp 故障均已按要求关闭，118 项
+测试和全部既有门禁通过。但“全阶段 I/O envelope”仍未闭环：源 Manifest
+校验后的再次读取、init 最终校验、adapt 校验后的 Manifest 重读都可裸抛
+`OSError`。此外，init 的 exit 1 部分成功仍把 `projected_files` 谎报为空。
+本结论只绑定上述精确 HEAD。
+
+### 第四轮六维评分
+
+| 维度 | 分数 | 依据 |
+| --- | ---: | --- |
+| A. 需求符合度 | 2/4 | 指定修复成立，但 init 全生命周期 I/O 和所有失败类型的真实进度仍未覆盖。 |
+| B. 事实准确性 | 2/4 | exit 1 前已写入两个投影时，JSON 仍报告 `projected_files: []`。 |
+| C. 通用性 | 3/4 | POSIX argv、节点安全和失败原子写已通用化；阶段边界仍依赖局部 try/except。 |
+| D. 可维护性 | 3/4 | 进度随 `ProjectionIOError` 传递清晰，但 init/adapt 的读取和验证错误处理分散。 |
+| E. 验证充分性 | 2/4 | 118 项全绿，却遗漏三个相邻 I/O 缝隙、exit 1 部分进度和 pre-close FD 生命周期。 |
+| F. 可追溯性 | 3/4 | 两次设计修订与四次修复对应清晰；精确 feature HEAD 未在远端，无绑定 CI。 |
+
+总分：**15/24**。A、B、E 为 2 分，且存在 Important findings，不能合入。
+
+### 第三轮 findings 与新增披露项关闭情况
+
+| 探针 | 独立结果 | 状态 |
+| --- | --- | --- |
+| close-after-real-close 故障 | `PROJECTION_IO_ERROR`；原目标不变；临时文件清理 | 已关闭 |
+| init copytree 故障 | exit 2 / `INIT_IO_ERROR`；JSON envelope + `INIT_CLEANUP_HINT` | 已关闭 |
+| 第二个投影 I/O 失败 | `written: ["CLAUDE.md"]` 与磁盘实际一致 | 已关闭 |
+| argv 字节 `0xff` | exit 2；stdout 空；stderr 为合法 UTF-8 单行且无原始 `0xff` | 已关闭 |
+| parser 换行注入 | `\n` 转义为 `\u000a`；单一物理行 | 已关闭 |
+| manifest stamp 写入故障 | exit 2 / `INIT_IO_ERROR` + `INIT_CLEANUP_HINT`，非 `INTERNAL_ERROR` | 已关闭 |
+
+短写、零进展写、写中异常、替换异常、不可读普通文件 JSON、dangling
+`.harness`、adapter 控制字符、目标/父目录 symlink、目录/FIFO、END 后空行、
+CRLF 和 Cursor 破损 marker 全部回归通过。所有失败原子写探针中，原目标均
+逐字节不变且本次临时文件被清理；短写成功产物等于完整期望字节。
+
+### 设计修订核对
+
+- §7.1 已增加 parser 控制字符转义、非法 UTF-8 argv 的稳定拒绝，以及错误
+  envelope 必须如实报告 `written` / `projected_files` 三条规则。
+- §7.2 已明确 copytree 与 origin Manifest 读取/写回的 I/O 错误使用
+  `INIT_IO_ERROR` / exit 2，并在目标已创建时附 `INIT_CLEANUP_HINT`。
+- §8.3 已把文件描述符关闭失败纳入 `PROJECTION_IO_ERROR` 和失败原子边界。
+
+但“§7.2 `INIT_IO_ERROR` 全阶段覆盖”并未真正写成完整契约：当前文字只点名
+copytree 与 origin stamp，没有覆盖源 Manifest 校验后的再次读取、最终
+`validate_harness(destination)`，也未明确 adapt 后 exit 1 的部分投影进度。
+§7.1 的一般规则足以判定当前实现不合规，但 §7.2 仍应把这些 init 阶段及
+cleanup/progress 字段明确列出，避免下一轮继续出现局部补丁。
+
+### Standards findings
+
+#### [Important] close-before-consume 故障仍可泄漏描述符
+
+位置：`template/.harness/bin/harness.py:420-447`
+
+实现先把 `descriptor = None`，再调用 `os.close(close_fd)`。若 close 在真正
+消费描述符前抛错，`finally` 无法再次处理该 fd。独立注入结果：
+
+```text
+PRECLOSE_FAULT exc=ProjectionIOError code=PROJECTION_IO_ERROR
+target_intact=True temp=False fd_open=True
+```
+
+错误码、目标字节与临时文件均正确，但描述符仍开放，与 §8.3“尽力关闭描述符”
+不一致。需明确跨平台 close 失败的所有权语义并实现安全的 best-effort 收口，
+避免盲目重试关闭已被消费或复用的 fd；补“抛错发生在实际 close 之前”的测试，
+而不只覆盖当前的 close-then-raise 夹具。
+
+非阻塞维护性观察：`_escape_argv_field` 直接读取 `validate` 的下划线私有常量与
+helper，形成轻微 Feature Envy / 紧耦合。当前两个模块随同一单文件分发包发布，
+本轮不单独阻塞；后续可把公共转义边界公开化以降低漂移。
+
+### Spec findings
+
+#### [Important] init 仍有两个裸 I/O 缝隙
+
+位置：`template/.harness/bin/harness.py:657,793`
+
+独立注入：
+
+```text
+SOURCE_MANIFEST_REREAD rc=None exc=OSError stdout='' stderr='' dest=False
+FINAL_VALIDATE_IO rc=None exc=OSError stdout='' stderr=''
+dest=True projections=['CLAUDE.md', 'AGENTS.md', '.cursor/rules/harness.mdc']
+```
+
+第一处是源校验成功后再次 `read_text/json.loads`；第二处是复制、stamp 和投影
+完成后的最终 `validate_harness`。两者均逃出 `cmd_init`，脚本入口会降级成
+Text-only `INTERNAL_ERROR`，即使请求 JSON。最终校验故障时目标与三个投影已
+落盘，却没有 `INIT_CLEANUP_HINT` 或真实 `projected_files`。这违反 §7.1 的
+post-parse envelope，以及 §7.2“任何步骤失败即停止、明确清理方式”。
+
+整改要求：把源二次读取和最终校验纳入 init 命令错误边界；运行时 I/O 使用
+稳定 `INIT_IO_ERROR` / exit 2，按格式渲染；目标已创建时附 cleanup hint，
+并在最终阶段报告已提交投影。补两条故障注入测试。
+
+#### [Important] adapt 校验后的 Manifest 重读仍绕过 envelope
+
+位置：`template/.harness/bin/harness.py:534-554`
+
+`validate_harness(root)` 成功后，line 554 再次读取 Manifest，未纳入
+`ProjectionIOError` 或命令级异常边界。独立令该次读取抛 `OSError`：
+
+```text
+ADAPT_MANIFEST_REREAD rc=None exc=OSError stdout='' stderr=''
+```
+
+脚本入口同样会输出裸 `INTERNAL_ERROR`，违反 §7.1“参数解析成功后的命令级
+错误遵守 `--format`”。应避免重复读取或捕获读取/解析竞态，以
+`PROJECTION_IO_ERROR`（或设计明确的稳定 code）返回完整 adapt envelope。
+
+#### [Important] init 的 exit 1 部分成功仍少报进度
+
+位置：`template/.harness/bin/harness.py:612-620,788-800`
+
+在目标项目预置 `AGENTS.md` 目录，init 会先成功写入 `CLAUDE.md`，遇到
+`AGENTS.md` 节点错误后继续成功写入 Cursor 投影。独立结果：
+
+```text
+INIT_EXIT1_PROGRESS rc=1
+codes=['PROJECTION_TARGET_INVALID']
+reported=[]
+actual_files=['CLAUDE.md', '.cursor/rules/harness.mdc']
+cleanup=['INIT_CLEANUP_HINT']
+```
+
+§7.1 的新规没有限定 exit 2；任何错误 envelope 都必须报告截至失败点已实际
+提交的投影。`_init_failure` 固定 `projected_files: []`，导致 exit 1 和最终
+校验失败路径继续谎报。应允许 `_init_failure` 接收真实进度，并在
+`run_adapt` 返回 errors 及 final validation failure 时传入 `written` /
+`unchanged` 的适当集合；补部分写入后契约错误的回归测试。
+
+### 第四轮验证证据
+
+```text
+$ python3 template/.harness/bin/validate.py
+Harness contract is valid.
+exit 0
+
+$ python3 template/.harness/bin/harness.py validate
+Harness contract is valid.
+exit 0（与独立命令逐字节一致）
+
+$ python3 template/.harness/bin/harness.py adapt --check --root template/.harness
+[ADAPT_SKIPPED_TEMPLATE] .: origin is null; template bundles do not generate projections
+adapt: ok
+exit 0
+
+$ python3 -m unittest discover -s tests -v
+Ran 118 tests in 11.557s
+OK
+
+$ git diff --check
+无输出，exit 0
+
+$ git diff --check 08359a7...bbec6c9
+无输出，exit 0
+```
+
+其他门禁：
+
+- v0 schema v1：旧 validator、当前 validator、当前 CLI 在 Text/JSON 下均
+  exit 0，stdout/stderr 逐字节一致。
+- 三条只读命令执行前后 bundle 指纹均为
+  `e47aca5d8ad876f9315a83fb422fbd569c6bd99f4bab93d7184f95ae89e59af2`。
+- Python 3.9 grammar：`harness.py`、`validate.py` 均通过。
+- E2E init / adapt check：均 exit 0，CRLF 用户前缀逐字节保留，三个投影存在。
+- 禁用 token、日期、网络访问与第三方依赖扫描无发现。
+- `tests/test_validate.py` 相对 v0 仍恰好只有获批的三处样例事实修正。
+- 全部验证后 `git status --short` 为空，HEAD 仍为
+  `bbec6c928530f9c426ccf858a357bc6a8f798ecc`。
+- 远端只有 `main@08359a7`，没有 `feature/harness-v1` 或开放 PR；不存在与
+  `bbec6c9` 精确绑定的 CI。
+
+### 第四轮合入建议
+
+**不得合入 `bbec6c928530f9c426ccf858a357bc6a8f798ecc`。**
+
+下一轮至少应：
+
+1. 设计并实现 init 源 Manifest 二次读取与最终校验的 `INIT_IO_ERROR`
+   envelope、cleanup hint 和真实进度；
+2. 收口 adapt 校验后 Manifest 重读的运行时 I/O envelope；
+3. 让 init 的 exit 1 / 最终校验失败如实报告已提交投影；
+4. 明确并测试 close-before-consume 时的安全描述符所有权。
+
+新 HEAD 必须重跑四轮全部探针、全量测试和既有门禁。本记录不批准后续提交。
