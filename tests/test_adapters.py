@@ -114,5 +114,115 @@ class RenderTests(unittest.TestCase):
         )
 
 
+class AdaptCommandTests(unittest.TestCase):
+    def test_creates_all_three_projections(self):
+        with instantiated_project() as (project, root):
+            result = run_instance_cli(root, "adapt")
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            for name in ("CLAUDE.md", "AGENTS.md", ".cursor/rules/harness.mdc"):
+                self.assertTrue((project / name).is_file(), name)
+            self.assertIn("adapt: ok", result.stdout)
+
+    def test_preserves_existing_user_content(self):
+        with instantiated_project() as (project, root):
+            (project / "CLAUDE.md").write_text("my own notes\n", encoding="utf-8")
+            run_instance_cli(root, "adapt")
+            text = (project / "CLAUDE.md").read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("my own notes\n"))
+            self.assertIn(harness.MARKER_BEGIN, text)
+
+    def test_adapt_is_idempotent(self):
+        with instantiated_project() as (project, root):
+            run_instance_cli(root, "adapt")
+            snapshot = {
+                name: (project / name).read_bytes()
+                for name in ("CLAUDE.md", "AGENTS.md", ".cursor/rules/harness.mdc")
+            }
+            second = run_instance_cli(root, "adapt", "--format", "json")
+            payload = json.loads(second.stdout)
+            self.assertEqual([], payload["written"])
+            self.assertEqual(3, len(payload["unchanged"]))
+            for name, content in snapshot.items():
+                self.assertEqual(content, (project / name).read_bytes(), name)
+
+    def test_broken_markers_fail(self):
+        with instantiated_project() as (project, root):
+            (project / "CLAUDE.md").write_text(
+                harness.MARKER_BEGIN + "\nno end\n", encoding="utf-8"
+            )
+            result = run_instance_cli(root, "adapt")
+            self.assertEqual(1, result.returncode)
+            self.assertIn("[PROJECTION_MARKER_BROKEN] CLAUDE.md", result.stdout)
+
+    def test_check_reports_missing_and_stale(self):
+        with instantiated_project() as (project, root):
+            result = run_instance_cli(root, "adapt", "--check", "--format", "json")
+            self.assertEqual(1, result.returncode)
+            payload = json.loads(result.stdout)
+            self.assertEqual(3, len(payload["stale"]))
+            self.assertIn("PROJECTION_MISSING", [e["code"] for e in payload["errors"]])
+
+            run_instance_cli(root, "adapt")
+            ok = run_instance_cli(root, "adapt", "--check")
+            self.assertEqual(0, ok.returncode, ok.stdout)
+
+            claude = project / "CLAUDE.md"
+            claude.write_text(
+                claude.read_text(encoding="utf-8").replace("Workflow", "Werkflow"),
+                encoding="utf-8",
+            )
+            stale = run_instance_cli(root, "adapt", "--check", "--format", "json")
+            self.assertEqual(1, stale.returncode)
+            self.assertIn(
+                "PROJECTION_STALE",
+                [e["code"] for e in json.loads(stale.stdout)["errors"]],
+            )
+
+    def test_check_never_writes(self):
+        with instantiated_project() as (project, root):
+            run_instance_cli(root, "adapt", "--check")
+            for name in ("CLAUDE.md", "AGENTS.md", ".cursor/rules/harness.mdc"):
+                self.assertFalse((project / name).exists(), name)
+
+    def test_template_origin_null_skips_projection(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SOURCE_HARNESS / "bin" / "harness.py"),
+                "adapt",
+                "--check",
+                "--root",
+                str(SOURCE_HARNESS),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("[ADAPT_SKIPPED_TEMPLATE]", result.stdout)
+
+    def test_external_adapter_is_notice_not_error(self):
+        with instantiated_project() as (project, root):
+            manifest = read_manifest(root)
+            manifest["adapters"] = ["claude-code", "x-corp"]
+            write_manifest(root, manifest)
+            result = run_instance_cli(root, "adapt")
+            self.assertEqual(0, result.returncode, result.stdout)
+            self.assertIn("[ADAPTER_EXTERNAL] x-corp", result.stdout)
+
+    def test_output_is_deterministic(self):
+        outputs = []
+        for _ in range(2):
+            with instantiated_project() as (project, root):
+                run_instance_cli(root, "adapt")
+                outputs.append(
+                    tuple(
+                        (project / name).read_bytes()
+                        for name in ("CLAUDE.md", "AGENTS.md", ".cursor/rules/harness.mdc")
+                    )
+                )
+        self.assertEqual(outputs[0], outputs[1])
+
+
 if __name__ == "__main__":
     unittest.main()
