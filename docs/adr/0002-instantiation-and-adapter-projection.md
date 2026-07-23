@@ -1,7 +1,7 @@
 # ADR-0002：实例化与适配投影
 
-- 状态：Proposed
-- 日期：2026-07-23
+- 状态：Accepted
+- 日期：2026-07-23（接受日期同日；实现审阅后修订受管块为字节级语义并补充投影节点安全规则，见关联设计 §8.1 / §8.3）
 - 关联设计：[Harness v1 设计规格](../design/harness-v1.md)
 - 前置决策：[ADR-0001：可移植 Harness 契约](0001-portable-harness-contract.md)
 
