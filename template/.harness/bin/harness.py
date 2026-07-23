@@ -695,23 +695,42 @@ def cmd_init(target, adapters_raw, fmt):
             target=str(destination),
         )
 
-    shutil.copytree(
-        source,
-        destination,
-        ignore=shutil.ignore_patterns(
-            "__pycache__",
-            "*.pyc",
-            ".pytest_cache",
-            ".mypy_cache",
-            ".ruff_cache",
-            ".DS_Store",
-        ),
-    )
     cleanup_hint = validate.ContractError(
         "INIT_CLEANUP_HINT",
         str(destination),
         "initialization failed after copying; remove this directory to retry",
     )
+    try:
+        shutil.copytree(
+            source,
+            destination,
+            ignore=shutil.ignore_patterns(
+                "__pycache__",
+                "*.pyc",
+                ".pytest_cache",
+                ".mypy_cache",
+                ".ruff_cache",
+                ".DS_Store",
+            ),
+        )
+    except (shutil.Error, OSError) as error:
+        # Copy-stage I/O fault (bad source node, target disk failure): a
+        # command-level error per §7.2 step 3. Render through the envelope with
+        # exit 2; when a partial .harness was created, attach the cleanup hint.
+        copy_notices = [cleanup_hint] if os.path.lexists(destination) else []
+        return emit_command_error(
+            fmt,
+            "init",
+            [
+                validate.ContractError(
+                    "INIT_IO_ERROR",
+                    str(destination),
+                    f"failed to copy template into project: {error}",
+                )
+            ],
+            {"target": str(destination), "projected_files": []},
+            notices=copy_notices,
+        )
 
     manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
     manifest["origin"] = {

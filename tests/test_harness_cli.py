@@ -247,6 +247,40 @@ class InitCommandTests(unittest.TestCase):
             self.assertEqual(1, result.stderr.count("\n"))
             self.assertFalse((project / ".harness").exists())
 
+    def test_init_copy_io_failure_emits_envelope_and_cleanup_hint(self):
+        # H2: a dangling symlink inside the init SOURCE bundle makes copytree
+        # raise shutil.Error. That copy-stage fault must render as an
+        # INIT_IO_ERROR envelope (exit 2) with an INIT_CLEANUP_HINT notice when
+        # the destination was partially created; stderr stays empty for json.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "template" / ".harness"
+            shutil.copytree(SOURCE_HARNESS, source)
+            os.symlink(source / "does-not-exist", source / "dangling-link")
+            project = Path(temp_dir) / "project"
+            project.mkdir()
+            result = run_cli(
+                source / "bin" / "harness.py",
+                "init",
+                "--target",
+                str(project),
+                "--format",
+                "json",
+            )
+            self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+            self.assertEqual("", result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["ok"])
+            self.assertEqual("init", payload["command"])
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            destination = project / ".harness"
+            if destination.exists():
+                self.assertIn(
+                    "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
+                )
+            self.assertEqual([], payload["projected_files"])
+
     def test_init_writes_only_declared_paths(self):
         with temp_project() as project:
             (project / "src").mkdir()
