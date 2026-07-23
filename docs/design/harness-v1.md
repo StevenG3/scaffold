@@ -169,7 +169,7 @@ python3 <scaffold>/template/.harness/bin/harness.py init --target <project-dir> 
 
 1. 源目录 = `harness.py` 所在 `bin/` 的父目录（即所在 `.harness/`）。先对源目录运行完整校验，失败则退出 `1`（不复制损坏模板）。
 2. `--target` 必须是已存在的目录；`<target>/.harness` 这一目录项**只要存在即拒绝**（以 `lstat`/`lexists` 判定：普通文件、目录、符号链接——包括悬空符号链接——一律计为已存在），报 `INIT_TARGET_EXISTS`、退出 `1`，且不得进入复制流程（v1 无升级能力，绝不覆盖）。不提供 `--force`。
-3. 完整复制 `.harness/` 到 `<target>/.harness/`（含 `bin/` 自身，使目标项目可独立运行后续命令）。复制排除的缓存产物为确定清单：`__pycache__`、`*.pyc`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`、`.DS_Store`。复制阶段的 I/O 失败（`shutil.Error` / `OSError`，如源内坏节点、目标磁盘故障）是命令级错误：报 `INIT_IO_ERROR`、退出 `2`、按 §7.1 规则渲染（json 下输出完整 init envelope）；若目标 `.harness/` 已被部分创建，必须附带 `INIT_CLEANUP_HINT` notice 指明清理路径。
+3. 完整复制 `.harness/` 到 `<target>/.harness/`（含 `bin/` 自身，使目标项目可独立运行后续命令）。复制排除的缓存产物为确定清单：`__pycache__`、`*.pyc`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`、`.DS_Store`。复制阶段与其后 `origin` 写入阶段（步骤 4 的 manifest 读取/写回）的 I/O 失败（`shutil.Error` / `OSError`，如源内坏节点、目标磁盘故障）是命令级错误：报 `INIT_IO_ERROR`、退出 `2`、按 §7.1 规则渲染（json 下输出完整 init envelope）；若目标 `.harness/` 已被（部分）创建，必须附带 `INIT_CLEANUP_HINT` notice 指明清理路径。
 4. 在目标副本的 `manifest.json` 中写入 `origin` 对象（来源名称与 `template_version`）；若给出 `--adapters` 则覆盖 `adapters` 数组（成员校验同 6.3）。这是 `init` 唯一允许修改的被复制文件。
 5. 对目标副本执行 `adapt`（见 7.3）。
 6. 对目标副本执行校验；成功后输出下一步指引（运行 bootstrap Skill 的提示）。任何步骤失败即停止并报告，已复制内容保留供用户检查，同时明确提示清理方式。
