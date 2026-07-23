@@ -397,3 +397,217 @@ $ git diff --check e2c2e23...77602e6
 Minor 也应在同一轮关闭。新 HEAD 必须重新执行 Standards / Spec 双路审阅、
 本记录全部旧探针及新增短写/异常写/dangling symlink/错误格式探针、全量测试、
 v0 兼容、只读指纹、diff check 与精确 HEAD CI。本记录不批准任何后续提交。
+
+## 第三轮复审（2026-07-24，`87cea4f`）
+
+- 复审 HEAD：`87cea4f9f9e794649035eb25337af9c646869971`
+- 上轮 HEAD：`77602e6cd97242e283006a62d49807863cf00390`
+- 新增提交：`fca4cbb`（设计修订）、`2f8db11`、`315474a`、`87cea4f`
+- 审阅方式：Standards / Spec 双路独立审阅、第二轮全部故障注入、第一轮旧探针、全量门禁、v0 字节兼容与只读指纹
+- 结论：**Request changes，仍不得合入**
+
+第二轮要求的主要修复成立；短写、零进展写、写中异常、替换异常、不可读文件
+JSON、dangling `.harness` 和 adapter 控制字符探针均已 fail closed，且原文件
+逐字节不变。但独立扩展故障注入发现关闭失败仍绕过错误信封并遗留临时文件；
+初始化复制阶段 I/O 也绕过 JSON envelope 与 cleanup hint；部分成功后的
+`written` 谎报为空；POSIX 非 UTF-8 argv 可产生非法 JSON。以上均阻塞合入。
+本结论只绑定上述精确 HEAD。
+
+### 第三轮六维评分
+
+| 维度 | 分数 | 依据 |
+| --- | ---: | --- |
+| A. 需求符合度 | 2/4 | 指定边界已关闭，但 close fault 和 init 复制失败仍违反失败原子性及命令错误契约。 |
+| B. 事实准确性 | 2/4 | 已写入投影时仍报告 `written: []`；非 UTF-8 argv 可产生无效 JSON 字节流。 |
+| C. 通用性 | 3/4 | 临时写、`lexists`、节点安全和转义方向通用；剩余问题集中在底层 I/O 与 POSIX argv。 |
+| D. 可维护性 | 3/4 | 安全写已集中；关闭、复制和 parser error 仍绕过统一错误边界。 |
+| E. 验证充分性 | 2/4 | 112 项全绿，但未覆盖 close fault、复制 I/O、部分进度和非法 argv 字节。 |
+| F. 可追溯性 | 3/4 | 设计与实现提交对应清晰；精确 feature HEAD 未推送远端，无绑定 CI。 |
+
+总分：**15/24**。A、B、E 为 2 分，且存在 Important findings，不能合入。
+
+### 第二轮 findings 与旧探针回归
+
+| finding / 探针 | 独立复现结果 | 状态 |
+| --- | --- | --- |
+| 短写 | 循环完成全部字节；目标等于期望产物，无临时文件 | 已关闭 |
+| 零进展写 | `PROJECTION_IO_ERROR`；原文件逐字节不变，无临时文件 | 已关闭 |
+| 写中异常 | `PROJECTION_IO_ERROR`；原文件逐字节不变，无临时文件 | 已关闭 |
+| 替换异常 | `PROJECTION_IO_ERROR`；原文件逐字节不变，无临时文件 | 已关闭 |
+| 不可读普通文件 / JSON | exit 2；stderr 空；stdout 为 adapt JSON envelope，原文件不变 | 已关闭 |
+| dangling `.harness` | exit 1 / `INIT_TARGET_EXISTS`；链接保持不变 | 已关闭 |
+| adapter 控制字符 / Text | CR、LF、TAB、NEL、U+2028、U+2029 均转义；一个物理行 | 已关闭 |
+| 目标 / 父目录 symlink | exit 1 / `PROJECTION_PATH_UNSAFE`；边界外无变化 | 回归通过 |
+| 目录 / FIFO 目标 | exit 1 / `PROJECTION_TARGET_INVALID`；FIFO 不阻塞 | 回归通过 |
+| END 后空行 / CRLF | 块外前后缀逐字节一致 | 回归通过 |
+| Cursor 破损 marker | exit 1 / `PROJECTION_MARKER_BROKEN`；文件不变 | 回归通过 |
+
+### 设计修订核对
+
+第二轮要求已写入设计：
+
+- §8.3 明确同目录临时文件、短写循环、零进展失败、`fsync`、重新核验后替换，
+  且任一失败须保持原目标不变、清理临时文件、不计入 `written`。
+- §7.1 明确运行时投影 I/O 使用 `PROJECTION_IO_ERROR` / exit 2，Text
+  控制字符转义，JSON 继续使用命令 envelope。
+- §7.2 使用 `lexists` 语义判断 `.harness` 的任意目录项，包括 dangling
+  symlink。
+
+新增设计缺口：`init` 在复制 bundle 阶段发生 I/O 失败时，§7.1 / §7.2
+没有定义稳定错误码、JSON envelope 与部分目标 cleanup hint。该阶段同样发生
+在参数解析后，且可能已创建部分 `.harness`；设计应补充例如
+`INIT_IO_ERROR` 的契约，再由实现与测试对齐。
+
+### Standards findings
+
+#### [Important] 临时文件关闭失败绕过错误信封并遗留节点
+
+位置：`template/.harness/bin/harness.py:403-413`
+
+写入和 `fsync` 被异常处理包围，`os.close(descriptor)` 却在处理边界之外。
+让真实 close 完成后再抛 `OSError` 的独立故障注入结果：
+
+```text
+CLOSE_ERROR exception=OSError
+error_code=None
+target_unchanged=True
+temp_exists=True
+```
+
+错误未转成 `PROJECTION_IO_ERROR`，且 `.harness-tmp` 未清理，违反 §7.1
+和 §8.3。应把 close 纳入统一异常与 cleanup 边界；所有打开后的失败都应尽力
+关闭描述符、清理本次临时文件并抛 `ProjectionIOError`。补 close fault 测试，
+断言稳定 envelope、原目标不变、临时文件不存在。
+
+#### [Important] POSIX 非 UTF-8 argv 可生成非法 JSON
+
+位置：`template/.harness/bin/harness.py:126-136`
+
+以包含字节 `0xff` 的 argv 调用 JSON 模式，Python 的 surrogateescape 与当前
+`ensure_ascii=False` 组合会把原始 `0xff` 写入 stdout：
+
+```text
+rc=2
+stderr=b''
+stdout_utf8_valid=False
+```
+
+这违反 §7.1 的机器可读输出契约。应在渲染前稳定拒绝或安全规范化
+surrogateescape，保证 stdout 始终是 UTF-8 且可被标准 JSON 解析器解析；
+补 bytes argv 子进程测试。
+
+### Spec findings
+
+#### [Important] init 复制 I/O 绕过 envelope 与清理提示
+
+位置：`template/.harness/bin/harness.py:657-673`
+
+`shutil.copytree` 在命令级异常处理和 `cleanup_hint` 建立之前执行。向源 bundle
+加入 dangling symlink 后：
+
+```text
+COPY_FAILURE rc=2
+stdout=b''
+stderr='[INTERNAL_ERROR] ...'
+destination_exists=True
+copied_entries=23
+```
+
+JSON 模式无 envelope，目标已部分创建却无 cleanup hint。应先补设计契约，再
+捕获 `shutil.Error` / `OSError`，以稳定 init 错误码和所选格式返回；目标存在
+时给出准确清理提示。补复制中断/坏源节点测试。
+
+#### [Important] 部分投影已提交时 `written` 谎报为空
+
+位置：`template/.harness/bin/harness.py:493,534-542,687-700`
+
+令 `CLAUDE.md` 成功替换、随后 `AGENTS.md` 替换失败：
+
+```text
+rc=2
+errors=['PROJECTION_IO_ERROR']
+payload_written=[]
+CLAUDE.md exists=True
+AGENTS.md exists=False
+```
+
+`adapt` / `init` 不是跨文件事务，错误 envelope 必须报告已提交文件。实现方
+将其列为 Minor，但空列表是错误的外部事实，会误导恢复与自动化，独立裁定为
+**Important**。应在异常中携带截至失败点的提交列表，或以等价结构将真实进度
+传给 renderer，并补第二个投影失败测试。
+
+#### [Minor] 参数解析 Text 路径仍可被控制字符拆行
+
+位置：`template/.harness/bin/harness.py:728-733`
+
+adapter 校验错误已转义，但 argparse 顶层错误仍直接插入 `str(error)`。未知
+参数 `"--bad\nname"` 会产生两个物理行。§7.1 允许解析失败使用 Text stderr，
+但固定单行错误格式仍不应允许输入注入新行。应复用同一转义函数并补
+parser-level 测试。
+
+### 三个披露 Minor 的独立裁定
+
+| 实现方披露 | 独立裁定 | 理由 |
+| --- | --- | --- |
+| 预存 `.harness-tmp` 时 fail closed、无自愈 | **接受，不构成 finding** | `O_EXCL` 稳定拒绝，原目标和预存节点不变；无法证明节点归工具所有，自动删除反而可能破坏数据。 |
+| I/O 失败时 `written` 少报 | **推翻 Minor，升级 Important** | 首个文件可能已提交且不会回滚；空列表是错误事实，会误导恢复和自动化。 |
+| 转义覆盖依赖共享函数 | **接受，不构成 finding** | 复用集中转义函数合理，现有测试覆盖 C0、DEL、NEL、U+2028、U+2029；argparse 未调用它是另一条 Minor。 |
+
+### 第三轮验证证据
+
+```text
+$ python3 template/.harness/bin/validate.py
+Harness contract is valid.
+exit 0
+
+$ python3 template/.harness/bin/harness.py validate
+Harness contract is valid.
+exit 0（与 validate.py stdout/stderr 逐字节一致）
+
+$ python3 template/.harness/bin/harness.py adapt --check --root template/.harness
+[ADAPT_SKIPPED_TEMPLATE] .: origin is null; template bundles do not generate projections
+adapt: ok
+exit 0
+
+$ python3 -m unittest discover -s tests -v
+Ran 112 tests in 28.173s
+OK
+
+$ git diff --check
+无输出，exit 0
+
+$ git diff --check 8d0c8ac...87cea4f
+无输出，exit 0
+```
+
+其他证据：
+
+- v0 schema v1 bundle：旧 validator、当前 `validate.py`、当前
+  `harness.py validate` 在 Text / JSON 下均 exit 0，stdout/stderr
+  分别逐字节一致。
+- 三条只读命令前后文件树指纹均为
+  `472f46c19f6ef229426352fb52120669766620528fb50913802e61a7cfb0e50e`。
+- Python 3.9 grammar：两个 CLI 文件均通过。
+- E2E init / adapt check：init exit 0、check exit 0，CRLF 用户前缀逐字节保留，
+  三个声明投影均存在。
+- bundle 禁用 token、日期、网络、第三方依赖和 §4 非目标扫描无发现。
+- `tests/test_validate.py` 仍严格只有获批的三处样例事实修正。
+- 执行全部探针后 feature worktree `git status --short` 为空。
+- 远端只有 `main@8d0c8ac`，没有 `feature/harness-v1`；不存在与
+  `87cea4f` 精确绑定的远端 CI。
+
+### 第三轮合入建议
+
+**不得合入 `87cea4f9f9e794649035eb25337af9c646869971`。**
+
+开发侧至少需要：
+
+1. 修复 close fault 的统一 envelope 与临时文件清理并补故障测试；
+2. 补齐 init copy I/O 的设计契约、envelope、cleanup hint 与测试；
+3. 部分成功后如实报告 `written` / `projected_files`；
+4. 保证所有 JSON 输出为合法 UTF-8，并补非 UTF-8 argv 测试；
+5. 修复 parser-level Text 控制字符拆行。
+
+新 HEAD 需重新执行双路审阅、本文三轮全部探针、全量测试、v0 字节兼容、只读
+指纹、Python 3.9 grammar、`git diff --check` 与精确 HEAD CI。本记录不批准
+任何后续提交。
