@@ -30,7 +30,7 @@ Run once after `harness.py init` installs this Harness into a project, or whenev
 >
 > - A. `pytest` only - fastest gate, but style drift goes uncaught. (recommended: CI already enforces it)
 > - B. `pytest` plus `lint` - stricter, slower on large changes.
-> - C. Other - tell me the exact commands.
+> - C. Other - tell me the exact commands. (requires you to specify and maintain them manually)
 
 ### Example - violations
 
@@ -54,4 +54,4 @@ Run once after `harness.py init` installs this Harness into a project, or whenev
 
 ## Verification
 
-Run `python3 bin/harness.py validate` and `python3 bin/harness.py adapt --check`; store the exact output in the Change Record summary.
+Run `python3 .harness/bin/harness.py validate` and `python3 .harness/bin/harness.py adapt --check` from the project root; store the exact output in the Change Record summary.

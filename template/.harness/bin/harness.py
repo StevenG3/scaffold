@@ -564,7 +564,16 @@ def cmd_init(target, adapters_raw, fmt):
         )
 
     shutil.copytree(
-        source, destination, ignore=shutil.ignore_patterns("__pycache__", "*.pyc")
+        source,
+        destination,
+        ignore=shutil.ignore_patterns(
+            "__pycache__",
+            "*.pyc",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+            ".DS_Store",
+        ),
     )
     cleanup_hint = validate.ContractError(
         "INIT_CLEANUP_HINT",

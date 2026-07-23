@@ -355,5 +355,43 @@ class CursorMarkerIntegrityTests(unittest.TestCase):
                     )
 
 
+class AdaptErrorPathTests(unittest.TestCase):
+    def test_adapt_with_invalid_manifest_exits_1_with_json_errors(self):
+        with instantiated_project() as (project, root):
+            (root / "manifest.json").write_text("{ not valid json", encoding="utf-8")
+            result = run_instance_cli(root, "adapt", "--format", "json")
+            self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["ok"])
+            self.assertEqual("adapt", payload["command"])
+            self.assertTrue(payload["errors"])
+
+    def test_adapt_root_missing_dir_exits_2_with_json_envelope(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing = Path(temp_dir) / "does-not-exist"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SOURCE_HARNESS / "bin" / "harness.py"),
+                    "adapt",
+                    "--root",
+                    str(missing),
+                    "--format",
+                    "json",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+            self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["ok"])
+            self.assertEqual("adapt", payload["command"])
+            self.assertEqual(
+                ["ROOT_UNREADABLE"], [e["code"] for e in payload["errors"]]
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

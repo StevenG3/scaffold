@@ -198,6 +198,23 @@ class InitCommandTests(unittest.TestCase):
             self.assertEqual([], payload["projected_files"])
             self.assertFalse((project / ".harness").exists())
 
+    def test_init_excludes_hidden_caches_from_copy(self):
+        # Plant a cache in a COPY of the template so the repo template is not
+        # polluted, then init from that copy.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "template" / ".harness"
+            shutil.copytree(SOURCE_HARNESS, source)
+            (source / ".pytest_cache").mkdir()
+            (source / ".pytest_cache" / "marker").write_text("x\n", encoding="utf-8")
+            project = Path(temp_dir) / "project"
+            project.mkdir()
+            result = run_cli(
+                source / "bin" / "harness.py", "init", "--target", str(project)
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertFalse((project / ".harness" / ".pytest_cache").exists())
+            self.assertFalse(list((project / ".harness").rglob(".pytest_cache")))
+
     def test_init_writes_only_declared_paths(self):
         with temp_project() as project:
             (project / "src").mkdir()
