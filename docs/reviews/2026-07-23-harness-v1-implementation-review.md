@@ -201,3 +201,199 @@ $ git diff --check a06c057...370fbb8
 4. 与新精确 HEAD 绑定的远端 CI。
 
 本记录不构成对任何后续提交的批准。
+
+## 第二轮复审（2026-07-24，`77602e6`）
+
+- 复审 HEAD：`77602e6cd97242e283006a62d49807863cf00390`
+- 相对上轮 HEAD：4 个实现方提交
+  - `f2902fe`：修订设计与 ADR
+  - `5c8d81b`：字节级受管块与投影节点安全
+  - `39f9e60`：命令级 JSON error envelope
+  - `77602e6`：缓存排除与 bootstrap 指引
+- 审阅方式：重新执行 Standards / Spec 双路独立审阅、上轮全部探针、全量门禁及新增故障注入
+- 结论：**Request changes，仍不得合入**
+
+上轮全部 Critical / Important 行为缺陷均已关闭，但写入实现仍可能破坏用户文件并错误报告成功；另发现初始化 dangling symlink 与错误渲染边界缺陷。本结论仅绑定上述精确 HEAD，任何新增提交均须重新复审。
+
+### 第二轮六维评分
+
+| 维度 | 分数 | 依据 |
+| --- | ---: | --- |
+| A. 需求符合度 | 2/4 | 上轮验收边界均已整改，但短写假成功、失败写破坏用户字节及 dangling `.harness` 仍违反核心契约。 |
+| B. 事实准确性 | 2/4 | `os.write` 只写部分字节时仍报告 `written` / exit 0；JSON 模式的投影读取错误仍输出 Text stderr。 |
+| C. 通用性 | 2/4 | symlink、非普通节点、CRLF 与缓存策略已通用化，但底层写可靠性与错误渲染仍不足以安全落地到任意项目。 |
+| D. 可维护性 | 3/4 | 节点检查和字节块处理已形成明确边界；正式文件直接 `O_TRUNC` 且错误渲染重复，仍需收敛。 |
+| E. 验证充分性 | 2/4 | 104 项测试全绿并新增大量边界测试，但没有覆盖短写、写异常、dangling `.harness` 和命令错误控制字符。 |
+| F. 可追溯性 | 3/4 | 设计已 Approved、ADR 已 Accepted，修订与提交清晰；精确 HEAD 仍未同步远端，没有可绑定 CI。 |
+
+总分：**14/24**。A、B、C、E 均为 2 分，触发合入门禁。
+
+### 上轮 findings 关闭情况
+
+| 上轮 finding | 独立复现结果 | 状态 |
+| --- | --- | --- |
+| 投影目标 symlink 越界 | exit 1 / `PROJECTION_PATH_UNSAFE`；外部文件保持 `b'OUTSIDE'` | 已关闭 |
+| 父目录 symlink 越界 | exit 1 / `PROJECTION_PATH_UNSAFE`；外部目录为空 | 已关闭 |
+| 目录/FIFO 目标 | 均 exit 1 / `PROJECTION_TARGET_INVALID`；FIFO 探针未阻塞 | 已关闭 |
+| END 后空行丢失 | `b'\n\n\nUSER-SUFFIX\n'` 前后逐字节一致 | 已关闭 |
+| CRLF 被归一化 | `b'USER\r\nNOTES\r\n'` 前缀逐字节保留 | 已关闭 |
+| Cursor 破损 marker 被覆盖 | exit 1 / `PROJECTION_MARKER_BROKEN`；文件未变化 | 已关闭 |
+| JSON adapter 参数错误无 envelope | exit 2；stderr 空；stdout 含完整 init envelope | 已关闭 |
+| 隐藏缓存未排除 | 设计列出的 6 类缓存全部未进入目标 bundle | 已关闭 |
+| bootstrap 示例与命令路径 | 选项 C 已补代价；命令改为项目根下 `.harness/bin/harness.py` | 已关闭 |
+| 设计与 ADR 状态未闭环 | 设计 `Approved`，ADR-0002 `Accepted` | 已关闭 |
+
+### 设计修订核对
+
+设计修订覆盖了上轮提出的 Spec findings：
+
+- §7.1 明确参数解析后的 exit 2 命令错误必须遵守 `--format`。
+- §7.2 把“隐藏缓存”收敛成 6 项确定清单。
+- §8.1 明确使用 bytes、受管区间边界及 CRLF/空行/无末尾换行语义。
+- §8.2 明确 Cursor 整文件所有权不豁免 marker 完整性检查。
+- §8.3 明确逐段 `lstat`、symlink/非普通节点错误码、`--check` 同检查及竞态边界。
+- 状态由 Draft/Proposed 闭环为 Approved/Accepted。
+
+新增设计缺口：§8.1 的“任何操作下块外字节逐字节保留”尚未落成失败原子性规则。当前正式文件直接 `O_TRUNC`，真实写故障会破坏块外内容。下一轮应在设计中明确“完整临时写成功前原文件不得变化”，再由实现与测试落实。
+
+### Standards findings
+
+#### [Important] 部分写或写异常会破坏用户文件
+
+位置：`template/.harness/bin/harness.py:329-347`
+
+实现以 `O_TRUNC` 直接打开正式投影文件，只调用一次 `os.write`，且忽略其返回的实际字节数。
+
+独立故障注入：
+
+```text
+SHORT_WRITE returned True errors [] bytes b'EXP'
+MID_WRITE exception 'simulated mid-write failure' errors [] bytes b'EX'
+```
+
+短写时 `_write_projection` 返回成功，上层会把文件列入 `written` 并 exit 0；异常时原有用户文件已被截断。两种结果均违反 ADR-0002 §2 与设计 §8.1 的用户字节保全。
+
+整改要求：
+
+1. 在目标同目录创建安全临时普通文件，循环写入直至全部字节完成；零进展或异常必须失败。
+2. 完整写入并按需要 flush/fsync 后，重新执行节点安全核验，再以安全替换提交。
+3. 任一失败必须保留原目标逐字节不变并清理临时文件；成功后才报告 `written`。
+4. 增加短写、零字节写、写异常和替换异常的故障注入回归测试。
+
+#### [Important] 投影 I/O 错误绕过 JSON envelope
+
+位置：`template/.harness/bin/harness.py:299-301,343-346,641-646`
+
+成功 `lstat` 后的 `read_bytes()` 错误，以及写入/关闭错误，直接逃逸到最外层
+`INTERNAL_ERROR` handler。不可读的普通 `CLAUDE.md` 实测：
+
+```text
+READ_FAILURE_JSON rc 2
+stdout ''
+stderr "[INTERNAL_ERROR] .: [Errno 13] Permission denied: '.../CLAUDE.md'\n"
+```
+
+exit 2 分类合理，但修订后的 §7.1 要求参数解析后的命令错误遵守 `--format`。
+`adapt --format json` 应在 stdout 返回完整 envelope，不能退化为 Text stderr。
+
+整改要求：在 `cmd_adapt` / 投影边界捕获这类 OSError，以 exit 2 返回；JSON
+使用完整 adapt envelope，Text 使用安全的单行错误格式。不得把节点布局错误
+错误分类为 exit 2。
+
+#### [Minor] Text 命令错误仍可被控制字符拆行
+
+位置：`template/.harness/bin/harness.py:114-116`
+
+`emit_command_error` 没有像 `emit` 一样调用 `validate.escape_text_field`。独立输入 adapter
+名 `"bad\nname"`：
+
+```text
+rc 2
+stderr "[ARGUMENT_INVALID] bad\nname: ...\n"
+physical_lines 2
+```
+
+需统一转义 code/path/message，并覆盖 CR、LF、C0、DEL、NEL、U+2028 与
+U+2029，保证一个错误只占一个物理行。
+
+### Spec findings
+
+#### [Important] 短写被误判为完整投影成功
+
+位置：`template/.harness/bin/harness.py:343-347`
+
+POSIX `os.write` 允许返回小于输入长度的正数。当前实现忽略返回值，因此产生截断文件仍报告成功，违反设计 §7.3 的正确投影与幂等、§8.1 的确定性字节产物及 §14 验收要求。此 finding 与 Standards 的数据安全 finding 分属两个审阅轴，整改要求相同。
+
+#### [Important] dangling `.harness` 未按“目标已存在”稳定拒绝
+
+位置：`template/.harness/bin/harness.py:552-577`
+
+`Path.exists()` 对悬空 symlink 返回 false。项目内预置
+`.harness -> missing-target` 后执行 init：
+
+```text
+DANGLING_HARNESS rc 2
+stdout ''
+stderr "[INTERNAL_ERROR] .: [Errno 17] File exists: '.../project/.harness'\n"
+still_symlink True
+```
+
+设计 §7.2 要求 `<target>/.harness` 已存在时稳定拒绝并 exit 1。目录项无论是否悬空都已占用目标名称。需使用 `lstat` / `lexists` 判断并返回
+`INIT_TARGET_EXISTS` / exit 1；补 dangling symlink 回归测试，断言不进入
+`copytree` 且链接不变。
+
+### 已知残留的独立裁定
+
+- **`lstat` 成功后读取失败：exit 2 合理。** 这属于路径在检查后不可访问或发生环境竞态，不是 Manifest/投影状态违规。
+- **真实写中途 OSError：exit 2 合理。** 它是运行时 I/O 故障，不应伪装成 exit 1 的契约错误。
+- **实现方关于“因此可直接落入全局 INTERNAL_ERROR”的结论不成立。** 合理的是 exit 2 分类；参数已经解析且 format 已知时，仍须按 §7.1 返回对应 Text/JSON 格式。
+- **写故障的破坏性副作用不被 exit 2 豁免。** 原文件被 `O_TRUNC` 截断违反用户内容保全；需以失败原子写保证失败时原文件不变。
+
+### 第二轮验证证据
+
+```text
+$ python3 template/.harness/bin/validate.py
+Harness contract is valid.
+exit 0
+
+$ python3 template/.harness/bin/harness.py validate
+Harness contract is valid.
+exit 0（与 validate.py stdout/stderr 逐字节一致）
+
+$ python3 template/.harness/bin/harness.py adapt --check --root template/.harness
+[ADAPT_SKIPPED_TEMPLATE] .: origin is null; template bundles do not generate projections
+adapt: ok
+exit 0
+
+$ python3 -m unittest discover -s tests -v
+Ran 104 tests in 8.063s
+OK
+
+$ git diff --check
+无输出，exit 0
+
+$ git diff --check e2c2e23...77602e6
+无输出，exit 0
+```
+
+其他证据：
+
+- Python 3.9 grammar parse：2 个 CLI 文件通过。
+- v0 schema v1 bundle：旧 validator、当前 `validate.py`、当前
+  `harness.py validate` 在 Text/JSON 下返回码与 stdout/stderr 逐字节一致。
+- 只读指纹：三条只读命令执行前后均为
+  `d5c07b82cdfa233a924fa7a684de70705fd7a8912dd51d1b70fc43a9e40a5fb6`。
+- E2E：CRLF 用户前缀保留，三个投影均生成，副本 `adapt --check` exit 0。
+- bundle 禁用 token、日期、第三方依赖、网络访问与第 4 节非目标扫描无发现。
+- `tests/test_validate.py` 仍严格只有批准的三处样例事实修改。
+- 审阅后 `git status --short` 为空。
+- 远端实时仅有 `main@e2c2e23`；新 HEAD `77602e6` 未在远端，因而没有可绑定的 CI 运行。
+
+### 第二轮合入建议
+
+**不得合入 `77602e6cd97242e283006a62d49807863cf00390`。**
+
+开发侧需修复本轮全部 Important，并补齐对应故障注入测试；Text 控制字符
+Minor 也应在同一轮关闭。新 HEAD 必须重新执行 Standards / Spec 双路审阅、
+本记录全部旧探针及新增短写/异常写/dangling symlink/错误格式探针、全量测试、
+v0 兼容、只读指纹、diff check 与精确 HEAD CI。本记录不批准任何后续提交。
