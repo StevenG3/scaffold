@@ -283,8 +283,151 @@ def cmd_adapt(root, check, fmt):
     )
 
 
+def _parse_adapters_argument(raw, errors):
+    names = [item.strip() for item in raw.split(",") if item.strip()]
+    seen = set()
+    for name in names:
+        is_builtin = name in ADAPTERS
+        is_extension = name.startswith("x-") and len(name) > 2
+        if not (is_builtin or is_extension) or name in seen:
+            errors.append(
+                validate.ContractError(
+                    "ARGUMENT_INVALID",
+                    name,
+                    "adapter names must be built-in or start with 'x-' and be unique",
+                )
+            )
+        seen.add(name)
+    return names
+
+
+def _init_failure(fmt, errors, notices=(), target=None):
+    return emit(
+        fmt,
+        "init",
+        False,
+        errors,
+        list(notices),
+        {"target": target, "projected_files": []},
+    )
+
+
 def cmd_init(target, adapters_raw, fmt):
-    raise RuntimeError("init is implemented in a later task")
+    source = BIN_DIR.parent
+    adapters_override = None
+    if adapters_raw is not None:
+        argument_errors = []
+        adapters_override = _parse_adapters_argument(adapters_raw, argument_errors)
+        if argument_errors:
+            for item in sorted(argument_errors):
+                sys.stderr.write(
+                    f"[{item.code}] {item.path}: {item.message}\n"
+                )
+            return 2
+
+    try:
+        source_result = validate.validate_harness(source)
+    except validate.RootUnreadableError as error:
+        sys.stderr.write(f"[ROOT_UNREADABLE] .: {error}\n")
+        return 2
+    if not source_result.valid:
+        errors = list(source_result.errors)
+        errors.append(
+            validate.ContractError(
+                "INIT_SOURCE_INVALID",
+                ".",
+                "source template failed validation; refusing to copy",
+            )
+        )
+        return _init_failure(fmt, errors)
+
+    source_manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
+    if "template_version" not in source_manifest:
+        return _init_failure(
+            fmt,
+            [
+                validate.ContractError(
+                    "INIT_SOURCE_INVALID",
+                    "manifest.json",
+                    "template_version is required to initialize a project",
+                )
+            ],
+        )
+
+    if not target.is_dir():
+        return _init_failure(
+            fmt,
+            [
+                validate.ContractError(
+                    "INIT_TARGET_MISSING",
+                    str(target),
+                    "target must be an existing directory",
+                )
+            ],
+        )
+    destination = target / ".harness"
+    if destination.exists():
+        return _init_failure(
+            fmt,
+            [
+                validate.ContractError(
+                    "INIT_TARGET_EXISTS",
+                    str(destination),
+                    "a .harness directory already exists; refusing to overwrite",
+                )
+            ],
+            target=str(destination),
+        )
+
+    shutil.copytree(
+        source, destination, ignore=shutil.ignore_patterns("__pycache__", "*.pyc")
+    )
+    cleanup_hint = validate.ContractError(
+        "INIT_CLEANUP_HINT",
+        str(destination),
+        "initialization failed after copying; remove this directory to retry",
+    )
+
+    manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
+    manifest["origin"] = {
+        "template_name": TEMPLATE_NAME,
+        "template_version": source_manifest["template_version"],
+        "initialized_at_schema": manifest["schema_version"],
+    }
+    if adapters_override is not None:
+        manifest["adapters"] = adapters_override
+    (destination / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+    errors, notices, written, unchanged, stale = run_adapt(
+        destination, manifest, check=False
+    )
+    if errors:
+        return _init_failure(
+            fmt, errors, notices=[cleanup_hint] + notices, target=str(destination)
+        )
+
+    final_result = validate.validate_harness(destination)
+    if not final_result.valid:
+        return _init_failure(
+            fmt,
+            list(final_result.errors),
+            notices=[cleanup_hint],
+            target=str(destination),
+        )
+
+    return emit(
+        fmt,
+        "init",
+        True,
+        [],
+        notices,
+        {
+            "target": str(destination.resolve()),
+            "projected_files": written + unchanged,
+        },
+    )
 
 
 def main(argv=None):
