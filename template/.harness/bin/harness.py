@@ -11,9 +11,6 @@ BIN_DIR = Path(__file__).resolve().parent
 if str(BIN_DIR) not in sys.path:
     sys.path.insert(0, str(BIN_DIR))
 sys.dont_write_bytecode = True
-# An importing loader may cache this module's bytecode before the line above
-# runs; drop that cache so the in-tree bundle never carries generated files.
-shutil.rmtree(BIN_DIR / "__pycache__", ignore_errors=True)
 import validate  # noqa: E402
 
 TEMPLATE_NAME = "portable-harness"

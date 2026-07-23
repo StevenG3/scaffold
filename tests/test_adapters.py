@@ -11,6 +11,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_HARNESS = REPO_ROOT / "template" / ".harness"
 
+# This process imports harness.py directly; suppress bytecode so the loader
+# never writes a .pyc into the read-only bundle tree.
+sys.dont_write_bytecode = True
 _spec = importlib.util.spec_from_file_location(
     "harness", SOURCE_HARNESS / "bin" / "harness.py"
 )
