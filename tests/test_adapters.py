@@ -434,6 +434,32 @@ class FailureAtomicWriteTests(unittest.TestCase):
             self.assertEqual(self.ORIGINAL, (project / "CLAUDE.md").read_bytes())
             self.assertFalse(self._temp_path(project).exists())
 
+    def test_init_projection_io_failure_carries_cleanup_hint(self):
+        import io
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir) / "project"
+            project.mkdir()
+            buffer = io.StringIO()
+            with mock.patch.object(
+                harness.os, "replace", side_effect=OSError("simulated replace failure")
+            ):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_init(project, None, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertEqual("init", payload["command"])
+            self.assertEqual(
+                ["PROJECTION_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertIn(
+                "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
+            )
+            # The copied tree is left in place for the user to inspect/remove.
+            self.assertTrue((project / ".harness").is_dir())
+
     @unittest.skipUnless(
         hasattr(os, "geteuid") and os.geteuid() != 0,
         "requires a non-root euid so file permissions are enforced",

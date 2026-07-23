@@ -113,27 +113,29 @@ def emit(fmt, command, ok, errors, notices, extra):
     return 0 if ok else 1
 
 
-def emit_command_error(fmt, command, errors, extra):
+def emit_command_error(fmt, command, errors, extra, notices=()):
     """Render a post-parse command-level error (exit 2), honoring --format.
 
     json → full envelope on stdout (ok:false, command, errors, notices plus the
-    subcommand's documented fields). text → ``[CODE] path: message`` on stderr,
-    matching the pre-existing behavior byte-for-byte. Always returns 2.
+    subcommand's documented fields). text → escaped ``[CODE] path: message``
+    lines on stderr for errors then notices. ``notices`` carries non-failing
+    context such as INIT_CLEANUP_HINT on post-copy failures. Always returns 2.
     """
     errors = sorted(errors)
+    notices = sorted(notices)
     if fmt == "json":
         payload = {
             "ok": False,
             "command": command,
             "errors": [asdict(item) for item in errors],
-            "notices": [],
+            "notices": [asdict(item) for item in notices],
         }
         payload.update(extra)
         sys.stdout.write(
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         )
     else:
-        for item in errors:
+        for item in errors + notices:
             sys.stderr.write(
                 f"[{validate.escape_text_field(item.code)}] "
                 f"{validate.escape_text_field(item.path)}: "
@@ -687,11 +689,14 @@ def cmd_init(target, adapters_raw, fmt):
             destination, manifest, check=False
         )
     except ProjectionIOError as io_error:
+        # Post-copy runtime I/O fault: exit 2 per §7.1, but §7.2 still requires
+        # the cleanup hint so the user knows the copied tree remains on disk.
         return emit_command_error(
             fmt,
             "init",
             [io_error.error],
             {"target": str(destination), "projected_files": []},
+            notices=[cleanup_hint],
         )
     if errors:
         return _init_failure(
