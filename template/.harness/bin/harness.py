@@ -231,8 +231,12 @@ def cmd_validate(root, fmt):
     try:
         result = validate.validate_harness(root)
     except validate.RootUnreadableError as error:
-        sys.stderr.write(f"[ROOT_UNREADABLE] .: {error}\n")
-        return 2
+        return emit_command_error(
+            fmt,
+            "validate",
+            [validate.ContractError("ROOT_UNREADABLE", ".", str(error))],
+            {},
+        )
     rendered = (
         validate.render_json(result) if fmt == "json" else validate.render_text(result)
     )
@@ -414,8 +418,12 @@ def cmd_adapt(root, check, fmt):
     try:
         result = validate.validate_harness(root)
     except validate.RootUnreadableError as error:
-        sys.stderr.write(f"[ROOT_UNREADABLE] .: {error}\n")
-        return 2
+        return emit_command_error(
+            fmt,
+            "adapt",
+            [validate.ContractError("ROOT_UNREADABLE", ".", str(error))],
+            {"written": [], "unchanged": [], "stale": []},
+        )
     if not result.valid:
         return emit(
             fmt,
@@ -490,17 +498,22 @@ def cmd_init(target, adapters_raw, fmt):
         argument_errors = []
         adapters_override = _parse_adapters_argument(adapters_raw, argument_errors)
         if argument_errors:
-            for item in sorted(argument_errors):
-                sys.stderr.write(
-                    f"[{item.code}] {item.path}: {item.message}\n"
-                )
-            return 2
+            return emit_command_error(
+                fmt,
+                "init",
+                argument_errors,
+                {"target": None, "projected_files": []},
+            )
 
     try:
         source_result = validate.validate_harness(source)
     except validate.RootUnreadableError as error:
-        sys.stderr.write(f"[ROOT_UNREADABLE] .: {error}\n")
-        return 2
+        return emit_command_error(
+            fmt,
+            "init",
+            [validate.ContractError("ROOT_UNREADABLE", ".", str(error))],
+            {"target": None, "projected_files": []},
+        )
     if not source_result.valid:
         errors = list(source_result.errors)
         errors.append(

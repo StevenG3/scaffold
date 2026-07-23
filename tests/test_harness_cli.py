@@ -46,6 +46,29 @@ class ValidateSubcommandTests(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("[ARGUMENT_INVALID]", result.stderr)
 
+    def test_root_unreadable_json_emits_envelope_on_stdout(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing = Path(temp_dir) / "does-not-exist"
+            result = run_cli(
+                HARNESS_CLI, "validate", "--root", str(missing), "--format", "json"
+            )
+            self.assertEqual(2, result.returncode)
+            self.assertEqual("", result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["ok"])
+            self.assertEqual("validate", payload["command"])
+            self.assertEqual(
+                ["ROOT_UNREADABLE"], [e["code"] for e in payload["errors"]]
+            )
+
+    def test_root_unreadable_text_still_goes_to_stderr(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing = Path(temp_dir) / "does-not-exist"
+            result = run_cli(HARNESS_CLI, "validate", "--root", str(missing))
+            self.assertEqual(2, result.returncode)
+            self.assertEqual("", result.stdout)
+            self.assertIn("[ROOT_UNREADABLE]", result.stderr)
+
 
 PROJECTIONS = ("CLAUDE.md", "AGENTS.md", ".cursor/rules/harness.mdc")
 
@@ -148,6 +171,31 @@ class InitCommandTests(unittest.TestCase):
             )
             self.assertEqual(2, result.returncode)
             self.assertIn("[ARGUMENT_INVALID]", result.stderr)
+            self.assertFalse((project / ".harness").exists())
+
+    def test_init_bad_adapter_json_emits_envelope_on_stdout(self):
+        with temp_project() as project:
+            result = run_cli(
+                HARNESS_CLI,
+                "init",
+                "--target",
+                str(project),
+                "--adapters",
+                "vscode",
+                "--format",
+                "json",
+            )
+            self.assertEqual(2, result.returncode)
+            self.assertEqual("", result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["ok"])
+            self.assertEqual("init", payload["command"])
+            self.assertEqual(
+                ["ARGUMENT_INVALID"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertEqual([], payload["notices"])
+            self.assertIsNone(payload["target"])
+            self.assertEqual([], payload["projected_files"])
             self.assertFalse((project / ".harness").exists())
 
     def test_init_writes_only_declared_paths(self):
