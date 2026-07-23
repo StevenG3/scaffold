@@ -789,11 +789,46 @@ def cmd_init(target, adapters_raw, fmt):
     )
 
 
+def _escape_argv_field(value):
+    """Single-line escape for argv-derived text (parser and pre-dispatch errors).
+
+    Like ``validate.escape_text_field`` but also maps lone surrogate code points
+    (``U+D800``–``U+DFFF``, produced by POSIX ``surrogateescape`` on non-UTF-8
+    argv bytes) to ``\\uXXXX``. Writing such a surrogate raw would make stderr
+    itself non-UTF-8, so it is escaped explicitly (design §7.1).
+    """
+    parts = []
+    for char in str(value):
+        code = ord(char)
+        if code in validate._TEXT_ESCAPE_CODES or (
+            validate._SURROGATE_FIRST <= code <= validate._SURROGATE_LAST
+        ):
+            parts.append(f"\\u{code:04x}")
+        else:
+            parts.append(char)
+    return "".join(parts)
+
+
 def main(argv=None):
+    # JSON stdout must always be valid UTF-8 (design §7.1). On POSIX, argv bytes
+    # that are not valid UTF-8 arrive as lone surrogates via surrogateescape; a
+    # JSON envelope built from them could not be encoded as UTF-8. Reject before
+    # entering any subcommand: ARGUMENT_INVALID, exit 2, one escaped stderr line,
+    # NO JSON envelope in this path.
+    raw_argv = sys.argv[1:] if argv is None else list(argv)
+    for value in raw_argv:
+        if isinstance(value, str) and validate._has_surrogate(value):
+            sys.stderr.write(
+                "[ARGUMENT_INVALID] .: argument contains bytes that are not "
+                f"valid UTF-8: {_escape_argv_field(value)}\n"
+            )
+            return 2
     try:
         args = parse_args(argv)
     except ValueError as error:
-        sys.stderr.write(f"[ARGUMENT_INVALID] .: {error}\n")
+        # H5: parser-level errors may interpolate input (unknown option text);
+        # escape so an injected newline cannot split the single error line.
+        sys.stderr.write(f"[ARGUMENT_INVALID] .: {_escape_argv_field(error)}\n")
         return 2
     if args.command == "validate":
         return cmd_validate(args.root, args.format)

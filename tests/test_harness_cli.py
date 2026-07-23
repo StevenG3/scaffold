@@ -297,6 +297,43 @@ class InitCommandTests(unittest.TestCase):
                 .startswith("user notes\n")
             )
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX surrogateescape argv only")
+    def test_non_utf8_argv_rejected_before_json_envelope(self):
+        # H4: a non-UTF-8 argv byte (0xff) must be rejected before any subcommand
+        # so JSON stdout can never emit invalid UTF-8. stdout must be empty; the
+        # single stderr line must decode as strict UTF-8.
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(HARNESS_CLI),
+                "adapt",
+                "--root",
+                b"/tmp/x\xff",
+                "--format",
+                "json",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(2, result.returncode)
+        self.assertEqual(b"", result.stdout)
+        # stderr decodes strictly and is exactly one physical line.
+        text = result.stderr.decode("utf-8")
+        self.assertIn("[ARGUMENT_INVALID]", text)
+        self.assertEqual(1, text.count("\n"))
+
+    def test_parser_error_escapes_control_characters(self):
+        # H5: an unknown option carrying a newline must not split the single
+        # parser-level error line. A valid subcommand makes argparse echo the
+        # offending option text into its "unrecognized arguments" message.
+        result = run_cli(HARNESS_CLI, "validate", "--bad\nname")
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("\\u000a", result.stderr)
+        self.assertNotIn("--bad\nname", result.stderr)
+        self.assertEqual(1, result.stderr.count("\n"))
+
 
 if __name__ == "__main__":
     unittest.main()
