@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_HARNESS = REPO_ROOT / "template" / ".harness"
@@ -353,6 +354,107 @@ class CursorMarkerIntegrityTests(unittest.TestCase):
                         body,
                         (project / ".cursor" / "rules" / "harness.mdc").read_bytes(),
                     )
+
+
+class FailureAtomicWriteTests(unittest.TestCase):
+    """Fault-injection around _write_projection (design §8.3 atomicity)."""
+
+    REL = ("CLAUDE.md",)
+    DISPLAY = "CLAUDE.md"
+    PAYLOAD = b"EXPECTED-PROJECTION-BYTES\n"
+    ORIGINAL = b"ORIGINAL USER BYTES\n"
+
+    @contextmanager
+    def _project(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            yield Path(temp_dir)
+
+    def _temp_path(self, project):
+        return project / "CLAUDE.md.harness-tmp"
+
+    def test_short_write_still_produces_complete_file(self):
+        with self._project() as project:
+            errors = []
+            real_write = os.write
+
+            def chunked(fd, data):
+                # Force one byte at a time to exercise the short-write loop.
+                return real_write(fd, bytes(data[:1]))
+
+            with mock.patch.object(harness.os, "write", side_effect=chunked):
+                ok = harness._write_projection(
+                    project, self.REL, self.DISPLAY, self.PAYLOAD, errors
+                )
+            self.assertTrue(ok)
+            self.assertEqual([], errors)
+            self.assertEqual(self.PAYLOAD, (project / "CLAUDE.md").read_bytes())
+            self.assertFalse(self._temp_path(project).exists())
+
+    def test_zero_progress_write_fails_and_preserves_original(self):
+        with self._project() as project:
+            (project / "CLAUDE.md").write_bytes(self.ORIGINAL)
+            errors = []
+            with mock.patch.object(harness.os, "write", return_value=0):
+                with self.assertRaises(harness.ProjectionIOError) as caught:
+                    harness._write_projection(
+                        project, self.REL, self.DISPLAY, self.PAYLOAD, errors
+                    )
+            self.assertEqual("PROJECTION_IO_ERROR", caught.exception.error.code)
+            self.assertEqual(self.ORIGINAL, (project / "CLAUDE.md").read_bytes())
+            self.assertFalse(self._temp_path(project).exists())
+
+    def test_mid_write_exception_preserves_original_and_cleans_temp(self):
+        with self._project() as project:
+            (project / "CLAUDE.md").write_bytes(self.ORIGINAL)
+            errors = []
+
+            def boom(fd, data):
+                raise OSError("simulated mid-write failure")
+
+            with mock.patch.object(harness.os, "write", side_effect=boom):
+                with self.assertRaises(harness.ProjectionIOError):
+                    harness._write_projection(
+                        project, self.REL, self.DISPLAY, self.PAYLOAD, errors
+                    )
+            self.assertEqual(self.ORIGINAL, (project / "CLAUDE.md").read_bytes())
+            self.assertFalse(self._temp_path(project).exists())
+
+    def test_replace_failure_preserves_original_and_cleans_temp(self):
+        with self._project() as project:
+            (project / "CLAUDE.md").write_bytes(self.ORIGINAL)
+            errors = []
+            with mock.patch.object(
+                harness.os, "replace", side_effect=OSError("simulated replace failure")
+            ):
+                with self.assertRaises(harness.ProjectionIOError) as caught:
+                    harness._write_projection(
+                        project, self.REL, self.DISPLAY, self.PAYLOAD, errors
+                    )
+            self.assertEqual("PROJECTION_IO_ERROR", caught.exception.error.code)
+            self.assertEqual(self.ORIGINAL, (project / "CLAUDE.md").read_bytes())
+            self.assertFalse(self._temp_path(project).exists())
+
+    @unittest.skipUnless(
+        hasattr(os, "geteuid") and os.geteuid() != 0,
+        "requires a non-root euid so file permissions are enforced",
+    )
+    def test_unreadable_target_json_returns_io_error_envelope(self):
+        with instantiated_project() as (project, root):
+            target = project / "CLAUDE.md"
+            target.write_bytes(b"user\n")
+            os.chmod(target, 0)
+            try:
+                result = run_instance_cli(root, "adapt", "--format", "json")
+            finally:
+                os.chmod(target, 0o644)
+            self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+            self.assertEqual("", result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["ok"])
+            self.assertEqual("adapt", payload["command"])
+            self.assertEqual(
+                ["PROJECTION_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
 
 
 class AdaptErrorPathTests(unittest.TestCase):

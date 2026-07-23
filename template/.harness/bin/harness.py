@@ -26,6 +26,27 @@ class MarkerBrokenError(Exception):
     pass
 
 
+class ProjectionIOError(Exception):
+    """A runtime I/O fault after node-safety checks passed (design §7.1).
+
+    Carries a ``PROJECTION_IO_ERROR`` ContractError. It is caught at the
+    projection boundary (cmd_adapt / init's adapt stage) and rendered through
+    emit_command_error with exit 2, honoring ``--format``. It must never be
+    confused with node-layout contract errors (§8.3), which stay exit 1.
+    """
+
+    def __init__(self, display, message):
+        super().__init__(message)
+        self.error = validate.ContractError("PROJECTION_IO_ERROR", display, message)
+
+
+def _silent_unlink(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 class _ArgumentParser(argparse.ArgumentParser):
     def error(self, message):
         raise ValueError(message)
@@ -297,8 +318,17 @@ def _inspect_target(project_root, rel_parts, display, errors, read):
             continue
         # Final segment: only an absent path or a regular file is allowed.
         if stat.S_ISREG(info.st_mode):
-            data = current.read_bytes() if read else None
-            return ("file", data)
+            if not read:
+                return ("file", None)
+            try:
+                return ("file", current.read_bytes())
+            except OSError as error:
+                # Node check passed but the read failed: a runtime I/O fault,
+                # not a contract violation. Surface it as exit 2, not a bare
+                # top-level INTERNAL_ERROR (design §7.1).
+                raise ProjectionIOError(
+                    display, f"cannot read projection target: {error}"
+                )
         errors.append(
             validate.ContractError(
                 "PROJECTION_TARGET_INVALID",
@@ -310,8 +340,35 @@ def _inspect_target(project_root, rel_parts, display, errors, read):
     return ("absent", None)
 
 
+def _write_all(descriptor, data, display):
+    """Write every byte of ``data``, tolerating short writes.
+
+    POSIX ``os.write`` may write fewer bytes than requested; loop until all are
+    committed. A return of 0 (zero progress) or an ``OSError`` is a failure.
+    """
+    view = memoryview(data)
+    total = 0
+    length = len(data)
+    while total < length:
+        try:
+            count = os.write(descriptor, view[total:])
+        except OSError as error:
+            raise ProjectionIOError(display, f"failed to write projection: {error}")
+        if count == 0:
+            raise ProjectionIOError(display, "projection write made zero progress")
+        total += count
+
+
 def _write_projection(project_root, rel_parts, display, data, errors):
-    """Re-verify node safety and write bytes with no-follow semantics."""
+    """Failure-atomic projection write (design §8.3).
+
+    Re-verify node safety, stage the bytes in a deterministically named temp
+    regular file (``<name>.harness-tmp``) next to the target, fsync, re-verify
+    the target node, then commit with ``os.replace``. Any failure leaves the
+    original target byte-identical, removes the temp file, and keeps the target
+    out of ``written``. Node-layout faults append a stable contract error and
+    return False (exit 1); runtime I/O faults raise ProjectionIOError (exit 2).
+    """
     if _inspect_target(project_root, rel_parts, display, errors, read=False) is None:
         return False
     target = project_root.joinpath(*rel_parts)
@@ -326,24 +383,41 @@ def _write_projection(project_root, rel_parts, display, data, errors):
             )
         )
         return False
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    temp = target.with_name(target.name + ".harness-tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        descriptor = os.open(target, flags, 0o644)
+        descriptor = os.open(temp, flags, 0o644)
     except OSError as error:
-        errors.append(
-            validate.ContractError(
-                "PROJECTION_PATH_UNSAFE",
-                display,
-                f"refusing to write through an unsafe target: {error}",
-            )
+        raise ProjectionIOError(
+            display, f"cannot create projection temp file: {error}"
         )
+    try:
+        _write_all(descriptor, data, display)
+        os.fsync(descriptor)
+    except ProjectionIOError:
+        os.close(descriptor)
+        _silent_unlink(temp)
+        raise
+    except OSError as error:
+        os.close(descriptor)
+        _silent_unlink(temp)
+        raise ProjectionIOError(display, f"failed to write projection: {error}")
+    os.close(descriptor)
+    # Re-verify the final target immediately before the atomic swap to narrow
+    # the check-then-use race. A node-layout change here is an exit-1 contract
+    # error, so the staged temp file is discarded and no commit happens.
+    reverify = []
+    if _inspect_target(project_root, rel_parts, display, reverify, read=False) is None:
+        _silent_unlink(temp)
+        errors.extend(reverify)
         return False
     try:
-        os.write(descriptor, data)
-    finally:
-        os.close(descriptor)
+        os.replace(temp, target)
+    except OSError as error:
+        _silent_unlink(temp)
+        raise ProjectionIOError(display, f"failed to commit projection: {error}")
     return True
 
 
@@ -451,7 +525,15 @@ def cmd_adapt(root, check, fmt):
             notices,
             {"written": [], "unchanged": [], "stale": []},
         )
-    errors, notices, written, unchanged, stale = run_adapt(root, manifest, check)
+    try:
+        errors, notices, written, unchanged, stale = run_adapt(root, manifest, check)
+    except ProjectionIOError as io_error:
+        return emit_command_error(
+            fmt,
+            "adapt",
+            [io_error.error],
+            {"written": [], "unchanged": [], "stale": []},
+        )
     return emit(
         fmt,
         "adapt",
@@ -593,9 +675,17 @@ def cmd_init(target, adapters_raw, fmt):
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
 
-    errors, notices, written, unchanged, stale = run_adapt(
-        destination, manifest, check=False
-    )
+    try:
+        errors, notices, written, unchanged, stale = run_adapt(
+            destination, manifest, check=False
+        )
+    except ProjectionIOError as io_error:
+        return emit_command_error(
+            fmt,
+            "init",
+            [io_error.error],
+            {"target": str(destination), "projected_files": []},
+        )
     if errors:
         return _init_failure(
             fmt, errors, notices=[cleanup_hint] + notices, target=str(destination)
