@@ -434,6 +434,67 @@ class FailureAtomicWriteTests(unittest.TestCase):
             self.assertEqual(self.ORIGINAL, (project / "CLAUDE.md").read_bytes())
             self.assertFalse(self._temp_path(project).exists())
 
+    def test_close_failure_is_io_error_and_leaves_no_temp(self):
+        # H1: os.close performs the real close then raises OSError. The failure
+        # must convert to PROJECTION_IO_ERROR, keep the original byte-identical,
+        # and leave no *.harness-tmp node behind.
+        with self._project() as project:
+            (project / "CLAUDE.md").write_bytes(self.ORIGINAL)
+            errors = []
+            real_close = os.close
+
+            def close_then_raise(fd):
+                real_close(fd)
+                raise OSError("simulated close failure")
+
+            with mock.patch.object(harness.os, "close", side_effect=close_then_raise):
+                with self.assertRaises(harness.ProjectionIOError) as caught:
+                    harness._write_projection(
+                        project, self.REL, self.DISPLAY, self.PAYLOAD, errors
+                    )
+            self.assertEqual("PROJECTION_IO_ERROR", caught.exception.error.code)
+            self.assertEqual(self.ORIGINAL, (project / "CLAUDE.md").read_bytes())
+            self.assertFalse(self._temp_path(project).exists())
+
+    def test_partial_progress_reported_when_second_projection_fails(self):
+        # H3: CLAUDE.md commits, then AGENTS.md write fails. The envelope must
+        # report written == ["CLAUDE.md"] (never an empty lie) and CLAUDE.md must
+        # be present on disk.
+        with instantiated_project() as (project, root):
+            # Drive cmd_adapt in-process so the fault injection is visible. Track
+            # fd->path via os.open (portable, no /proc dependency) so the write
+            # for AGENTS.md's temp file can be failed while CLAUDE.md commits.
+            import io
+            from contextlib import redirect_stdout
+
+            fd_paths = {}
+            real_open = os.open
+            real_write = os.write
+
+            def tracking_open(path, *a, **k):
+                fd = real_open(path, *a, **k)
+                fd_paths[fd] = os.fspath(path)
+                return fd
+
+            def fail_on_agents(fd, data):
+                if fd_paths.get(fd, "").endswith("AGENTS.md.harness-tmp"):
+                    raise OSError("simulated AGENTS.md write failure")
+                return real_write(fd, data)
+
+            buffer = io.StringIO()
+            with mock.patch.object(harness.os, "open", side_effect=tracking_open), \
+                    mock.patch.object(harness.os, "write", side_effect=fail_on_agents):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_adapt(root, False, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(
+                ["PROJECTION_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertEqual(["CLAUDE.md"], payload["written"])
+            self.assertTrue((project / "CLAUDE.md").is_file())
+            self.assertFalse((project / "AGENTS.md").exists())
+
     def test_init_projection_io_failure_carries_cleanup_hint(self):
         import io
         from contextlib import redirect_stdout

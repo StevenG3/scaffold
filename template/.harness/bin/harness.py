@@ -38,6 +38,12 @@ class ProjectionIOError(Exception):
     def __init__(self, display, message):
         super().__init__(message)
         self.error = validate.ContractError("PROJECTION_IO_ERROR", display, message)
+        # Progress committed to disk before the fault, attached by run_adapt so
+        # the error envelope can report it truthfully (design §7.1). adapt is not
+        # a cross-file transaction: files already replaced stay on disk.
+        self.written = []
+        self.unchanged = []
+        self.stale = []
 
 
 def _silent_unlink(path):
@@ -399,38 +405,70 @@ def _write_projection(project_root, rel_parts, display, data, errors):
         raise ProjectionIOError(
             display, f"cannot create projection temp file: {error}"
         )
+    # Everything after a successful open runs inside one boundary: any failure —
+    # write, fsync, close, re-verify or replace — best-effort closes the still-open
+    # descriptor, removes this temp file, and (for I/O faults) raises
+    # ProjectionIOError. os.close is now INSIDE the boundary; a close failure no
+    # longer escapes as a raw OSError leaving the temp node behind (design §8.3).
+    committed = False
     try:
         _write_all(descriptor, data, display)
-        os.fsync(descriptor)
-    except ProjectionIOError:
-        os.close(descriptor)
-        _silent_unlink(temp)
-        raise
-    except OSError as error:
-        os.close(descriptor)
-        _silent_unlink(temp)
-        raise ProjectionIOError(display, f"failed to write projection: {error}")
-    os.close(descriptor)
-    # Re-verify the final target immediately before the atomic swap to narrow
-    # the check-then-use race. A node-layout change here is an exit-1 contract
-    # error, so the staged temp file is discarded and no commit happens.
-    reverify = []
-    if _inspect_target(project_root, rel_parts, display, reverify, read=False) is None:
-        _silent_unlink(temp)
-        errors.extend(reverify)
-        return False
-    try:
-        os.replace(temp, target)
-    except OSError as error:
-        _silent_unlink(temp)
-        raise ProjectionIOError(display, f"failed to commit projection: {error}")
-    return True
+        try:
+            os.fsync(descriptor)
+        except OSError as error:
+            raise ProjectionIOError(display, f"failed to fsync projection: {error}")
+        # Close before the swap; mark the fd consumed first so the finally clause
+        # never double-closes a descriptor we already handed to os.close.
+        close_fd = descriptor
+        descriptor = None
+        try:
+            os.close(close_fd)
+        except OSError as error:
+            raise ProjectionIOError(display, f"failed to close projection: {error}")
+        # Re-verify the final target immediately before the atomic swap to narrow
+        # the check-then-use race. A node-layout change here is an exit-1 contract
+        # error, so the staged temp file is discarded and no commit happens.
+        reverify = []
+        if _inspect_target(project_root, rel_parts, display, reverify, read=False) is None:
+            errors.extend(reverify)
+            return False
+        try:
+            os.replace(temp, target)
+        except OSError as error:
+            raise ProjectionIOError(display, f"failed to commit projection: {error}")
+        committed = True
+        return True
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if not committed:
+            _silent_unlink(temp)
 
 
 def run_adapt(root, manifest, check):
     """Project the manifest into platform files. Root must already be validated."""
     project_root = root.parent
     errors, notices, written, unchanged, stale = [], [], [], [], []
+    try:
+        _run_adapt_loop(
+            project_root, manifest, check, errors, notices, written, unchanged, stale
+        )
+    except ProjectionIOError as io_error:
+        # Carry the files already committed to disk so the error envelope reports
+        # real progress instead of an empty list (design §7.1).
+        io_error.written = list(written)
+        io_error.unchanged = list(unchanged)
+        io_error.stale = list(stale)
+        raise
+    return errors, notices, written, unchanged, stale
+
+
+def _run_adapt_loop(
+    project_root, manifest, check, errors, notices, written, unchanged, stale
+):
     for name in manifest.get("adapters", []):
         if name not in ADAPTERS:
             notices.append(
@@ -491,7 +529,6 @@ def run_adapt(root, manifest, check):
                 unchanged.append(display)
             elif _write_projection(project_root, rel_parts, display, expected, errors):
                 written.append(display)
-    return errors, notices, written, unchanged, stale
 
 
 def cmd_adapt(root, check, fmt):
@@ -538,7 +575,11 @@ def cmd_adapt(root, check, fmt):
             fmt,
             "adapt",
             [io_error.error],
-            {"written": [], "unchanged": [], "stale": []},
+            {
+                "written": list(io_error.written),
+                "unchanged": list(io_error.unchanged),
+                "stale": list(io_error.stale),
+            },
         )
     return emit(
         fmt,
@@ -691,11 +732,15 @@ def cmd_init(target, adapters_raw, fmt):
     except ProjectionIOError as io_error:
         # Post-copy runtime I/O fault: exit 2 per §7.1, but §7.2 still requires
         # the cleanup hint so the user knows the copied tree remains on disk.
+        # projected_files reports the projections committed before the fault.
         return emit_command_error(
             fmt,
             "init",
             [io_error.error],
-            {"target": str(destination), "projected_files": []},
+            {
+                "target": str(destination),
+                "projected_files": list(io_error.written),
+            },
             notices=[cleanup_hint],
         )
     if errors:
