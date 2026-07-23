@@ -2,7 +2,9 @@
 """Portable Harness CLI: install, project, and validate the bundle."""
 import argparse
 import json
+import os
 import shutil
+import stat
 import sys
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
@@ -16,6 +18,8 @@ import validate  # noqa: E402
 TEMPLATE_NAME = "portable-harness"
 MARKER_BEGIN = "<!-- BEGIN HARNESS MANAGED BLOCK (harness adapt) -->"
 MARKER_END = "<!-- END HARNESS MANAGED BLOCK -->"
+MARKER_BEGIN_BYTES = MARKER_BEGIN.encode("ascii")
+MARKER_END_BYTES = MARKER_END.encode("ascii")
 
 
 class MarkerBrokenError(Exception):
@@ -88,26 +92,80 @@ def emit(fmt, command, ok, errors, notices, extra):
     return 0 if ok else 1
 
 
-def apply_managed_block(existing_text, body):
-    """Insert or refresh the managed block; user text outside it is untouched."""
-    block = MARKER_BEGIN + "\n" + body + "\n" + MARKER_END + "\n"
-    if existing_text is None or existing_text == "":
-        return block
-    begins = existing_text.count(MARKER_BEGIN)
-    ends = existing_text.count(MARKER_END)
+def emit_command_error(fmt, command, errors, extra):
+    """Render a post-parse command-level error (exit 2), honoring --format.
+
+    json → full envelope on stdout (ok:false, command, errors, notices plus the
+    subcommand's documented fields). text → ``[CODE] path: message`` on stderr,
+    matching the pre-existing behavior byte-for-byte. Always returns 2.
+    """
+    errors = sorted(errors)
+    if fmt == "json":
+        payload = {
+            "ok": False,
+            "command": command,
+            "errors": [asdict(item) for item in errors],
+            "notices": [],
+        }
+        payload.update(extra)
+        sys.stdout.write(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        )
+    else:
+        for item in errors:
+            sys.stderr.write(f"[{item.code}] {item.path}: {item.message}\n")
+    return 2
+
+
+def _check_marker_integrity(data):
+    """Raise MarkerBrokenError if managed-block markers are unpaired/reversed.
+
+    Zero markers (a plain user or tool-owned file) is intact, not broken.
+    """
+    begins = data.count(MARKER_BEGIN_BYTES)
+    ends = data.count(MARKER_END_BYTES)
     if begins == 0 and ends == 0:
-        prefix = existing_text
-        if not prefix.endswith("\n"):
-            prefix += "\n"
-        return prefix + "\n" + block
+        return
     if begins != 1 or ends != 1:
         raise MarkerBrokenError("managed block markers are broken")
-    begin_index = existing_text.index(MARKER_BEGIN)
-    end_index = existing_text.index(MARKER_END)
+    if data.index(MARKER_END_BYTES) < data.index(MARKER_BEGIN_BYTES):
+        raise MarkerBrokenError("managed block markers are broken")
+
+
+def apply_managed_block(existing, body):
+    """Insert or refresh the managed block at the byte level.
+
+    ``existing`` is ``bytes`` (or ``None`` for an absent file); ``body`` is the
+    rendered block body as ``bytes``. User bytes outside the managed span are
+    preserved verbatim (CRLF, blank lines after END, missing trailing newline,
+    non-ASCII). No newline translation is applied anywhere. Returns ``bytes``.
+    """
+    block = MARKER_BEGIN_BYTES + b"\n" + body + b"\n" + MARKER_END_BYTES + b"\n"
+    if existing is None or existing == b"":
+        return block
+    begins = existing.count(MARKER_BEGIN_BYTES)
+    ends = existing.count(MARKER_END_BYTES)
+    if begins == 0 and ends == 0:
+        prefix = existing
+        if prefix[-1:] != b"\n":
+            prefix += b"\n"
+        return prefix + b"\n" + block
+    if begins != 1 or ends != 1:
+        raise MarkerBrokenError("managed block markers are broken")
+    begin_index = existing.index(MARKER_BEGIN_BYTES)
+    end_index = existing.index(MARKER_END_BYTES)
     if end_index < begin_index:
         raise MarkerBrokenError("managed block markers are broken")
-    suffix = existing_text[end_index + len(MARKER_END):].lstrip("\n")
-    return existing_text[:begin_index] + block + suffix
+    after_end = end_index + len(MARKER_END_BYTES)
+    include_following_nl = existing[after_end:after_end + 1] == b"\n"
+    span_end = after_end + (1 if include_following_nl else 0)
+    at_file_end = span_end == len(existing)
+    if not include_following_nl and at_file_end:
+        # Preserve a managed block that terminates the file with no newline.
+        rendered = MARKER_BEGIN_BYTES + b"\n" + body + b"\n" + MARKER_END_BYTES
+    else:
+        rendered = block
+    return existing[:begin_index] + rendered + existing[span_end:]
 
 
 def render_block_body(manifest):
@@ -182,6 +240,109 @@ def cmd_validate(root, fmt):
     return 0 if result.valid else 1
 
 
+def _inspect_target(project_root, rel_parts, display, errors, read):
+    """Node-safety gate for one projection target (design §8.3).
+
+    lstat every path segment from the project root to the target. Any symlink
+    segment is rejected (PROJECTION_PATH_UNSAFE); the target must be absent or a
+    regular file, and every intermediate segment a real directory. A FIFO,
+    device, socket or directory target is rejected (PROJECTION_TARGET_INVALID)
+    WITHOUT the node ever being opened.
+
+    Returns ``("file", bytes|None)`` or ``("absent", None)`` on success, or
+    ``None`` after appending a stable contract error. ``bytes`` is filled only
+    when ``read`` is true and the target is a regular file.
+    """
+    current = project_root
+    last = len(rel_parts) - 1
+    for index, part in enumerate(rel_parts):
+        current = current / part
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            # This segment is absent, so the target itself is absent.
+            return ("absent", None)
+        except OSError as error:
+            errors.append(
+                validate.ContractError(
+                    "PROJECTION_PATH_UNSAFE",
+                    display,
+                    f"projection path segment is unreadable: {error}",
+                )
+            )
+            return None
+        if stat.S_ISLNK(info.st_mode):
+            errors.append(
+                validate.ContractError(
+                    "PROJECTION_PATH_UNSAFE",
+                    display,
+                    "a projection path segment is a symbolic link",
+                )
+            )
+            return None
+        if index < last:
+            if not stat.S_ISDIR(info.st_mode):
+                errors.append(
+                    validate.ContractError(
+                        "PROJECTION_TARGET_INVALID",
+                        display,
+                        "a projection parent path segment is not a directory",
+                    )
+                )
+                return None
+            continue
+        # Final segment: only an absent path or a regular file is allowed.
+        if stat.S_ISREG(info.st_mode):
+            data = current.read_bytes() if read else None
+            return ("file", data)
+        errors.append(
+            validate.ContractError(
+                "PROJECTION_TARGET_INVALID",
+                display,
+                "projection target exists but is not a regular file",
+            )
+        )
+        return None
+    return ("absent", None)
+
+
+def _write_projection(project_root, rel_parts, display, data, errors):
+    """Re-verify node safety and write bytes with no-follow semantics."""
+    if _inspect_target(project_root, rel_parts, display, errors, read=False) is None:
+        return False
+    target = project_root.joinpath(*rel_parts)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        errors.append(
+            validate.ContractError(
+                "PROJECTION_PATH_UNSAFE",
+                display,
+                f"cannot create projection parent directory: {error}",
+            )
+        )
+        return False
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(target, flags, 0o644)
+    except OSError as error:
+        errors.append(
+            validate.ContractError(
+                "PROJECTION_PATH_UNSAFE",
+                display,
+                f"refusing to write through an unsafe target: {error}",
+            )
+        )
+        return False
+    try:
+        os.write(descriptor, data)
+    finally:
+        os.close(descriptor)
+    return True
+
+
 def run_adapt(root, manifest, check):
     """Project the manifest into platform files. Root must already be validated."""
     project_root = root.parent
@@ -198,23 +359,30 @@ def run_adapt(root, manifest, check):
             continue
         spec = ADAPTERS[name]
         rel = PurePosixPath(spec["path"])
-        target = project_root.joinpath(*rel.parts)
+        rel_parts = rel.parts
         display = rel.as_posix()
-        existing = target.read_text(encoding="utf-8") if target.is_file() else None
-        if spec["mode"] == "file":
-            expected = render_cursor_file(manifest)
-        else:
-            try:
-                expected = apply_managed_block(existing, render_block_body(manifest))
-            except MarkerBrokenError:
-                errors.append(
-                    validate.ContractError(
-                        "PROJECTION_MARKER_BROKEN",
-                        display,
-                        "managed block markers are missing their pair or out of order",
-                    )
+        state = _inspect_target(project_root, rel_parts, display, errors, read=True)
+        if state is None:
+            continue
+        _kind, existing = state
+        try:
+            if spec["mode"] == "file":
+                if existing is not None:
+                    _check_marker_integrity(existing)
+                expected = render_cursor_file(manifest).encode("utf-8")
+            else:
+                expected = apply_managed_block(
+                    existing, render_block_body(manifest).encode("utf-8")
                 )
-                continue
+        except MarkerBrokenError:
+            errors.append(
+                validate.ContractError(
+                    "PROJECTION_MARKER_BROKEN",
+                    display,
+                    "managed block markers are missing their pair or out of order",
+                )
+            )
+            continue
         if check:
             if existing is None:
                 stale.append(display)
@@ -235,11 +403,9 @@ def run_adapt(root, manifest, check):
             else:
                 unchanged.append(display)
         else:
-            if existing == expected:
+            if existing is not None and existing == expected:
                 unchanged.append(display)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(expected, encoding="utf-8")
+            elif _write_projection(project_root, rel_parts, display, expected, errors):
                 written.append(display)
     return errors, notices, written, unchanged, stale
 

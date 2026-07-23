@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -54,45 +55,77 @@ def run_instance_cli(root, *args):
         text=True,
         capture_output=True,
         check=False,
+        timeout=60,
     )
 
 
 BODY = "example body"
-BLOCK = f"{harness.MARKER_BEGIN}\n{BODY}\n{harness.MARKER_END}\n"
+BODY_BYTES = BODY.encode("utf-8")
+BEGIN = harness.MARKER_BEGIN_BYTES
+END = harness.MARKER_END_BYTES
+BLOCK = BEGIN + b"\n" + BODY_BYTES + b"\n" + END + b"\n"
 
 
 class ManagedBlockTests(unittest.TestCase):
     def test_create_when_file_absent(self):
-        self.assertEqual(BLOCK, harness.apply_managed_block(None, BODY))
+        self.assertEqual(BLOCK, harness.apply_managed_block(None, BODY_BYTES))
 
     def test_create_when_file_empty(self):
-        self.assertEqual(BLOCK, harness.apply_managed_block("", BODY))
+        self.assertEqual(BLOCK, harness.apply_managed_block(b"", BODY_BYTES))
 
     def test_append_when_no_markers(self):
-        result = harness.apply_managed_block("user text\n", BODY)
-        self.assertEqual("user text\n\n" + BLOCK, result)
-        result = harness.apply_managed_block("no trailing newline", BODY)
-        self.assertEqual("no trailing newline\n\n" + BLOCK, result)
+        result = harness.apply_managed_block(b"user text\n", BODY_BYTES)
+        self.assertEqual(b"user text\n\n" + BLOCK, result)
+        result = harness.apply_managed_block(b"no trailing newline", BODY_BYTES)
+        self.assertEqual(b"no trailing newline\n\n" + BLOCK, result)
 
     def test_replace_between_markers_preserves_user_text(self):
-        existing = "before\n" + f"{harness.MARKER_BEGIN}\nold\n{harness.MARKER_END}\n" + "after\n"
-        result = harness.apply_managed_block(existing, BODY)
-        self.assertEqual("before\n" + BLOCK + "after\n", result)
+        existing = b"before\n" + BEGIN + b"\nold\n" + END + b"\n" + b"after\n"
+        result = harness.apply_managed_block(existing, BODY_BYTES)
+        self.assertEqual(b"before\n" + BLOCK + b"after\n", result)
 
     def test_apply_is_idempotent(self):
-        once = harness.apply_managed_block("user text\n", BODY)
-        twice = harness.apply_managed_block(once, BODY)
+        once = harness.apply_managed_block(b"user text\n", BODY_BYTES)
+        twice = harness.apply_managed_block(once, BODY_BYTES)
         self.assertEqual(once, twice)
+
+    def test_crlf_prefix_is_preserved_byte_for_byte(self):
+        existing = b"USER\r\nNOTES\r\n\r\n" + BEGIN + b"\nold\n" + END + b"\n"
+        result = harness.apply_managed_block(existing, BODY_BYTES)
+        self.assertTrue(result.startswith(b"USER\r\nNOTES\r\n\r\n" + BEGIN))
+        # Second pass is byte-identical (no newline translation, no drift).
+        self.assertEqual(result, harness.apply_managed_block(result, BODY_BYTES))
+
+    def test_blank_lines_after_end_are_preserved(self):
+        # Review probe: b'\n\n\nUSER-SUFFIX\n' after END must survive unchanged.
+        existing = BEGIN + b"\nold\n" + END + b"\n\n\nUSER-SUFFIX\n"
+        result = harness.apply_managed_block(existing, BODY_BYTES)
+        self.assertEqual(BLOCK + b"\n\nUSER-SUFFIX\n", result)
+        self.assertTrue(result.endswith(b"\n\n\nUSER-SUFFIX\n"))
+        self.assertEqual(result, harness.apply_managed_block(result, BODY_BYTES))
+
+    def test_file_without_trailing_newline_after_end(self):
+        existing = BEGIN + b"\nold\n" + END
+        result = harness.apply_managed_block(existing, BODY_BYTES)
+        # No trailing newline and at file end: block terminates without newline.
+        self.assertEqual(BEGIN + b"\n" + BODY_BYTES + b"\n" + END, result)
+        self.assertEqual(result, harness.apply_managed_block(result, BODY_BYTES))
+
+    def test_non_ascii_user_content_is_preserved(self):
+        existing = "笔记 café\n".encode("utf-8") + BEGIN + b"\nold\n" + END + b"\n"
+        result = harness.apply_managed_block(existing, BODY_BYTES)
+        self.assertTrue(result.startswith("笔记 café\n".encode("utf-8")))
+        self.assertEqual(result, harness.apply_managed_block(result, BODY_BYTES))
 
     def test_broken_markers_raise(self):
         for text in (
-            f"{harness.MARKER_BEGIN}\nno end\n",
-            f"no begin\n{harness.MARKER_END}\n",
-            f"{harness.MARKER_END}\nswapped\n{harness.MARKER_BEGIN}\n",
-            f"{harness.MARKER_BEGIN}\n{harness.MARKER_BEGIN}\n{harness.MARKER_END}\n",
+            BEGIN + b"\nno end\n",
+            b"no begin\n" + END + b"\n",
+            END + b"\nswapped\n" + BEGIN + b"\n",
+            BEGIN + b"\n" + BEGIN + b"\n" + END + b"\n",
         ):
             with self.assertRaises(harness.MarkerBrokenError):
-                harness.apply_managed_block(text, BODY)
+                harness.apply_managed_block(text, BODY_BYTES)
 
 
 class RenderTests(unittest.TestCase):
@@ -225,6 +258,101 @@ class AdaptCommandTests(unittest.TestCase):
                     )
                 )
         self.assertEqual(outputs[0], outputs[1])
+
+
+class ProjectionNodeSafetyTests(unittest.TestCase):
+    def _codes(self, result):
+        return [error["code"] for error in json.loads(result.stdout)["errors"]]
+
+    def test_target_symlink_escaping_project_is_rejected(self):
+        with instantiated_project() as (project, root):
+            outside = project.parent / "outside.md"
+            outside.write_bytes(b"OUTSIDE")
+            os.symlink(outside, project / "CLAUDE.md")
+            result = run_instance_cli(root, "adapt", "--format", "json")
+            self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+            self.assertIn("PROJECTION_PATH_UNSAFE", self._codes(result))
+            self.assertEqual(b"OUTSIDE", outside.read_bytes())
+            self.assertTrue((project / "CLAUDE.md").is_symlink())
+
+    def test_target_symlink_escaping_under_check_is_rejected(self):
+        with instantiated_project() as (project, root):
+            outside = project.parent / "outside.md"
+            outside.write_bytes(b"OUTSIDE")
+            os.symlink(outside, project / "CLAUDE.md")
+            result = run_instance_cli(root, "adapt", "--check", "--format", "json")
+            self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+            self.assertIn("PROJECTION_PATH_UNSAFE", self._codes(result))
+            self.assertEqual(b"OUTSIDE", outside.read_bytes())
+
+    def test_parent_directory_symlink_escape_is_rejected(self):
+        with instantiated_project() as (project, root):
+            outside_dir = project.parent / "outside_dir"
+            outside_dir.mkdir()
+            os.symlink(outside_dir, project / ".cursor")
+            result = run_instance_cli(root, "adapt", "--format", "json")
+            self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+            errors = json.loads(result.stdout)["errors"]
+            unsafe = [e for e in errors if e["code"] == "PROJECTION_PATH_UNSAFE"]
+            self.assertTrue(unsafe)
+            self.assertIn(".cursor/rules/harness.mdc", [e["path"] for e in unsafe])
+            # Nothing was written through the symlink into the outside directory.
+            self.assertEqual([], list(outside_dir.rglob("*")))
+
+    def test_directory_target_is_rejected_without_reading(self):
+        with instantiated_project() as (project, root):
+            (project / "CLAUDE.md").mkdir()
+            result = run_instance_cli(root, "adapt", "--format", "json")
+            self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+            self.assertIn("PROJECTION_TARGET_INVALID", self._codes(result))
+            self.assertTrue((project / "CLAUDE.md").is_dir())
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO not supported on this platform")
+    def test_fifo_target_is_rejected_without_hanging(self):
+        with instantiated_project() as (project, root):
+            os.mkfifo(project / "CLAUDE.md")
+            # timeout=60 in run_instance_cli guards against a blocking open.
+            result = run_instance_cli(root, "adapt", "--format", "json")
+            self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+            self.assertIn("PROJECTION_TARGET_INVALID", self._codes(result))
+
+
+class CursorMarkerIntegrityTests(unittest.TestCase):
+    def _write_cursor(self, project, body):
+        target = project / ".cursor" / "rules"
+        target.mkdir(parents=True)
+        (target / "harness.mdc").write_bytes(body)
+
+    def test_broken_cursor_markers_are_not_overwritten(self):
+        variants = {
+            "begin-only": harness.MARKER_BEGIN_BYTES + b"\nno end\n",
+            "end-only": b"no begin\n" + harness.MARKER_END_BYTES + b"\n",
+            "reversed": harness.MARKER_END_BYTES
+            + b"\nswapped\n"
+            + harness.MARKER_BEGIN_BYTES
+            + b"\n",
+            "duplicated": harness.MARKER_BEGIN_BYTES
+            + b"\n"
+            + harness.MARKER_BEGIN_BYTES
+            + b"\n"
+            + harness.MARKER_END_BYTES
+            + b"\n",
+        }
+        for label, body in variants.items():
+            with self.subTest(variant=label):
+                with instantiated_project() as (project, root):
+                    self._write_cursor(project, body)
+                    result = run_instance_cli(root, "adapt", "--format", "json")
+                    self.assertEqual(1, result.returncode, label)
+                    codes = [
+                        e["code"] for e in json.loads(result.stdout)["errors"]
+                    ]
+                    self.assertIn("PROJECTION_MARKER_BROKEN", codes)
+                    # File is untouched.
+                    self.assertEqual(
+                        body,
+                        (project / ".cursor" / "rules" / "harness.mdc").read_bytes(),
+                    )
 
 
 if __name__ == "__main__":
