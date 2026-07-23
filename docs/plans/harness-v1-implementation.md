@@ -12,7 +12,7 @@
 
 - 仅 Python 3.9+ 标准库；禁止第三方依赖与网络访问（设计 §16）。
 - `template/.harness/` 内任何文件禁止出现 token：`StevenG3`、`2026-07-19`、`scaffold`、`codex/harness-v0-design`（由 `tests/test_template_contract.py::test_bundle_contains_no_producer_history` 机械强制）。因此模板名常量取 `portable-harness`；分发包内不得写入任何日期。
-- `validate.py` 独立命令契约（参数、输出、退出码）不得改变；只允许内部扩展 Schema v2 支持。既有 `tests/test_validate.py` 的测试**不修改**且必须持续通过。唯一例外（设计方裁决，2026-07-23）：`test_unsupported_schema_version` 原以 `schema_version = 2` 作为「不支持版本」样例，与 v2 合法化直接冲突；允许且仅允许把该样例值改为 `3`，断言与其余逻辑不变——测试意图（不支持的版本被拒绝）由此保持。
+- `validate.py` 独立命令契约（参数、输出、退出码）不得改变；只允许内部扩展 Schema v2 支持。既有 `tests/test_validate.py` 的测试**不修改**且必须持续通过。例外（设计方裁决，2026-07-23，仅限以下三处「样例事实」修正，测试意图不变）：(a) `test_unsupported_schema_version` 的样例值 `schema_version = 2` 改为 `3`（意图：不支持的版本被拒绝）；(b) `test_json_success_contract` 对官方模板 `schema_version` 的断言由 `1` 改为 `2`（意图：JSON 成功输出契约稳定）；(c) `test_duplicate_component_id` 期望的指针由 `components/3/id` 改为 `components/4/id`（意图：重复 id 被定位报告；模板组件数由 3 变 4 所致）。除此三处外 `tests/test_validate.py` 不得修改。
 - 退出码语义全 CLI 统一：`0` 成功；`1` 契约/状态违规；`2` 参数错误、根不可读或内部错误。
 - 所有命令确定性输出：产物与 stdout 不含时间戳、随机值；产物文件不含绝对路径。
 - 受管块外的用户内容在任何操作下逐字节保留；`init` 之外的命令不得在 `.harness/` 内创建文件。
