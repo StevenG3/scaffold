@@ -35,6 +35,9 @@ AI Coding 正从 Prompt Engineering、Context Engineering 走向 **Harness Engin
 - [Harness v0 设计规格](docs/design/harness-v0.md)
 - [ADR-0001：可移植 Harness 契约](docs/adr/0001-portable-harness-contract.md)
 - [Harness v0 实施计划](docs/plans/harness-v0-implementation.md)
+- [Harness v1 设计规格](docs/design/harness-v1.md)
+- [ADR-0002：实例化与适配投影](docs/adr/0002-instantiation-and-adapter-projection.md)
+- [Harness v1 实施计划](docs/plans/harness-v1-implementation.md)
 
 审阅记录（「发现一次 Agent 错误 → 工程化消除同类错误」的可追溯依据）：
 
