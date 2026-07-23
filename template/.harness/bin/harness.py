@@ -11,6 +11,9 @@ BIN_DIR = Path(__file__).resolve().parent
 if str(BIN_DIR) not in sys.path:
     sys.path.insert(0, str(BIN_DIR))
 sys.dont_write_bytecode = True
+# An importing loader may cache this module's bytecode before the line above
+# runs; drop that cache so the in-tree bundle never carries generated files.
+shutil.rmtree(BIN_DIR / "__pycache__", ignore_errors=True)
 import validate  # noqa: E402
 
 TEMPLATE_NAME = "portable-harness"
@@ -81,6 +84,87 @@ def emit(fmt, command, ok, errors, notices, extra):
         if ok:
             sys.stdout.write(f"{command}: ok\n")
     return 0 if ok else 1
+
+
+def apply_managed_block(existing_text, body):
+    """Insert or refresh the managed block; user text outside it is untouched."""
+    block = MARKER_BEGIN + "\n" + body + "\n" + MARKER_END + "\n"
+    if existing_text is None:
+        return block
+    begins = existing_text.count(MARKER_BEGIN)
+    ends = existing_text.count(MARKER_END)
+    if begins == 0 and ends == 0:
+        prefix = existing_text
+        if not prefix.endswith("\n"):
+            prefix += "\n"
+        return prefix + "\n" + block
+    if begins != 1 or ends != 1:
+        raise MarkerBrokenError("managed block markers are broken")
+    begin_index = existing_text.index(MARKER_BEGIN)
+    end_index = existing_text.index(MARKER_END)
+    if end_index < begin_index:
+        raise MarkerBrokenError("managed block markers are broken")
+    suffix = existing_text[end_index + len(MARKER_END):].lstrip("\n")
+    return existing_text[:begin_index] + block + suffix
+
+
+def render_block_body(manifest):
+    entrypoint = manifest["entrypoint"]
+    template_dir = manifest["change_management"]["template"]
+    lines = [
+        "This project uses a portable AI coding harness stored in `.harness/`.",
+        "",
+        f"- Entrypoint: `.harness/{entrypoint}`",
+        "- Manifest: `.harness/manifest.json`",
+        "",
+        "Components:",
+        "",
+    ]
+    for component in manifest["components"]:
+        lines.append(
+            f"- {component['id']} ({component['kind']}): `.harness/{component['path']}`"
+        )
+    lines.extend(
+        [
+            "",
+            "Workflow:",
+            "",
+            "1. Read the entrypoint, then load only the components needed for the current task.",
+            f"2. Deliver changes through a Change Record started from `.harness/{template_dir}/`.",
+            "3. Run `python3 .harness/bin/harness.py validate` before delivery.",
+            "",
+            "Do not edit this block by hand. Regenerate it with `python3 .harness/bin/harness.py adapt`.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+CURSOR_FRONTMATTER = (
+    "---\n"
+    "description: Portable AI coding harness entrypoint\n"
+    "alwaysApply: true\n"
+    "---\n"
+    "\n"
+)
+
+
+def render_cursor_file(manifest):
+    return (
+        CURSOR_FRONTMATTER
+        + MARKER_BEGIN
+        + "\n"
+        + render_block_body(manifest)
+        + "\n"
+        + MARKER_END
+        + "\n"
+    )
+
+
+ADAPTERS = {
+    "claude-code": {"path": "CLAUDE.md", "mode": "block"},
+    "codex": {"path": "AGENTS.md", "mode": "block"},
+    "cursor": {"path": ".cursor/rules/harness.mdc", "mode": "file"},
+}
 
 
 def cmd_validate(root, fmt):
