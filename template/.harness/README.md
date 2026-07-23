@@ -30,7 +30,7 @@ From a local copy of the template, run:
 ## Commands
 
 - `python3 bin/harness.py validate` - check the Harness contract (read-only).
-- `python3 bin/harness.py adapt` - regenerate platform projection files; only managed blocks are touched.
+- `python3 bin/harness.py adapt` - regenerate platform projection files; in `CLAUDE.md` and `AGENTS.md` only the managed block is touched, while `.cursor/rules/harness.mdc` is fully tool-owned and regenerated whole.
 - `python3 bin/harness.py adapt --check` - fail if projections are stale; useful in CI.
 
 All commands require Python 3.9 or newer and use only the standard library.

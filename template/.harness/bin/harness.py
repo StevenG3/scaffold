@@ -80,13 +80,18 @@ def emit(fmt, command, ok, errors, notices, extra):
             sys.stdout.write(f"written: {path}\n")
         if ok:
             sys.stdout.write(f"{command}: ok\n")
+            if command == "init":
+                sys.stdout.write(
+                    "next: run the harness-bootstrap skill in your agent "
+                    "to customize this Harness\n"
+                )
     return 0 if ok else 1
 
 
 def apply_managed_block(existing_text, body):
     """Insert or refresh the managed block; user text outside it is untouched."""
     block = MARKER_BEGIN + "\n" + body + "\n" + MARKER_END + "\n"
-    if existing_text is None:
+    if existing_text is None or existing_text == "":
         return block
     begins = existing_text.count(MARKER_BEGIN)
     ends = existing_text.count(MARKER_END)

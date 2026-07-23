@@ -100,6 +100,13 @@ class InitCommandTests(unittest.TestCase):
                 self.assertTrue((project / name).is_file(), name)
             self.assertFalse(list(root.rglob("__pycache__")))
 
+    def test_init_success_text_prints_next_step(self):
+        with temp_project() as project:
+            result = run_cli(HARNESS_CLI, "init", "--target", str(project))
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertIn("init: ok", result.stdout)
+            self.assertIn("harness-bootstrap", result.stdout)
+
     def test_initialized_copy_is_self_sufficient(self):
         with temp_project() as project:
             run_cli(HARNESS_CLI, "init", "--target", str(project))

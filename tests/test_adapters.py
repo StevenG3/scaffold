@@ -65,6 +65,9 @@ class ManagedBlockTests(unittest.TestCase):
     def test_create_when_file_absent(self):
         self.assertEqual(BLOCK, harness.apply_managed_block(None, BODY))
 
+    def test_create_when_file_empty(self):
+        self.assertEqual(BLOCK, harness.apply_managed_block("", BODY))
+
     def test_append_when_no_markers(self):
         result = harness.apply_managed_block("user text\n", BODY)
         self.assertEqual("user text\n\n" + BLOCK, result)
