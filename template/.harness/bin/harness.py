@@ -134,7 +134,11 @@ def emit_command_error(fmt, command, errors, extra):
         )
     else:
         for item in errors:
-            sys.stderr.write(f"[{item.code}] {item.path}: {item.message}\n")
+            sys.stderr.write(
+                f"[{validate.escape_text_field(item.code)}] "
+                f"{validate.escape_text_field(item.path)}: "
+                f"{validate.escape_text_field(item.message)}\n"
+            )
     return 2
 
 
@@ -632,7 +636,10 @@ def cmd_init(target, adapters_raw, fmt):
             ],
         )
     destination = target / ".harness"
-    if destination.exists():
+    # lexists (not exists) so ANY directory entry named .harness — regular
+    # file, directory, or symlink including a dangling one — counts as
+    # already existing and is refused before copytree (design §7.2 step 2).
+    if os.path.lexists(destination):
         return _init_failure(
             fmt,
             [

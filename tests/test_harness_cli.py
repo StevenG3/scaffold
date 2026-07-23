@@ -215,6 +215,38 @@ class InitCommandTests(unittest.TestCase):
             self.assertFalse((project / ".harness" / ".pytest_cache").exists())
             self.assertFalse(list((project / ".harness").rglob(".pytest_cache")))
 
+    def test_init_refuses_dangling_harness_symlink(self):
+        with temp_project() as project:
+            destination = project / ".harness"
+            os.symlink(project / "missing-target", destination)
+            result = run_cli(HARNESS_CLI, "init", "--target", str(project))
+            self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+            self.assertIn("[INIT_TARGET_EXISTS]", result.stdout)
+            # The symlink is untouched: no copytree ran through it.
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(
+                str(project / "missing-target"), os.readlink(destination)
+            )
+            self.assertFalse(destination.exists())  # still dangling
+
+    def test_command_error_text_escapes_control_characters(self):
+        with temp_project() as project:
+            result = run_cli(
+                HARNESS_CLI,
+                "init",
+                "--target",
+                str(project),
+                "--adapters",
+                "bad\nname",
+            )
+            self.assertEqual(2, result.returncode)
+            self.assertEqual("", result.stdout)
+            self.assertIn("bad\\u000aname", result.stderr)
+            self.assertNotIn("bad\nname", result.stderr)
+            # Exactly one physical line for the single error (plus trailing \n).
+            self.assertEqual(1, result.stderr.count("\n"))
+            self.assertFalse((project / ".harness").exists())
+
     def test_init_writes_only_declared_paths(self):
         with temp_project() as project:
             (project / "src").mkdir()
