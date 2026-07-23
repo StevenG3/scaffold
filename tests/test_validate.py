@@ -128,7 +128,7 @@ class ManifestStructureTests(unittest.TestCase):
     def test_unsupported_schema_version(self):
         with copied_harness() as root:
             manifest = read_manifest(root)
-            manifest["schema_version"] = 2
+            manifest["schema_version"] = 3
             write_manifest(root, manifest)
             result = run_validator(root=root, output_format="json")
         self.assertEqual(1, result.returncode)

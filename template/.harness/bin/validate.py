@@ -10,6 +10,11 @@ BUILTIN_KINDS = {"agent", "rule", "skill"}
 TOP_LEVEL_FIELDS = {"schema_version", "entrypoint", "components", "change_management"}
 COMPONENT_FIELDS = {"id", "kind", "path"}
 CHANGE_FIELDS = {"template", "records", "required_files"}
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+BUILTIN_ADAPTER_NAMES = ("claude-code", "codex", "cursor")
+TOP_LEVEL_FIELDS_V2 = TOP_LEVEL_FIELDS | {"template_version", "adapters", "origin"}
+ORIGIN_FIELDS = {"template_name", "template_version", "initialized_at_schema"}
+_SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 
 @dataclass(frozen=True, order=True)
@@ -204,10 +209,8 @@ def validate_manifest_structure(manifest):
         )
         return errors
 
-    reject_unknown_fields(manifest, TOP_LEVEL_FIELDS, (), errors)
-
     schema_version = require_field(manifest, "schema_version", int, (), errors)
-    if schema_version is not None and schema_version != 1:
+    if schema_version is not None and schema_version not in SUPPORTED_SCHEMA_VERSIONS:
         errors.append(
             ContractError(
                 "SCHEMA_VERSION_UNSUPPORTED",
@@ -215,6 +218,11 @@ def validate_manifest_structure(manifest):
                 f"schema_version {schema_version!r} is unsupported",
             )
         )
+
+    allowed_top = TOP_LEVEL_FIELDS_V2 if schema_version == 2 else TOP_LEVEL_FIELDS
+    reject_unknown_fields(manifest, allowed_top, (), errors)
+    if schema_version == 2:
+        _validate_v2_fields(manifest, errors)
 
     require_field(manifest, "entrypoint", str, (), errors)
 
@@ -296,6 +304,106 @@ def validate_manifest_structure(manifest):
                         )
 
     return errors
+
+
+def _validate_semver(value, pointer, errors, field_name):
+    if type(value) is not str or not _SEMVER_RE.match(value):
+        errors.append(
+            ContractError(
+                "FIELD_VALUE_INVALID",
+                pointer,
+                f"field {field_name!r} must be a semantic version like '1.2.3'",
+            )
+        )
+        return False
+    return True
+
+
+def _validate_v2_fields(manifest, errors):
+    if "template_version" in manifest:
+        _validate_semver(
+            manifest["template_version"],
+            json_pointer("template_version"),
+            errors,
+            "template_version",
+        )
+
+    if "adapters" in manifest:
+        adapters = manifest["adapters"]
+        if type(adapters) is not list:
+            errors.append(
+                ContractError(
+                    "FIELD_TYPE_INVALID",
+                    json_pointer("adapters"),
+                    "field 'adapters' must be list",
+                )
+            )
+        else:
+            seen = set()
+            for index, name in enumerate(adapters):
+                pointer = json_pointer("adapters", index)
+                if type(name) is not str or name == "":
+                    errors.append(
+                        ContractError(
+                            "FIELD_TYPE_INVALID",
+                            pointer,
+                            "adapter name must be a non-empty string",
+                        )
+                    )
+                    continue
+                if name not in BUILTIN_ADAPTER_NAMES and not (
+                    name.startswith("x-") and len(name) > 2
+                ):
+                    errors.append(
+                        ContractError(
+                            "FIELD_VALUE_INVALID",
+                            pointer,
+                            f"unsupported adapter {name!r}",
+                        )
+                    )
+                if name in seen:
+                    errors.append(
+                        ContractError(
+                            "FIELD_VALUE_INVALID",
+                            pointer,
+                            f"duplicate adapter {name!r}",
+                        )
+                    )
+                seen.add(name)
+
+    origin = manifest.get("origin")
+    if "origin" in manifest and origin is not None:
+        location = ("origin",)
+        if type(origin) is not dict:
+            errors.append(
+                ContractError(
+                    "FIELD_TYPE_INVALID",
+                    json_pointer("origin"),
+                    "field 'origin' must be null or an object",
+                )
+            )
+        else:
+            reject_unknown_fields(origin, ORIGIN_FIELDS, location, errors)
+            require_field(origin, "template_name", str, location, errors)
+            version = require_field(origin, "template_version", str, location, errors)
+            if version is not None:
+                _validate_semver(
+                    version,
+                    json_pointer("origin", "template_version"),
+                    errors,
+                    "template_version",
+                )
+            initialized = require_field(
+                origin, "initialized_at_schema", int, location, errors
+            )
+            if initialized is not None and initialized not in SUPPORTED_SCHEMA_VERSIONS:
+                errors.append(
+                    ContractError(
+                        "FIELD_VALUE_INVALID",
+                        json_pointer("origin", "initialized_at_schema"),
+                        f"initialized_at_schema {initialized!r} is unsupported",
+                    )
+                )
 
 
 def _is_supported_kind(kind):
