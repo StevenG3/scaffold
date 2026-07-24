@@ -417,8 +417,17 @@ def _write_projection(project_root, rel_parts, display, data, errors):
             os.fsync(descriptor)
         except OSError as error:
             raise ProjectionIOError(display, f"failed to fsync projection: {error}")
-        # Close before the swap; mark the fd consumed first so the finally clause
-        # never double-closes a descriptor we already handed to os.close.
+        # Descriptor ownership (design §8.3): os.close is called EXACTLY ONCE per
+        # fd. descriptor is set to None BEFORE entering os.close, so whether the
+        # call returns or raises, the finally clause below can never issue a
+        # second close on the same fd. A raising close means the fd is CONSUMED
+        # and is NEVER retried (a retry could close an fd the OS has already
+        # reused, which is worse than a leak). If close raises BEFORE the real
+        # release, we accept the pathological in-process fd residual — this CLI is
+        # a short-lived process and the residual is reclaimed at exit (§8.3) — and
+        # convert to ProjectionIOError; committed stays False so the finally still
+        # removes the temp file, and the original target is byte-identical because
+        # os.replace never ran.
         close_fd = descriptor
         descriptor = None
         try:
@@ -628,14 +637,18 @@ def _parse_adapters_argument(raw, errors):
     return names
 
 
-def _init_failure(fmt, errors, notices=(), target=None):
+def _init_failure(fmt, errors, notices=(), target=None, projected_files=None):
+    # projected_files defaults to empty (pre-copy failures commit nothing) but
+    # MUST carry the real committed projections on exit-1 paths that follow a
+    # partial adapt (node-layout error mid-loop, final-validation failure). An
+    # empty list there is a false external fact (design §7.1).
     return emit(
         fmt,
         "init",
         False,
         errors,
         list(notices),
-        {"target": target, "projected_files": []},
+        {"target": target, "projected_files": list(projected_files or [])},
     )
 
 
@@ -826,8 +839,16 @@ def cmd_init(target, adapters_raw, fmt):
             notices=[cleanup_hint],
         )
     if errors:
+        # exit-1 contract error mid-adapt (e.g. a node-layout PROJECTION_* on a
+        # later projection). run_adapt continues past node errors, so earlier and
+        # later projections may already be committed: report the real progress
+        # (design §7.1), never a fixed empty list.
         return _init_failure(
-            fmt, errors, notices=[cleanup_hint] + notices, target=str(destination)
+            fmt,
+            errors,
+            notices=[cleanup_hint] + notices,
+            target=str(destination),
+            projected_files=written + unchanged,
         )
 
     # Final validate reads files inside the freshly written destination; an
@@ -855,11 +876,14 @@ def cmd_init(target, adapters_raw, fmt):
             notices=[cleanup_hint],
         )
     if not final_result.valid:
+        # Contract error (exit 1) after a full adapt: all projections committed,
+        # so report them truthfully (design §7.1), not an empty list.
         return _init_failure(
             fmt,
             list(final_result.errors),
             notices=[cleanup_hint],
             target=str(destination),
+            projected_files=written + unchanged,
         )
 
     return emit(

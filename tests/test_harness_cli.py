@@ -408,6 +408,33 @@ class InitCommandTests(unittest.TestCase):
                 self.assertTrue((project / name).is_file(), name)
             self.assertTrue((project / ".harness").is_dir())
 
+    def test_init_exit1_reports_partial_projection_progress(self):
+        # J3: AGENTS.md pre-exists as a DIRECTORY. init commits CLAUDE.md, hits a
+        # PROJECTION_TARGET_INVALID on AGENTS.md, continues and commits the Cursor
+        # projection. The exit-1 envelope must report the two committed files, not
+        # a fixed empty list, and carry the cleanup hint.
+        with temp_project() as project:
+            (project / "AGENTS.md").mkdir()
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                rc = harness.cmd_init(project, None, "json")
+            self.assertEqual(1, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertIn(
+                "PROJECTION_TARGET_INVALID", [e["code"] for e in payload["errors"]]
+            )
+            self.assertEqual(
+                ["CLAUDE.md", ".cursor/rules/harness.mdc"],
+                payload["projected_files"],
+            )
+            self.assertIn(
+                "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
+            )
+            # projected_files matches what is actually on disk.
+            self.assertTrue((project / "CLAUDE.md").is_file())
+            self.assertTrue((project / ".cursor" / "rules" / "harness.mdc").is_file())
+
     @unittest.skipIf(sys.platform == "win32", "POSIX surrogateescape argv only")
     def test_non_utf8_argv_rejected_before_json_envelope(self):
         # H4: a non-UTF-8 argv byte (0xff) must be rejected before any subcommand

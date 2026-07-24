@@ -456,6 +456,30 @@ class FailureAtomicWriteTests(unittest.TestCase):
             self.assertEqual(self.ORIGINAL, (project / "CLAUDE.md").read_bytes())
             self.assertFalse(self._temp_path(project).exists())
 
+    def test_preclose_fault_converts_and_does_not_retry_close(self):
+        # J4: os.close raises BEFORE the real release (pre-close fault). Per the
+        # §8.3 exactly-once contract the close is NOT retried: it must convert to
+        # PROJECTION_IO_ERROR, keep the target byte-identical, leave no temp file,
+        # and os.close must have been called exactly once.
+        with self._project() as project:
+            (project / "CLAUDE.md").write_bytes(self.ORIGINAL)
+            errors = []
+
+            def raise_before_close(fd):
+                # Do NOT release the fd; simulate a fault before the real close.
+                raise OSError("simulated pre-close failure")
+
+            mock_close = mock.Mock(side_effect=raise_before_close)
+            with mock.patch.object(harness.os, "close", mock_close):
+                with self.assertRaises(harness.ProjectionIOError) as caught:
+                    harness._write_projection(
+                        project, self.REL, self.DISPLAY, self.PAYLOAD, errors
+                    )
+            self.assertEqual("PROJECTION_IO_ERROR", caught.exception.error.code)
+            self.assertEqual(self.ORIGINAL, (project / "CLAUDE.md").read_bytes())
+            self.assertFalse(self._temp_path(project).exists())
+            self.assertEqual(1, mock_close.call_count)
+
     def test_partial_progress_reported_when_second_projection_fails(self):
         # H3: CLAUDE.md commits, then AGENTS.md write fails. The envelope must
         # report written == ["CLAUDE.md"] (never an empty lie) and CLAUDE.md must
