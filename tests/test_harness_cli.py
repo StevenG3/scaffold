@@ -370,6 +370,40 @@ class InitCommandTests(unittest.TestCase):
             self.assertEqual([], payload["projected_files"])
             self.assertFalse((project / ".harness").exists())
 
+    def test_source_validate_oserror_emits_init_io_error(self):
+        # Source validation reads files inside the source bundle; a bare OSError
+        # (e.g. a present-but-unreadable manifest.json, which validate.py guards
+        # only for JSONDecodeError) must render as INIT_IO_ERROR (exit 2), not
+        # escape to a bare INTERNAL_ERROR. Nothing is copied yet: target null,
+        # projected_files empty, no cleanup hint.
+        real_validate = harness.validate.validate_harness
+        calls = {"count": 0}
+
+        def flaky_validate(root):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OSError("simulated source read failure")
+            return real_validate(root)
+
+        with temp_project() as project:
+            buffer = io.StringIO()
+            with mock.patch.object(
+                harness.validate, "validate_harness", flaky_validate
+            ):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_init(project, None, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertEqual("init", payload["command"])
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertEqual([], payload["notices"])
+            self.assertIsNone(payload["target"])
+            self.assertEqual([], payload["projected_files"])
+            self.assertFalse((project / ".harness").exists())
+
     def test_final_validate_io_failure_emits_hint_and_real_progress(self):
         # J1(b): copy, stamp and all three projections succeed, then the FINAL
         # validate_harness(destination) raises OSError. It must render as

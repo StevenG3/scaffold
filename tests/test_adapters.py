@@ -542,6 +542,10 @@ class FailureAtomicWriteTests(unittest.TestCase):
             self.assertIn(
                 "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
             )
+            # projected_files uses written + unchanged (consistent with the
+            # success and exit-1 paths). The very first projection fails to commit
+            # here, so both lists are empty.
+            self.assertEqual([], payload["projected_files"])
             # The copied tree is left in place for the user to inspect/remove.
             self.assertTrue((project / ".harness").is_dir())
 
@@ -578,6 +582,33 @@ class AdaptErrorPathTests(unittest.TestCase):
             self.assertFalse(payload["ok"])
             self.assertEqual("adapt", payload["command"])
             self.assertTrue(payload["errors"])
+
+    def test_adapt_validate_oserror_emits_io_error_envelope(self):
+        # Symmetric with the init source-validate boundary: a bare OSError raised
+        # while validate_harness reads a present-but-unreadable file must render as
+        # PROJECTION_IO_ERROR (exit 2) with the full adapt envelope, not escape to
+        # a bare INTERNAL_ERROR.
+        import io
+        from contextlib import redirect_stdout
+
+        def boom(root):
+            raise OSError("simulated validate read failure")
+
+        with instantiated_project() as (project, root):
+            buffer = io.StringIO()
+            with mock.patch.object(harness.validate, "validate_harness", boom):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_adapt(root, False, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertEqual("adapt", payload["command"])
+            self.assertEqual(
+                ["PROJECTION_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertEqual([], payload["written"])
+            self.assertEqual([], payload["unchanged"])
+            self.assertEqual([], payload["stale"])
 
     def test_adapt_manifest_reread_io_error_json_envelope(self):
         # J2: validate_harness succeeds, then the post-validate manifest re-read

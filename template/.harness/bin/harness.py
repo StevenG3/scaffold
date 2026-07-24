@@ -541,6 +541,10 @@ def _run_adapt_loop(
 
 
 def cmd_adapt(root, check, fmt):
+    # Symmetric with the init source-validate boundary: RootUnreadableError keeps
+    # its ROOT_UNREADABLE rendering, but a bare OSError from a present-but-
+    # unreadable file during validation is a runtime I/O fault → PROJECTION_IO_ERROR
+    # envelope, exit 2, honoring --format (design §7.1/§7.3).
     try:
         result = validate.validate_harness(root)
     except validate.RootUnreadableError as error:
@@ -548,6 +552,19 @@ def cmd_adapt(root, check, fmt):
             fmt,
             "adapt",
             [validate.ContractError("ROOT_UNREADABLE", ".", str(error))],
+            {"written": [], "unchanged": [], "stale": []},
+        )
+    except OSError as error:
+        return emit_command_error(
+            fmt,
+            "adapt",
+            [
+                validate.ContractError(
+                    "PROJECTION_IO_ERROR",
+                    ".",
+                    f"failed to read harness during validation: {error}",
+                )
+            ],
             {"written": [], "unchanged": [], "stale": []},
         )
     if not result.valid:
@@ -666,6 +683,12 @@ def cmd_init(target, adapters_raw, fmt):
                 {"target": None, "projected_files": []},
             )
 
+    # Source validation reads files inside the source bundle (manifest.json et
+    # al.). RootUnreadableError keeps its ROOT_UNREADABLE stderr rendering, but a
+    # bare OSError from e.g. a present-but-unreadable manifest.json is a post-parse
+    # runtime I/O fault (design §7.2 enumerates 源校验 reads as INIT_IO_ERROR):
+    # route it to the envelope, exit 2. Nothing is copied yet, so target is null,
+    # projected_files empty, and no cleanup hint.
     try:
         source_result = validate.validate_harness(source)
     except validate.RootUnreadableError as error:
@@ -673,6 +696,19 @@ def cmd_init(target, adapters_raw, fmt):
             fmt,
             "init",
             [validate.ContractError("ROOT_UNREADABLE", ".", str(error))],
+            {"target": None, "projected_files": []},
+        )
+    except OSError as error:
+        return emit_command_error(
+            fmt,
+            "init",
+            [
+                validate.ContractError(
+                    "INIT_IO_ERROR",
+                    ".",
+                    f"failed to read source template: {error}",
+                )
+            ],
             {"target": None, "projected_files": []},
         )
     if not source_result.valid:
@@ -827,14 +863,15 @@ def cmd_init(target, adapters_raw, fmt):
     except ProjectionIOError as io_error:
         # Post-copy runtime I/O fault: exit 2 per §7.1, but §7.2 still requires
         # the cleanup hint so the user knows the copied tree remains on disk.
-        # projected_files reports the projections committed before the fault.
+        # projected_files reports the projections committed before the fault —
+        # written + unchanged, consistent with the success and exit-1 paths.
         return emit_command_error(
             fmt,
             "init",
             [io_error.error],
             {
                 "target": str(destination),
-                "projected_files": list(io_error.written),
+                "projected_files": list(io_error.written) + list(io_error.unchanged),
             },
             notices=[cleanup_hint],
         )
