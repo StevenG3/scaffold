@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import importlib.util
 import io
@@ -746,15 +747,17 @@ class R5ValidateSymmetryTests(unittest.TestCase):
 
 class R5TargetResolveTests(unittest.TestCase):
     def test_success_target_resolve_fault_maps_to_init_io_error(self):
-        # F4: the normalized-destination resolve now runs BEFORE copytree, so a
-        # resolve fault is a pre-copy INIT_IO_ERROR (exit 2) with NO partial
-        # target on disk — never a bare INTERNAL_ERROR after files land.
+        # F4: the normalized target resolve runs BEFORE copytree, so a resolve
+        # fault is a pre-copy INIT_IO_ERROR (exit 2) with NO partial target on
+        # disk — never a bare INTERNAL_ERROR after files land. R6: the resolve is
+        # taken on the PARENT target (never following the .harness leaf), so the
+        # fault is injected on the project directory itself.
         real_resolve = Path.resolve
         with temp_project() as project:
             destination = project / ".harness"
 
             def failing_resolve(self, *a, **k):
-                if self == destination:
+                if self == project:
                     raise OSError("simulated target resolve failure")
                 return real_resolve(self, *a, **k)
 
@@ -821,6 +824,404 @@ class R5ProjectedFilesSemanticsTests(unittest.TestCase):
             # The pre-existing file is byte-identical and same inode.
             self.assertEqual(inode_before, claude.stat().st_ino)
             self.assertEqual(expected_claude, claude.read_bytes())
+
+
+@contextmanager
+def _chdir(path):
+    previous = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
+
+
+class R6InitTargetCheckTests(unittest.TestCase):
+    """R6 finding 1: the init target/destination directory-entry checks live
+    inside the init I/O boundary (§7.2 stage 3). A genuinely absent/non-dir
+    target is INIT_TARGET_MISSING (exit 1); a runtime path fault (loop,
+    inaccessible, EILSEQ) is INIT_IO_ERROR (exit 2); an existing entry —
+    including a dangling symlink — is INIT_TARGET_EXISTS (exit 1)."""
+
+    def test_symlink_loop_target_maps_to_init_io_error(self):
+        # A real self-referential symlink: os.stat follows and raises ELOOP.
+        # That is NOT the predictable "target missing" state; it must surface as
+        # INIT_IO_ERROR / exit 2, not be swallowed by Path.is_dir() into
+        # INIT_TARGET_MISSING / exit 1.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loop = Path(temp_dir) / "loop"
+            os.symlink(loop, loop)
+            for fmt in ("text", "json"):
+                result = run_cli(
+                    HARNESS_CLI, "init", "--target", str(loop), "--format", fmt
+                )
+                self.assertEqual(
+                    2, result.returncode, (fmt, result.stdout, result.stderr)
+                )
+                if fmt == "json":
+                    self.assertEqual("", result.stderr)
+                    payload = json.loads(result.stdout)
+                    self.assertEqual(
+                        ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+                    )
+                    self.assertEqual([], payload["projected_files"])
+                    self.assertIsNone(payload["target"])
+                else:
+                    self.assertEqual("", result.stdout)
+                    self.assertIn("[INIT_IO_ERROR]", result.stderr)
+
+    def test_target_stat_oserror_maps_to_init_io_error(self):
+        with temp_project() as project:
+            real_stat = os.stat
+
+            def flaky_stat(path, *a, **k):
+                if os.fspath(path) == os.fspath(project):
+                    raise OSError("simulated target stat failure")
+                return real_stat(path, *a, **k)
+
+            buffer = io.StringIO()
+            with mock.patch.object(harness.os, "stat", side_effect=flaky_stat):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_init(project, None, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertNotIn("INTERNAL_ERROR", buffer.getvalue())
+            self.assertEqual([], payload["projected_files"])
+            self.assertFalse((project / ".harness").exists())
+
+    def test_destination_lstat_oserror_maps_to_init_io_error(self):
+        with temp_project() as project:
+            destination = project / ".harness"
+            real_lstat = os.lstat
+
+            def flaky_lstat(path, *a, **k):
+                if os.fspath(path) == os.fspath(destination):
+                    raise OSError("simulated destination lstat failure")
+                return real_lstat(path, *a, **k)
+
+            buffer = io.StringIO()
+            with mock.patch.object(harness.os, "lstat", side_effect=flaky_lstat):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_init(project, None, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertNotIn("INTERNAL_ERROR", buffer.getvalue())
+            # Fail closed: no copy happened.
+            self.assertFalse(destination.exists())
+
+    def test_missing_target_still_reports_target_missing(self):
+        with temp_project() as project:
+            result = run_cli(
+                HARNESS_CLI, "init", "--target", str(project / "missing")
+            )
+            self.assertEqual(1, result.returncode)
+            self.assertIn("[INIT_TARGET_MISSING]", result.stdout)
+
+    def test_regular_file_target_reports_target_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            afile = Path(temp_dir) / "afile"
+            afile.write_text("x\n", encoding="utf-8")
+            result = run_cli(HARNESS_CLI, "init", "--target", str(afile))
+            self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+            self.assertIn("[INIT_TARGET_MISSING]", result.stdout)
+
+    def test_regular_file_harness_reports_target_exists(self):
+        with temp_project() as project:
+            (project / ".harness").write_text("x\n", encoding="utf-8")
+            result = run_cli(HARNESS_CLI, "init", "--target", str(project))
+            self.assertEqual(1, result.returncode)
+            self.assertIn("[INIT_TARGET_EXISTS]", result.stdout)
+            # Zero copy: the plain file is untouched.
+            self.assertEqual("x\n", (project / ".harness").read_text(encoding="utf-8"))
+
+    def test_directory_harness_reports_target_exists(self):
+        with temp_project() as project:
+            (project / ".harness").mkdir()
+            result = run_cli(HARNESS_CLI, "init", "--target", str(project))
+            self.assertEqual(1, result.returncode)
+            self.assertIn("[INIT_TARGET_EXISTS]", result.stdout)
+
+
+class R6CachedAbsoluteTargetTests(unittest.TestCase):
+    """R6 finding 2: every post-resolve envelope (copytree, stamp,
+    ProjectionIOError, exit-1 node error, final-validate ×2, cleanup hint,
+    success) reuses the ONE normalized absolute target cached before the copy.
+    Driven with a RELATIVE --target from a temporary cwd so a relative leak is
+    observable."""
+
+    def _assert_absolute_target(self, payload):
+        target = payload["target"]
+        self.assertTrue(target and os.path.isabs(target), target)
+        self.assertTrue(target.endswith("/.harness"), target)
+        # INIT_* command-level errors and the cleanup hint carry the same
+        # cached absolute path. Projection displays (PROJECTION_*) stay relative
+        # to the project root by design and are exempt.
+        for err in payload["errors"]:
+            if err["code"] in ("INIT_IO_ERROR", "INIT_TARGET_EXISTS"):
+                self.assertEqual(target, err["path"], err)
+        for notice in payload["notices"]:
+            if notice["code"] == "INIT_CLEANUP_HINT":
+                self.assertEqual(target, notice["path"], notice)
+        return target
+
+    def _run_relative_init(self, temp_dir, *cm):
+        proj = Path(temp_dir) / "proj"
+        if not proj.exists():
+            proj.mkdir()
+        buffer = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(_chdir(temp_dir))
+            for context in cm:
+                stack.enter_context(context)
+            stack.enter_context(redirect_stdout(buffer))
+            rc = harness.cmd_init(Path("proj"), None, "json")
+        return rc, json.loads(buffer.getvalue())
+
+    def test_copytree_failure_uses_absolute_target(self):
+        def failing_copytree(*a, **k):
+            raise shutil.Error("simulated copytree failure")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rc, payload = self._run_relative_init(
+                temp_dir,
+                mock.patch.object(harness.shutil, "copytree", failing_copytree),
+            )
+            self.assertEqual(2, rc)
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self._assert_absolute_target(payload)
+
+    def test_manifest_stamp_failure_uses_absolute_target(self):
+        real_write_text = Path.write_text
+
+        def fail_manifest_write(self, *a, **k):
+            if self.name == "manifest.json":
+                raise OSError("simulated manifest write failure")
+            return real_write_text(self, *a, **k)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rc, payload = self._run_relative_init(
+                temp_dir,
+                mock.patch.object(Path, "write_text", fail_manifest_write),
+            )
+            self.assertEqual(2, rc)
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertIn(
+                "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
+            )
+            self._assert_absolute_target(payload)
+
+    def test_projection_io_error_uses_absolute_target(self):
+        fd_paths = {}
+        real_open = os.open
+        real_write = os.write
+
+        def tracking_open(path, *a, **k):
+            fd = real_open(path, *a, **k)
+            fd_paths[fd] = os.fspath(path)
+            return fd
+
+        def fail_projection_write(fd, data):
+            if fd_paths.get(fd, "").endswith(".harness-tmp"):
+                raise OSError("simulated projection write failure")
+            return real_write(fd, data)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rc, payload = self._run_relative_init(
+                temp_dir,
+                mock.patch.object(harness.os, "open", side_effect=tracking_open),
+                mock.patch.object(
+                    harness.os, "write", side_effect=fail_projection_write
+                ),
+            )
+            self.assertEqual(2, rc)
+            self.assertEqual(
+                ["PROJECTION_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertIn(
+                "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
+            )
+            self._assert_absolute_target(payload)
+
+    def test_exit1_node_error_uses_absolute_target(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proj = Path(temp_dir) / "proj"
+            proj.mkdir()
+            (proj / "AGENTS.md").mkdir()
+            rc, payload = self._run_relative_init(temp_dir)
+            self.assertEqual(1, rc)
+            self.assertIn(
+                "PROJECTION_TARGET_INVALID", [e["code"] for e in payload["errors"]]
+            )
+            self.assertIn(
+                "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
+            )
+            self._assert_absolute_target(payload)
+
+    def test_final_validate_io_uses_absolute_target(self):
+        real_validate = harness.validate.validate_harness
+        calls = {"n": 0}
+
+        def flaky_validate(root):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise OSError("simulated final validate failure")
+            return real_validate(root)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rc, payload = self._run_relative_init(
+                temp_dir,
+                mock.patch.object(
+                    harness.validate, "validate_harness", flaky_validate
+                ),
+            )
+            self.assertEqual(2, rc)
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertIn(
+                "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
+            )
+            self._assert_absolute_target(payload)
+
+    def test_final_validation_invalid_uses_absolute_target(self):
+        real_validate = harness.validate.validate_harness
+        calls = {"n": 0}
+
+        def flaky_validate(root):
+            calls["n"] += 1
+            result = real_validate(root)
+            if calls["n"] >= 2:
+                return harness.validate.ValidationResult(
+                    root=result.root,
+                    schema_version=result.schema_version,
+                    errors=(
+                        harness.validate.ContractError(
+                            "MANIFEST_INVALID", "manifest.json", "seeded invalid"
+                        ),
+                    ),
+                )
+            return result
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rc, payload = self._run_relative_init(
+                temp_dir,
+                mock.patch.object(
+                    harness.validate, "validate_harness", flaky_validate
+                ),
+            )
+            self.assertEqual(1, rc)
+            self.assertIn(
+                "MANIFEST_INVALID", [e["code"] for e in payload["errors"]]
+            )
+            self.assertIn(
+                "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
+            )
+            self.assertEqual(
+                sorted(PROJECTIONS), sorted(payload["projected_files"])
+            )
+            self._assert_absolute_target(payload)
+
+    def test_success_uses_absolute_target(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rc, payload = self._run_relative_init(temp_dir)
+            self.assertEqual(0, rc)
+            self._assert_absolute_target(payload)
+
+    def test_existing_harness_reports_absolute_non_followed_target(self):
+        # A .harness symlink pointing at an OUTSIDE directory: the reported
+        # target must be the safely-normalized parent + "/.harness", NEVER the
+        # symlink's resolved outside destination.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proj = Path(temp_dir) / "proj"
+            proj.mkdir()
+            outside = Path(temp_dir) / "outside-dir"
+            outside.mkdir()
+            os.symlink(outside, proj / ".harness")
+            rc, payload = self._run_relative_init(temp_dir)
+            self.assertEqual(1, rc)
+            self.assertEqual(
+                ["INIT_TARGET_EXISTS"], [e["code"] for e in payload["errors"]]
+            )
+            target = self._assert_absolute_target(payload)
+            self.assertNotIn("outside-dir", target)
+            self.assertEqual(str(proj.resolve() / ".harness"), target)
+            # The symlink is untouched.
+            self.assertTrue((proj / ".harness").is_symlink())
+
+
+class R6JsonUtf8Tests(unittest.TestCase):
+    """R6 finding 3: command-level JSON envelopes must be strictly valid UTF-8
+    even when an OSError/shutil.Error path or message carries a POSIX
+    surrogateescape code point (e.g. \\udcff from byte 0xff)."""
+
+    def _capture_raw_stdout(self, func):
+        raw = io.BytesIO()
+        wrapper = io.TextIOWrapper(
+            raw, encoding="utf-8", errors="surrogateescape", newline=""
+        )
+        with redirect_stdout(wrapper):
+            rc = func()
+        wrapper.flush()
+        data = raw.getvalue()
+        wrapper.detach()
+        return rc, data
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX surrogateescape only")
+    def test_copytree_error_message_surrogate_stays_valid_utf8(self):
+        with temp_project() as project:
+            def failing_copytree(*a, **k):
+                raise shutil.Error("bad source node \udcff here")
+
+            def run():
+                with mock.patch.object(
+                    harness.shutil, "copytree", failing_copytree
+                ):
+                    return harness.cmd_init(project, None, "json")
+
+            rc, data = self._capture_raw_stdout(run)
+            self.assertEqual(2, rc)
+            # The raw bytes must strictly decode as UTF-8 and parse as JSON.
+            text = data.decode("utf-8")
+            payload = json.loads(text)
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            # ASCII-safe encoding: no raw high bytes escaped into stdout.
+            self.assertFalse(any(byte > 0x7F for byte in data))
+            # The surrogate survived (as an escape) in the message.
+            self.assertIn("\udcff", payload["errors"][0]["message"])
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX surrogateescape only")
+    def test_error_path_surrogate_stays_valid_utf8(self):
+        # A --target whose string carries a lone surrogate: whatever envelope
+        # the target check produces, its raw bytes must be valid UTF-8. This
+        # guards against a fix that sanitizes only the message, and exercises
+        # the emit() render path (not just emit_command_error).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bogus = Path(temp_dir + "/nope\udcff")
+
+            def run():
+                return harness.cmd_init(bogus, None, "json")
+
+            rc, data = self._capture_raw_stdout(run)
+            self.assertIn(rc, (1, 2))
+            text = data.decode("utf-8")
+            payload = json.loads(text)
+            self.assertFalse(any(byte > 0x7F for byte in data))
+            surrogate_in_path = "\udcff" in (payload.get("target") or "") or any(
+                "\udcff" in err["path"] for err in payload["errors"]
+            )
+            self.assertTrue(surrogate_in_path, payload)
 
 
 if __name__ == "__main__":
