@@ -1301,9 +1301,19 @@ class R7ValidateSurrogateTests(unittest.TestCase):
                     ["CHANGE_REQUIRED_FILE_MISSING"],
                     [e["code"] for e in payload["errors"]],
                 )
-                # The escape identifies the original code unit in both fields.
-                self.assertIn("\\udcff", payload["errors"][0]["path"])
-                self.assertIn("\\udcff", payload["errors"][0]["message"])
+                # Lossless: json.loads recovers the ORIGINAL lone surrogate in
+                # both fields (the escape is single-layer, not baked-in text).
+                self.assertEqual(
+                    "changes/bad\udcff/summary.md",
+                    payload["errors"][0]["path"],
+                )
+                self.assertEqual(
+                    "required change file missing near \udcff here",
+                    payload["errors"][0]["message"],
+                )
+                # And the plain six-character text is NOT what was recovered
+                # (that would be the old lossy/colliding behaviour).
+                self.assertNotIn("bad\\udcff", payload["errors"][0]["path"])
             else:
                 # Exactly one physical line for the single error (no split).
                 self.assertEqual(1, text_u.count("\n"), repr(text_u))
@@ -1347,9 +1357,22 @@ class R7ValidateSurrogateTests(unittest.TestCase):
                     if fmt == "json":
                         payload = json.loads(text)
                         self.assertFalse(payload["valid"])
+                        # Lossless: json.loads recovers the ORIGINAL lone
+                        # surrogate (os.fsdecode(b"bad\xff") == "bad\udcff"),
+                        # not the plain six-character "bad\\udcff" text the old
+                        # lossy pre-serialization edit would have produced.
+                        surrogate = os.fsdecode(b"bad\xff")
                         self.assertTrue(
                             any(
-                                "\\udcff" in e["path"] for e in payload["errors"]
+                                surrogate in e["path"]
+                                for e in payload["errors"]
+                            ),
+                            payload,
+                        )
+                        self.assertFalse(
+                            any(
+                                "bad\\udcff" in e["path"]
+                                for e in payload["errors"]
                             ),
                             payload,
                         )
@@ -1367,6 +1390,119 @@ class R7ValidateSurrogateTests(unittest.TestCase):
                     outputs[("unified", fmt)].stdout,
                     fmt,
                 )
+
+
+class R7ValidateSurrogateLosslessTests(unittest.TestCase):
+    """R8: render_json's surrogate egress must be LOSSLESS and COLLISION-FREE.
+
+    A real lone surrogate (from POSIX surrogateescape) and a literal six-
+    character ``\\udcff`` string must never serialize to the same bytes, and
+    json.loads of the output must recover each original value distinctly. The
+    escape is applied post-serialization and single-layer, so a genuine
+    surrogate round-trips back to the surrogate while a literal-text twin
+    round-trips back to plain text.
+    """
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX surrogateescape only")
+    def test_render_json_surrogate_vs_literal_twin_no_collision(self):
+        # Construct the surrogate exactly as validate would receive it from a
+        # non-UTF-8 filesystem name: os.fsdecode(b"bad\xff") -> "bad\udcff".
+        surrogate = os.fsdecode(b"bad\xff")
+        self.assertEqual("bad\udcff", surrogate)
+        literal = "bad\\udcff"  # six ordinary characters: b a d \\ u d c f f
+
+        result_sur = _make_surrogate_result(
+            path="changes/" + surrogate + "/summary.md",
+            message="missing near " + surrogate + " here",
+        )
+        result_lit = _make_surrogate_result(
+            path="changes/" + literal + "/summary.md",
+            message="missing near " + literal + " here",
+        )
+        out_sur = validate.render_json(result_sur)
+        out_lit = validate.render_json(result_lit)
+
+        # Strict UTF-8: the rendered text is pure ASCII, so encoding cannot
+        # raise and a strict decode of the raw bytes must round-trip.
+        raw_sur = out_sur.encode("utf-8")
+        raw_lit = out_lit.encode("utf-8")
+        self.assertTrue(out_sur.isascii(), out_sur)
+        self.assertTrue(out_lit.isascii(), out_lit)
+        self.assertEqual(out_sur, raw_sur.decode("utf-8"))
+        self.assertEqual(out_lit, raw_lit.decode("utf-8"))
+
+        # Anti-collision: the two inputs MUST produce different raw bytes.
+        self.assertNotEqual(raw_sur, raw_lit)
+
+        # json.loads succeeds and recovers each ORIGINAL value distinctly,
+        # for errors[].path AND errors[].message.
+        pay_sur = json.loads(out_sur)
+        pay_lit = json.loads(out_lit)
+        self.assertEqual(
+            "changes/" + surrogate + "/summary.md",
+            pay_sur["errors"][0]["path"],
+        )
+        self.assertEqual(
+            "missing near " + surrogate + " here",
+            pay_sur["errors"][0]["message"],
+        )
+        self.assertEqual(
+            "changes/" + literal + "/summary.md",
+            pay_lit["errors"][0]["path"],
+        )
+        self.assertEqual(
+            "missing near " + literal + " here",
+            pay_lit["errors"][0]["message"],
+        )
+        # The recovered surrogate value is genuinely a surrogate, not the twin.
+        self.assertNotEqual(
+            pay_sur["errors"][0]["path"], pay_lit["errors"][0]["path"]
+        )
+        self.assertNotEqual(
+            pay_sur["errors"][0]["message"], pay_lit["errors"][0]["message"]
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX surrogateescape only")
+    def test_real_nonutf8_dir_subprocess_is_lossless_and_distinct(self):
+        # Drive the genuine bad-bytes-dir fixture through a real subprocess and
+        # prove the emitted bytes are lossless: json.loads recovers the actual
+        # surrogate, and the raw stdout differs from a literal-text twin render.
+        surrogate = os.fsdecode(b"bad\xff")  # "bad\udcff"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / ".harness"
+            shutil.copytree(
+                SOURCE_HARNESS, root, ignore=shutil.ignore_patterns("__pycache__")
+            )
+            changes_dir = os.fsencode(str(root / "changes"))
+            try:
+                os.mkdir(changes_dir + b"/bad\xff")
+            except OSError as error:
+                self.skipTest(f"filesystem rejects non-UTF-8 names: {error}")
+            proc = subprocess.run(
+                [str(VALIDATOR), "--root", str(root), "--format", "json"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(1, proc.returncode, proc.stderr)
+            raw = proc.stdout
+            # Strict UTF-8 decode of raw stdout (raises on a raw 0xff).
+            self.assertFalse(any(byte > 0x7F for byte in raw), raw)
+            text = raw.decode("utf-8")
+            payload = json.loads(text)  # json.loads succeeds
+            paths = [e["path"] for e in payload["errors"]]
+            # Lossless: the ORIGINAL surrogate is recovered...
+            self.assertTrue(any(surrogate in p for p in paths), payload)
+            # ...and the plain six-character literal twin text is absent (the
+            # old lossy pre-serialization edit would have produced it).
+            self.assertFalse(any("bad\\udcff" in p for p in paths), payload)
+            # The two raw byte streams differ: a literal-text twin, rendered
+            # over the same structure, is not byte-equal to the surrogate one.
+            twin_paths = [
+                p.replace(surrogate, "bad\\udcff") if surrogate in p else p
+                for p in paths
+            ]
+            self.assertNotEqual(paths, twin_paths)
 
 
 class R7ValidateByteParityTests(unittest.TestCase):

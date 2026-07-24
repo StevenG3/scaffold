@@ -113,45 +113,31 @@ def escape_text_field(value):
     return "".join(parts)
 
 
-def _escape_surrogates(text):
-    """Deterministic ASCII escape of surrogate code points in ``text``.
+def _escape_serialized_surrogates(serialized):
+    """Post-serialization ASCII escape of surrogate code points.
 
-    Only ``U+D800``–``U+DFFF`` are rewritten (to ``\\uXXXX``); every other
-    character — including legitimate non-ASCII scalars — is returned verbatim,
-    so any surrogate-free string is byte-identical to its input.
+    Operates on the *already-serialized* JSON string, not on the payload
+    values, so it is lossless and collision-free. ``json.dumps`` has already
+    escaped every literal backslash in the source data (a literal six-character
+    ``\\udcff`` in a path arrives here as ``\\\\udcff``), so only genuine lone
+    surrogate *code points* — which ``ensure_ascii=False`` writes raw and which
+    cannot encode as UTF-8 — remain to be rewritten. Each ``U+D800``–``U+DFFF``
+    code point becomes its single-layer JSON escape ``\\uXXXX`` (lowercase hex,
+    matching ``json.dumps`` style), so ``json.loads`` recovers the original
+    surrogate character while a literal-text twin still loads as plain text.
+    Every other character — including legitimate non-ASCII scalars — is
+    returned verbatim, so any surrogate-free serialization is byte-identical.
     """
-    if not _has_surrogate(text):
-        return text
+    if not _has_surrogate(serialized):
+        return serialized
     parts = []
-    for char in text:
+    for char in serialized:
         code = ord(char)
         if _SURROGATE_FIRST <= code <= _SURROGATE_LAST:
             parts.append(f"\\u{code:04x}")
         else:
             parts.append(char)
     return "".join(parts)
-
-
-def _sanitize_json_strings(value):
-    """Recursively escape surrogate code points at the JSON string egress.
-
-    ``render_json`` uses ``ensure_ascii=False`` so normal non-ASCII text stays
-    raw UTF-8. A lone surrogate cannot encode as UTF-8, so it is escaped here
-    (in both keys and values) before serialization. Surrogate-free payloads
-    are structurally identical, keeping non-surrogate output byte-for-byte
-    unchanged.
-    """
-    if isinstance(value, str):
-        return _escape_surrogates(value)
-    if isinstance(value, dict):
-        return {
-            (_escape_surrogates(key) if isinstance(key, str) else key):
-                _sanitize_json_strings(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_sanitize_json_strings(item) for item in value]
-    return value
 
 
 def render_text(result):
@@ -174,12 +160,17 @@ def render_json(result):
         "root": str(result.root),
         "schema_version": result.schema_version,
     }
-    # Escape surrogate code points at the string egress so the emitted bytes are
-    # always strictly valid UTF-8 (§7.4 ruling). ensure_ascii stays False, so
-    # legitimate non-ASCII scalars remain raw UTF-8 and surrogate-free results
-    # are byte-identical to prior v0 output.
-    payload = _sanitize_json_strings(payload)
-    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    # Serialize the ORIGINAL values first (no pre-serialization string edits),
+    # then escape any surrogate code points in the SERIALIZED text so the
+    # emitted bytes are always strictly valid UTF-8 (§7.4 ruling). ensure_ascii
+    # stays False, so legitimate non-ASCII scalars remain raw UTF-8 and
+    # surrogate-free results are byte-identical to prior v0 output. Because the
+    # escape is applied post-serialization and single-layer, json.loads of the
+    # output recovers the original surrogate, while a literal-text "\udcff" (a
+    # backslash json.dumps already doubled) is left untouched — the two are
+    # never conflated.
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    return _escape_serialized_surrogates(serialized) + "\n"
 
 
 def json_pointer(*parts):
