@@ -16,6 +16,19 @@ sys.dont_write_bytecode = True
 import validate  # noqa: E402
 
 TEMPLATE_NAME = "portable-harness"
+
+# Runtime file-read faults that a post-node-safety / post-parse read can raise
+# (design §7.1). A UTF-8 decode failure is a UnicodeDecodeError, a subclass of
+# UnicodeError that is NEITHER an OSError NOR a json.JSONDecodeError; it must be
+# enumerated explicitly or a real non-UTF-8 manifest escapes to a bare
+# INTERNAL_ERROR. These tuples are the single classification reused by every
+# read/validate boundary so init, adapt and validate cannot drift apart.
+# _READ_ERRORS covers a read-then-json.loads boundary; _VALIDATE_ERRORS covers a
+# validate_harness() call (which parses JSON internally and raises only OSError /
+# UnicodeError on a runtime read/decode fault, never json.JSONDecodeError).
+_READ_ERRORS = (OSError, UnicodeError, json.JSONDecodeError)
+_VALIDATE_ERRORS = (OSError, UnicodeError)
+
 MARKER_BEGIN = "<!-- BEGIN HARNESS MANAGED BLOCK (harness adapt) -->"
 MARKER_END = "<!-- END HARNESS MANAGED BLOCK -->"
 MARKER_BEGIN_BYTES = MARKER_BEGIN.encode("ascii")
@@ -261,6 +274,13 @@ ADAPTERS = {
 
 
 def cmd_validate(root, fmt):
+    # Normal validation output stays byte-identical to validate.py (§7.4). But a
+    # command-level runtime read/decode fault (a present-but-unreadable file's
+    # OSError, or a non-UTF-8 manifest's UnicodeDecodeError from
+    # read_text(encoding="utf-8")) must render through the unified CLI envelope
+    # (VALIDATE_IO_ERROR, exit 2, honoring --format), not escape to a bare
+    # INTERNAL_ERROR. init/adapt's own boundaries do not cover this entry point.
+    # Standalone validate.py keeps its v0 INTERNAL_ERROR behavior (not modified).
     try:
         result = validate.validate_harness(root)
     except validate.RootUnreadableError as error:
@@ -268,6 +288,19 @@ def cmd_validate(root, fmt):
             fmt,
             "validate",
             [validate.ContractError("ROOT_UNREADABLE", ".", str(error))],
+            {},
+        )
+    except _VALIDATE_ERRORS as error:
+        return emit_command_error(
+            fmt,
+            "validate",
+            [
+                validate.ContractError(
+                    "VALIDATE_IO_ERROR",
+                    ".",
+                    f"failed to read harness during validation: {error}",
+                )
+            ],
             {},
         )
     rendered = (
@@ -542,9 +575,11 @@ def _run_adapt_loop(
 
 def cmd_adapt(root, check, fmt):
     # Symmetric with the init source-validate boundary: RootUnreadableError keeps
-    # its ROOT_UNREADABLE rendering, but a bare OSError from a present-but-
-    # unreadable file during validation is a runtime I/O fault → PROJECTION_IO_ERROR
-    # envelope, exit 2, honoring --format (design §7.1/§7.3).
+    # its ROOT_UNREADABLE rendering, but a runtime read/decode fault from a
+    # present-but-unreadable OR non-UTF-8 file during validation (OSError or
+    # UnicodeError; the latter from read_text(encoding="utf-8")) is a runtime I/O
+    # fault → PROJECTION_IO_ERROR envelope, exit 2, honoring --format
+    # (design §7.1/§7.3).
     try:
         result = validate.validate_harness(root)
     except validate.RootUnreadableError as error:
@@ -554,7 +589,7 @@ def cmd_adapt(root, check, fmt):
             [validate.ContractError("ROOT_UNREADABLE", ".", str(error))],
             {"written": [], "unchanged": [], "stale": []},
         )
-    except OSError as error:
+    except _VALIDATE_ERRORS as error:
         return emit_command_error(
             fmt,
             "adapt",
@@ -581,10 +616,10 @@ def cmd_adapt(root, check, fmt):
     # parsed this file, but a read/decode failure between then and now is a
     # check-then-use race, not a contract violation: surface it as a command-
     # level PROJECTION_IO_ERROR (exit 2) with the full adapt envelope rather than
-    # letting a bare OSError/JSONDecodeError escape to INTERNAL_ERROR.
+    # letting a bare OSError/UnicodeError/JSONDecodeError escape to INTERNAL_ERROR.
     try:
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except _READ_ERRORS as error:
         return emit_command_error(
             fmt,
             "adapt",
@@ -685,10 +720,11 @@ def cmd_init(target, adapters_raw, fmt):
 
     # Source validation reads files inside the source bundle (manifest.json et
     # al.). RootUnreadableError keeps its ROOT_UNREADABLE stderr rendering, but a
-    # bare OSError from e.g. a present-but-unreadable manifest.json is a post-parse
-    # runtime I/O fault (design §7.2 enumerates 源校验 reads as INIT_IO_ERROR):
-    # route it to the envelope, exit 2. Nothing is copied yet, so target is null,
-    # projected_files empty, and no cleanup hint.
+    # runtime read/decode fault from e.g. a present-but-unreadable OR non-UTF-8
+    # manifest.json (OSError or UnicodeError) is a post-parse runtime I/O fault
+    # (design §7.2 enumerates source-validation reads as INIT_IO_ERROR): route to the
+    # envelope, exit 2. Nothing is copied yet, so target is null, projected_files
+    # empty, and no cleanup hint.
     try:
         source_result = validate.validate_harness(source)
     except validate.RootUnreadableError as error:
@@ -698,7 +734,7 @@ def cmd_init(target, adapters_raw, fmt):
             [validate.ContractError("ROOT_UNREADABLE", ".", str(error))],
             {"target": None, "projected_files": []},
         )
-    except OSError as error:
+    except _VALIDATE_ERRORS as error:
         return emit_command_error(
             fmt,
             "init",
@@ -731,7 +767,7 @@ def cmd_init(target, adapters_raw, fmt):
         source_manifest = json.loads(
             (source / "manifest.json").read_text(encoding="utf-8")
         )
-    except (OSError, json.JSONDecodeError) as error:
+    except _READ_ERRORS as error:
         return emit_command_error(
             fmt,
             "init",
@@ -782,6 +818,31 @@ def cmd_init(target, adapters_raw, fmt):
                 )
             ],
             target=str(destination),
+        )
+
+    # Resolve the normalized absolute destination BEFORE any copy (design §7.2
+    # stage 3/8). The success envelope must never run an unprotected resolve()
+    # after all files are on disk (that final resolve was the r5 target-resolve
+    # seam). The leaf .harness does not exist yet, but its parent (target) does;
+    # resolve(strict=False) yields the same path it would post-copy because
+    # .harness is only ever a real directory on a successful run. Cache it and
+    # reuse it in the success envelope. A resolve fault here is a PRE-copy runtime
+    # I/O error: INIT_IO_ERROR, exit 2; nothing is on disk yet, so no cleanup hint
+    # and target reports the unresolved destination string.
+    try:
+        resolved_target = str(destination.resolve())
+    except (OSError, UnicodeError) as error:
+        return emit_command_error(
+            fmt,
+            "init",
+            [
+                validate.ContractError(
+                    "INIT_IO_ERROR",
+                    str(destination),
+                    f"failed to resolve target path: {error}",
+                )
+            ],
+            {"target": str(destination), "projected_files": []},
         )
 
     cleanup_hint = validate.ContractError(
@@ -841,7 +902,7 @@ def cmd_init(target, adapters_raw, fmt):
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-    except (OSError, json.JSONDecodeError) as error:
+    except _READ_ERRORS as error:
         return emit_command_error(
             fmt,
             "init",
@@ -863,15 +924,16 @@ def cmd_init(target, adapters_raw, fmt):
     except ProjectionIOError as io_error:
         # Post-copy runtime I/O fault: exit 2 per §7.1, but §7.2 still requires
         # the cleanup hint so the user knows the copied tree remains on disk.
-        # projected_files reports the projections committed before the fault —
-        # written + unchanged, consistent with the success and exit-1 paths.
+        # projected_files follows semantics A: only projections this run actually
+        # wrote/atomically committed before the fault — NOT unchanged files, which
+        # were pre-existing and byte-identical and are no progress of this run.
         return emit_command_error(
             fmt,
             "init",
             [io_error.error],
             {
                 "target": str(destination),
-                "projected_files": list(io_error.written) + list(io_error.unchanged),
+                "projected_files": list(io_error.written),
             },
             notices=[cleanup_hint],
         )
@@ -879,23 +941,25 @@ def cmd_init(target, adapters_raw, fmt):
         # exit-1 contract error mid-adapt (e.g. a node-layout PROJECTION_* on a
         # later projection). run_adapt continues past node errors, so earlier and
         # later projections may already be committed: report the real progress
-        # (design §7.1), never a fixed empty list.
+        # (design §7.1 semantics A — written this run only, never unchanged),
+        # never a fixed empty list.
         return _init_failure(
             fmt,
             errors,
             notices=[cleanup_hint] + notices,
             target=str(destination),
-            projected_files=written + unchanged,
+            projected_files=written,
         )
 
     # Final validate reads files inside the freshly written destination; an
-    # OSError there is a post-parse runtime I/O fault (design §7.2 step 3), not a
+    # OSError or UnicodeError (a non-UTF-8 file surfacing during the re-read)
+    # there is a post-parse runtime I/O fault (design §7.2 step 7), not a
     # contract violation. Route it to INIT_IO_ERROR / exit 2 with the cleanup
     # hint and real committed projections, rather than escaping to the bare
     # INTERNAL_ERROR handler even when json was requested.
     try:
         final_result = validate.validate_harness(destination)
-    except (validate.RootUnreadableError, OSError) as error:
+    except (validate.RootUnreadableError, OSError, UnicodeError) as error:
         return emit_command_error(
             fmt,
             "init",
@@ -908,19 +972,20 @@ def cmd_init(target, adapters_raw, fmt):
             ],
             {
                 "target": str(destination),
-                "projected_files": written + unchanged,
+                "projected_files": written,
             },
             notices=[cleanup_hint],
         )
     if not final_result.valid:
-        # Contract error (exit 1) after a full adapt: all projections committed,
-        # so report them truthfully (design §7.1), not an empty list.
+        # Contract error (exit 1) after a full adapt: report the projections this
+        # run actually wrote (design §7.1 semantics A — written only, never
+        # unchanged), not an empty list.
         return _init_failure(
             fmt,
             list(final_result.errors),
             notices=[cleanup_hint],
             target=str(destination),
-            projected_files=written + unchanged,
+            projected_files=written,
         )
 
     return emit(
@@ -930,8 +995,14 @@ def cmd_init(target, adapters_raw, fmt):
         [],
         notices,
         {
-            "target": str(destination.resolve()),
-            "projected_files": written + unchanged,
+            # resolved_target was resolved and cached before copytree (§7.2), so
+            # the success path runs no unprotected resolve() here.
+            "target": resolved_target,
+            # semantics A: files written/atomically committed this run. On a fresh
+            # init nothing pre-exists, so written holds all projections; a
+            # pre-seeded byte-identical file would fall into unchanged and is
+            # correctly excluded here.
+            "projected_files": written,
         },
     )
 
