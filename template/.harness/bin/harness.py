@@ -1150,5 +1150,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (OSError, UnicodeError, RuntimeError) as error:
-        sys.stderr.write(f"[INTERNAL_ERROR] .: {error}\n")
+        sys.stderr.write(f"[INTERNAL_ERROR] .: {_escape_argv_field(error)}\n")
         raise SystemExit(2)

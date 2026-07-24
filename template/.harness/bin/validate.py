@@ -867,12 +867,12 @@ def main(argv=None):
     try:
         args = parse_args(argv)
     except ValueError as error:
-        sys.stderr.write(f"[ARGUMENT_INVALID] .: {error}\n")
+        sys.stderr.write(f"[ARGUMENT_INVALID] .: {escape_text_field(error)}\n")
         return 2
     try:
         result = validate_harness(args.root)
     except RootUnreadableError as error:
-        sys.stderr.write(f"[ROOT_UNREADABLE] .: {error}\n")
+        sys.stderr.write(f"[ROOT_UNREADABLE] .: {escape_text_field(error)}\n")
         return 2
     rendered = render_json(result) if args.format == "json" else render_text(result)
     sys.stdout.write(rendered)
@@ -883,5 +883,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (OSError, UnicodeError, RuntimeError) as error:
-        sys.stderr.write(f"[INTERNAL_ERROR] .: {error}\n")
+        sys.stderr.write(f"[INTERNAL_ERROR] .: {escape_text_field(error)}\n")
         raise SystemExit(2)

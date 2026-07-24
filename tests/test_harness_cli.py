@@ -1438,5 +1438,89 @@ class R7ValidateByteParityTests(unittest.TestCase):
             )
 
 
+class R7StandaloneStderrDiagnosticsTests(unittest.TestCase):
+    """R7 follow-up (design §7.4 extended): standalone validate.py's stderr
+    diagnostic lines ([ARGUMENT_INVALID] / [ROOT_UNREADABLE] / [INTERNAL_ERROR])
+    route their interpolated {error} through escape_text_field, so an
+    input-injected newline cannot split the single physical line and a lone
+    surrogate cannot escape as a raw non-UTF-8 byte. Encodable diagnostics stay
+    byte-identical."""
+
+    def test_argument_invalid_newline_stays_one_physical_line(self):
+        # argparse's "unrecognized arguments: %s" interpolates the raw token
+        # (no repr), so a newline would split the diagnostic without the escape.
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR), "foo\nbar"],
+            cwd=REPO_ROOT, capture_output=True, check=False,
+        )
+        self.assertEqual(2, result.returncode)
+        self.assertEqual(b"", result.stdout)
+        text = result.stderr.decode("utf-8")
+        self.assertIn("[ARGUMENT_INVALID]", text)
+        # Exactly one physical line (only the trailing newline).
+        self.assertEqual(1, text.count("\n"))
+        # The raw injected newline is gone; it is escaped instead.
+        self.assertNotIn("foo\nbar", text)
+        self.assertIn("\\u000a", text)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX surrogateescape argv only")
+    def test_argument_invalid_surrogate_arg_stays_valid_utf8(self):
+        # A non-UTF-8 argv byte reaches argparse's %s message as a lone
+        # surrogate. The diagnostic must decode strictly and stay one line.
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR), b"bad\xff"],
+            cwd=REPO_ROOT, capture_output=True, check=False,
+        )
+        self.assertEqual(2, result.returncode)
+        self.assertEqual(b"", result.stdout)
+        # Strict UTF-8 decode (raises on a raw 0xff) and no raw high byte.
+        text = result.stderr.decode("utf-8")
+        self.assertFalse(any(byte > 0x7F for byte in result.stderr), result.stderr)
+        self.assertIn("[ARGUMENT_INVALID]", text)
+        self.assertEqual(1, text.count("\n"))
+        self.assertIn("\\udcff", text)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX surrogateescape argv only")
+    def test_root_unreadable_surrogate_path_stays_valid_utf8(self):
+        # --root carrying a lone surrogate: rc 2, [ROOT_UNREADABLE], strictly
+        # valid UTF-8, single physical line, prefix intact.
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR), "--root", b"bad\xff"],
+            cwd=REPO_ROOT, capture_output=True, check=False,
+        )
+        self.assertEqual(2, result.returncode)
+        self.assertEqual(b"", result.stdout)
+        self.assertFalse(any(byte > 0x7F for byte in result.stderr), result.stderr)
+        text = result.stderr.decode("utf-8")
+        self.assertTrue(text.startswith("[ROOT_UNREADABLE] .:"), text)
+        self.assertEqual(1, text.count("\n"))
+
+    def test_root_unreadable_newline_path_stays_one_physical_line(self):
+        # --root carrying a newline: whatever the diagnostic, it must remain a
+        # single physical line with the [ROOT_UNREADABLE] prefix.
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR), "--root", "nope\nline"],
+            cwd=REPO_ROOT, capture_output=True, check=False,
+        )
+        self.assertEqual(2, result.returncode)
+        self.assertEqual(b"", result.stdout)
+        text = result.stderr.decode("utf-8")
+        self.assertTrue(text.startswith("[ROOT_UNREADABLE] .:"), text)
+        self.assertEqual(1, text.count("\n"))
+
+    def test_encodable_diagnostic_is_byte_identical_to_unescaped(self):
+        # A plain (surrogate/control-free) diagnostic must be unchanged by the
+        # escape: escape_text_field passes printable ASCII through verbatim.
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR), "--root", "definitely-missing-xyz"],
+            cwd=REPO_ROOT, capture_output=True, check=False,
+        )
+        self.assertEqual(2, result.returncode)
+        self.assertEqual(
+            b"[ROOT_UNREADABLE] .: harness root is missing or not a directory\n",
+            result.stderr,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
