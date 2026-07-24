@@ -507,5 +507,321 @@ class InitCommandTests(unittest.TestCase):
         self.assertEqual(1, result.stderr.count("\n"))
 
 
+def _decode_error():
+    # A genuine UnicodeDecodeError, as read_text(encoding="utf-8") raises on a
+    # non-UTF-8 byte. It is a UnicodeError but NOT an OSError or JSONDecodeError.
+    return UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+
+@contextmanager
+def _temp_source_with_manifest_bytes(raw):
+    """A copy of the source bundle whose manifest.json holds ``raw`` bytes."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        source = Path(temp_dir) / "template" / ".harness"
+        shutil.copytree(
+            SOURCE_HARNESS, source, ignore=shutil.ignore_patterns("__pycache__")
+        )
+        (source / "manifest.json").write_bytes(raw)
+        yield source
+
+
+BAD_UTF8 = b"\xff\xfe" + b'{"schema_version": 2}\n'
+
+
+class R5UnicodeDecodeTests(unittest.TestCase):
+    def test_init_real_invalid_utf8_source_manifest_maps_to_init_io_error(self):
+        # F1: a genuinely non-UTF-8 source manifest. Source validation's
+        # read_text raises UnicodeDecodeError (not OSError/JSONDecodeError); it
+        # must render as INIT_IO_ERROR (exit 2) on stdout as valid UTF-8 JSON,
+        # never a bare INTERNAL_ERROR.
+        with _temp_source_with_manifest_bytes(BAD_UTF8) as source:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                project = Path(temp_dir) / "project"
+                project.mkdir()
+                result = run_cli(
+                    source / "bin" / "harness.py",
+                    "init",
+                    "--target",
+                    str(project),
+                    "--format",
+                    "json",
+                )
+                self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+                self.assertEqual("", result.stderr)
+                # stdout is strict UTF-8 and parses as JSON.
+                payload = json.loads(result.stdout)
+                self.assertFalse(payload["ok"])
+                self.assertEqual("init", payload["command"])
+                self.assertEqual(
+                    ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+                )
+                self.assertNotIn("INTERNAL_ERROR", result.stdout + result.stderr)
+                self.assertFalse((project / ".harness").exists())
+
+    def test_validate_real_invalid_utf8_maps_to_validate_io_error(self):
+        # F1: harness.py validate on a non-UTF-8 manifest must render
+        # VALIDATE_IO_ERROR through the unified envelope, both formats.
+        with _temp_source_with_manifest_bytes(BAD_UTF8) as source:
+            cli = source / "bin" / "harness.py"
+            js = run_cli(cli, "validate", "--root", str(source), "--format", "json")
+            self.assertEqual(2, js.returncode)
+            self.assertEqual("", js.stderr)
+            payload = json.loads(js.stdout)
+            self.assertFalse(payload["ok"])
+            self.assertEqual("validate", payload["command"])
+            self.assertEqual(
+                ["VALIDATE_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertNotIn("INTERNAL_ERROR", js.stdout + js.stderr)
+
+            tx = run_cli(cli, "validate", "--root", str(source))
+            self.assertEqual(2, tx.returncode)
+            self.assertEqual("", tx.stdout)
+            self.assertIn("[VALIDATE_IO_ERROR]", tx.stderr)
+            self.assertEqual(1, tx.stderr.count("\n"))
+
+    def test_standalone_validate_py_keeps_v0_behavior_on_invalid_utf8(self):
+        # F1: the standalone validate.py contract is untouched — a non-UTF-8
+        # manifest still surfaces as v0 INTERNAL_ERROR / exit 2 on stderr.
+        with _temp_source_with_manifest_bytes(BAD_UTF8) as source:
+            result = run_cli(VALIDATOR, "--root", str(source))
+            self.assertEqual(2, result.returncode)
+            self.assertEqual("", result.stdout)
+            self.assertIn("[INTERNAL_ERROR]", result.stderr)
+
+    def test_normal_validation_stays_byte_identical_to_validate_py(self):
+        # F1 companion: with a valid bundle, harness.py validate and validate.py
+        # remain byte-for-byte identical across both formats and exit codes.
+        for extra in ((), ("--format", "json")):
+            via_cli = run_cli(
+                HARNESS_CLI, "validate", "--root", str(SOURCE_HARNESS), *extra
+            )
+            direct = run_cli(VALIDATOR, "--root", str(SOURCE_HARNESS), *extra)
+            self.assertEqual(direct.returncode, via_cli.returncode)
+            self.assertEqual(direct.stdout, via_cli.stdout)
+            self.assertEqual(direct.stderr, via_cli.stderr)
+
+    def test_init_source_manifest_reread_decode_race_maps_to_init_io_error(self):
+        # F2: source validation succeeds, then the source manifest re-read raises
+        # UnicodeDecodeError (a decode race). It happens before copytree, so no
+        # destination and no cleanup hint.
+        real_read_text = Path.read_text
+        reads = {"count": 0}
+
+        def flaky(self, *a, **k):
+            if self.name == "manifest.json":
+                reads["count"] += 1
+                if reads["count"] >= 2:
+                    raise _decode_error()
+            return real_read_text(self, *a, **k)
+
+        with temp_project() as project:
+            buffer = io.StringIO()
+            with mock.patch.object(Path, "read_text", flaky):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_init(project, None, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertIsNone(payload["target"])
+            self.assertEqual([], payload["projected_files"])
+            self.assertEqual([], payload["notices"])
+            self.assertFalse((project / ".harness").exists())
+
+    def test_init_post_copy_stamp_decode_race_maps_to_init_io_error(self):
+        # F2: copytree succeeds, then the copied-manifest stamp read raises
+        # UnicodeDecodeError. Post-copy: INIT_IO_ERROR + cleanup hint, target set,
+        # projected_files empty (adapt has not run).
+        real_read_text = Path.read_text
+
+        with temp_project() as project:
+            destination_manifest = project / ".harness" / "manifest.json"
+
+            def flaky(self, *a, **k):
+                if self == destination_manifest:
+                    raise _decode_error()
+                return real_read_text(self, *a, **k)
+
+            buffer = io.StringIO()
+            with mock.patch.object(Path, "read_text", flaky):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_init(project, None, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertIn(
+                "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
+            )
+            self.assertEqual([], payload["projected_files"])
+            self.assertTrue((project / ".harness").is_dir())
+
+    def test_init_final_validate_decode_race_maps_to_init_io_error(self):
+        # F2: copy, stamp and all three projections succeed, then the FINAL
+        # validate raises UnicodeDecodeError. INIT_IO_ERROR + cleanup hint and the
+        # real committed projections (semantics A: all three, none unchanged).
+        real_validate = harness.validate.validate_harness
+        calls = {"count": 0}
+
+        def flaky_validate(root):
+            calls["count"] += 1
+            if calls["count"] >= 2:
+                raise _decode_error()
+            return real_validate(root)
+
+        with temp_project() as project:
+            buffer = io.StringIO()
+            with mock.patch.object(
+                harness.validate, "validate_harness", flaky_validate
+            ):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_init(project, None, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertIn(
+                "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
+            )
+            self.assertEqual(
+                sorted(PROJECTIONS), sorted(payload["projected_files"])
+            )
+
+
+class R5ValidateSymmetryTests(unittest.TestCase):
+    def _drive(self, boom, fmt):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / ".harness"
+            root.mkdir()
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch.object(harness.validate, "validate_harness", boom):
+                with redirect_stdout(out), __import__(
+                    "contextlib"
+                ).redirect_stderr(err):
+                    rc = harness.cmd_validate(root, fmt)
+            return rc, out.getvalue(), err.getvalue()
+
+    def test_validate_oserror_json_envelope(self):
+        def boom(root):
+            raise OSError("simulated validate read failure")
+
+        rc, out, err = self._drive(boom, "json")
+        self.assertEqual(2, rc)
+        self.assertEqual("", err)
+        payload = json.loads(out)
+        self.assertFalse(payload["ok"])
+        self.assertEqual("validate", payload["command"])
+        self.assertEqual(
+            ["VALIDATE_IO_ERROR"], [e["code"] for e in payload["errors"]]
+        )
+
+    def test_validate_decode_error_json_envelope(self):
+        def boom(root):
+            raise _decode_error()
+
+        rc, out, err = self._drive(boom, "json")
+        self.assertEqual(2, rc)
+        self.assertEqual("", err)
+        payload = json.loads(out)
+        self.assertEqual(
+            ["VALIDATE_IO_ERROR"], [e["code"] for e in payload["errors"]]
+        )
+
+    def test_validate_oserror_text_single_escaped_line(self):
+        def boom(root):
+            raise OSError("bad\nread")  # embedded newline must be escaped
+
+        rc, out, err = self._drive(boom, "text")
+        self.assertEqual(2, rc)
+        self.assertEqual("", out)
+        self.assertIn("[VALIDATE_IO_ERROR]", err)
+        self.assertIn("\\u000a", err)
+        self.assertNotIn("bad\nread", err)
+        self.assertEqual(1, err.count("\n"))
+
+
+class R5TargetResolveTests(unittest.TestCase):
+    def test_success_target_resolve_fault_maps_to_init_io_error(self):
+        # F4: the normalized-destination resolve now runs BEFORE copytree, so a
+        # resolve fault is a pre-copy INIT_IO_ERROR (exit 2) with NO partial
+        # target on disk — never a bare INTERNAL_ERROR after files land.
+        real_resolve = Path.resolve
+        with temp_project() as project:
+            destination = project / ".harness"
+
+            def failing_resolve(self, *a, **k):
+                if self == destination:
+                    raise OSError("simulated target resolve failure")
+                return real_resolve(self, *a, **k)
+
+            buffer = io.StringIO()
+            with mock.patch.object(Path, "resolve", failing_resolve):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_init(project, None, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertEqual("init", payload["command"])
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertNotIn("INTERNAL_ERROR", buffer.getvalue())
+            self.assertEqual([], payload["projected_files"])
+            # No partial target: the resolve failed before any copy.
+            self.assertFalse(destination.exists())
+
+
+class R5ProjectedFilesSemanticsTests(unittest.TestCase):
+    def test_unchanged_file_is_not_reported_as_projected(self):
+        # F5 (semantics A): pre-seed a byte-identical CLAUDE.md, then make the
+        # AGENTS.md projection write fail. CLAUDE.md is unchanged this run and
+        # MUST NOT appear in projected_files; its inode and bytes stay intact.
+        with temp_project() as scratch:
+            self.assertEqual(
+                0, run_cli(HARNESS_CLI, "init", "--target", str(scratch)).returncode
+            )
+            expected_claude = (scratch / "CLAUDE.md").read_bytes()
+
+        with temp_project() as project:
+            claude = project / "CLAUDE.md"
+            claude.write_bytes(expected_claude)
+            inode_before = claude.stat().st_ino
+
+            fd_paths = {}
+            real_open = os.open
+            real_write = os.write
+
+            def tracking_open(path, *a, **k):
+                fd = real_open(path, *a, **k)
+                fd_paths[fd] = os.fspath(path)
+                return fd
+
+            def fail_on_agents(fd, data):
+                if fd_paths.get(fd, "").endswith("AGENTS.md.harness-tmp"):
+                    raise OSError("simulated AGENTS.md write failure")
+                return real_write(fd, data)
+
+            buffer = io.StringIO()
+            with mock.patch.object(harness.os, "open", side_effect=tracking_open), \
+                    mock.patch.object(harness.os, "write", side_effect=fail_on_agents):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_init(project, None, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(
+                ["PROJECTION_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            # CLAUDE.md was unchanged, not written this run: excluded.
+            self.assertNotIn("CLAUDE.md", payload["projected_files"])
+            self.assertEqual([], payload["projected_files"])
+            # The pre-existing file is byte-identical and same inode.
+            self.assertEqual(inode_before, claude.stat().st_ino)
+            self.assertEqual(expected_claude, claude.read_bytes())
+
+
 if __name__ == "__main__":
     unittest.main()

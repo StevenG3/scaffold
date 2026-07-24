@@ -542,9 +542,8 @@ class FailureAtomicWriteTests(unittest.TestCase):
             self.assertIn(
                 "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
             )
-            # projected_files uses written + unchanged (consistent with the
-            # success and exit-1 paths). The very first projection fails to commit
-            # here, so both lists are empty.
+            # projected_files follows semantics A (files written this run). The
+            # very first projection fails to commit here, so it is empty.
             self.assertEqual([], payload["projected_files"])
             # The copied tree is left in place for the user to inspect/remove.
             self.assertTrue((project / ".harness").is_dir())
@@ -669,6 +668,107 @@ class AdaptErrorPathTests(unittest.TestCase):
             self.assertEqual(
                 ["ROOT_UNREADABLE"], [e["code"] for e in payload["errors"]]
             )
+
+
+def _decode_error():
+    # A genuine UnicodeDecodeError as read_text(encoding="utf-8") raises on a
+    # non-UTF-8 byte: a UnicodeError, but NOT an OSError or JSONDecodeError.
+    return UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+
+class R5AdaptUnicodeTests(unittest.TestCase):
+    def test_adapt_real_invalid_utf8_manifest_maps_to_projection_io_error(self):
+        # F1: a genuinely non-UTF-8 manifest makes validate_harness's read_text
+        # raise UnicodeDecodeError, which must render PROJECTION_IO_ERROR (exit 2)
+        # with the full adapt envelope on stdout, never a bare INTERNAL_ERROR.
+        with instantiated_project() as (project, root):
+            (root / "manifest.json").write_bytes(
+                b"\xff\xfe" + b'{"schema_version": 2}\n'
+            )
+            result = run_instance_cli(root, "adapt", "--format", "json")
+            self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+            self.assertEqual("", result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["ok"])
+            self.assertEqual("adapt", payload["command"])
+            self.assertEqual(
+                ["PROJECTION_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertNotIn("INTERNAL_ERROR", result.stdout + result.stderr)
+
+    def test_adapt_manifest_reread_decode_race_maps_to_projection_io_error(self):
+        # F2: validate_harness succeeds, then the post-validate manifest re-read
+        # raises UnicodeDecodeError. PROJECTION_IO_ERROR (exit 2), full envelope.
+        import io
+        from contextlib import redirect_stdout
+
+        real_read_text = Path.read_text
+        reads = {"count": 0}
+
+        def flaky(self, *a, **k):
+            if self.name == "manifest.json":
+                reads["count"] += 1
+                if reads["count"] >= 2:
+                    raise _decode_error()
+            return real_read_text(self, *a, **k)
+
+        with instantiated_project() as (project, root):
+            buffer = io.StringIO()
+            with mock.patch.object(Path, "read_text", flaky):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_adapt(root, False, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(
+                ["PROJECTION_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertEqual([], payload["written"])
+
+
+class R5AdaptProgressSemanticsTests(unittest.TestCase):
+    def test_written_and_unchanged_are_distinguished_when_a_later_write_fails(self):
+        # F5 (semantics A): one projection unchanged, one freshly written, a third
+        # fails. written must hold ONLY the file written this run; the byte-
+        # identical file stays in unchanged and never leaks into written.
+        import io
+        from contextlib import redirect_stdout
+
+        with instantiated_project() as (project, root):
+            # First adapt materializes all three, then drop AGENTS.md and the
+            # cursor file so the next run leaves CLAUDE.md unchanged, writes
+            # AGENTS.md, and reaches the cursor projection.
+            self.assertEqual(
+                0, run_instance_cli(root, "adapt").returncode
+            )
+            (project / "AGENTS.md").unlink()
+            shutil.rmtree(project / ".cursor")
+
+            fd_paths = {}
+            real_open = os.open
+            real_write = os.write
+
+            def tracking_open(path, *a, **k):
+                fd = real_open(path, *a, **k)
+                fd_paths[fd] = os.fspath(path)
+                return fd
+
+            def fail_on_cursor(fd, data):
+                if fd_paths.get(fd, "").endswith("harness.mdc.harness-tmp"):
+                    raise OSError("simulated cursor write failure")
+                return real_write(fd, data)
+
+            buffer = io.StringIO()
+            with mock.patch.object(harness.os, "open", side_effect=tracking_open), \
+                    mock.patch.object(harness.os, "write", side_effect=fail_on_cursor):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_adapt(root, False, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(
+                ["PROJECTION_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertEqual(["AGENTS.md"], payload["written"])
+            self.assertEqual(["CLAUDE.md"], payload["unchanged"])
 
 
 if __name__ == "__main__":
