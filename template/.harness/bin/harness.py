@@ -551,7 +551,26 @@ def cmd_adapt(root, check, fmt):
             {"written": [], "unchanged": [], "stale": []},
         )
     root = result.root
-    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    # Post-validate manifest re-read (design §7.3). validate_harness already
+    # parsed this file, but a read/decode failure between then and now is a
+    # check-then-use race, not a contract violation: surface it as a command-
+    # level PROJECTION_IO_ERROR (exit 2) with the full adapt envelope rather than
+    # letting a bare OSError/JSONDecodeError escape to INTERNAL_ERROR.
+    try:
+        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return emit_command_error(
+            fmt,
+            "adapt",
+            [
+                validate.ContractError(
+                    "PROJECTION_IO_ERROR",
+                    ".",
+                    f"failed to re-read manifest after validation: {error}",
+                )
+            ],
+            {"written": [], "unchanged": [], "stale": []},
+        )
     if manifest.get("origin") is None:
         notices = [
             validate.ContractError(
@@ -654,7 +673,28 @@ def cmd_init(target, adapters_raw, fmt):
         )
         return _init_failure(fmt, errors)
 
-    source_manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
+    # Source manifest re-read (design §7.2 step 3). Source validation just
+    # succeeded, but a read/decode fault between then and now is a post-parse
+    # runtime I/O failure, not a bare INTERNAL_ERROR: report INIT_IO_ERROR /
+    # exit 2 through the envelope. The destination .harness does not exist yet
+    # (copytree has not run), so there is no cleanup hint and target is null.
+    try:
+        source_manifest = json.loads(
+            (source / "manifest.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        return emit_command_error(
+            fmt,
+            "init",
+            [
+                validate.ContractError(
+                    "INIT_IO_ERROR",
+                    "manifest.json",
+                    f"failed to re-read source manifest: {error}",
+                )
+            ],
+            {"target": None, "projected_files": []},
+        )
     if "template_version" not in source_manifest:
         return _init_failure(
             fmt,
@@ -790,7 +830,30 @@ def cmd_init(target, adapters_raw, fmt):
             fmt, errors, notices=[cleanup_hint] + notices, target=str(destination)
         )
 
-    final_result = validate.validate_harness(destination)
+    # Final validate reads files inside the freshly written destination; an
+    # OSError there is a post-parse runtime I/O fault (design §7.2 step 3), not a
+    # contract violation. Route it to INIT_IO_ERROR / exit 2 with the cleanup
+    # hint and real committed projections, rather than escaping to the bare
+    # INTERNAL_ERROR handler even when json was requested.
+    try:
+        final_result = validate.validate_harness(destination)
+    except (validate.RootUnreadableError, OSError) as error:
+        return emit_command_error(
+            fmt,
+            "init",
+            [
+                validate.ContractError(
+                    "INIT_IO_ERROR",
+                    str(destination),
+                    f"failed to validate initialized harness: {error}",
+                )
+            ],
+            {
+                "target": str(destination),
+                "projected_files": written + unchanged,
+            },
+            notices=[cleanup_hint],
+        )
     if not final_result.valid:
         return _init_failure(
             fmt,

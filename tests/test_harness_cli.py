@@ -338,6 +338,76 @@ class InitCommandTests(unittest.TestCase):
             # The copied tree is left in place for the user to inspect/remove.
             self.assertTrue((project / ".harness").is_dir())
 
+    def test_source_manifest_reread_io_failure_emits_init_io_error(self):
+        # J1(a): source validation succeeds, then the source manifest re-read
+        # raises OSError. That post-parse I/O fault must render as INIT_IO_ERROR
+        # (exit 2), not escape to a bare INTERNAL_ERROR. It happens before
+        # copytree, so no destination exists and target is null.
+        real_read_text = Path.read_text
+        manifest_reads = {"count": 0}
+
+        def flaky_read_text(self, *args, **kwargs):
+            if self.name == "manifest.json":
+                manifest_reads["count"] += 1
+                # 1st read is source validation; 2nd is the harness re-read.
+                if manifest_reads["count"] >= 2:
+                    raise OSError("simulated source manifest re-read failure")
+            return real_read_text(self, *args, **kwargs)
+
+        with temp_project() as project:
+            buffer = io.StringIO()
+            with mock.patch.object(Path, "read_text", flaky_read_text):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_init(project, None, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertEqual("init", payload["command"])
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertIsNone(payload["target"])
+            self.assertEqual([], payload["projected_files"])
+            self.assertFalse((project / ".harness").exists())
+
+    def test_final_validate_io_failure_emits_hint_and_real_progress(self):
+        # J1(b): copy, stamp and all three projections succeed, then the FINAL
+        # validate_harness(destination) raises OSError. It must render as
+        # INIT_IO_ERROR (exit 2) with an INIT_CLEANUP_HINT notice and the real
+        # committed projected_files, not escape to INTERNAL_ERROR.
+        real_validate = harness.validate.validate_harness
+        calls = {"count": 0}
+
+        def flaky_validate(root):
+            calls["count"] += 1
+            # 1st call validates the source; 2nd is the final destination check.
+            if calls["count"] >= 2:
+                raise OSError("simulated final validate failure")
+            return real_validate(root)
+
+        with temp_project() as project:
+            buffer = io.StringIO()
+            with mock.patch.object(
+                harness.validate, "validate_harness", flaky_validate
+            ):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_init(project, None, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertEqual(
+                ["INIT_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertIn(
+                "INIT_CLEANUP_HINT", [n["code"] for n in payload["notices"]]
+            )
+            self.assertEqual(
+                sorted(PROJECTIONS), sorted(payload["projected_files"])
+            )
+            for name in PROJECTIONS:
+                self.assertTrue((project / name).is_file(), name)
+            self.assertTrue((project / ".harness").is_dir())
+
     @unittest.skipIf(sys.platform == "win32", "POSIX surrogateescape argv only")
     def test_non_utf8_argv_rejected_before_json_envelope(self):
         # H4: a non-UTF-8 argv byte (0xff) must be rejected before any subcommand

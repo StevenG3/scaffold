@@ -555,6 +555,40 @@ class AdaptErrorPathTests(unittest.TestCase):
             self.assertEqual("adapt", payload["command"])
             self.assertTrue(payload["errors"])
 
+    def test_adapt_manifest_reread_io_error_json_envelope(self):
+        # J2: validate_harness succeeds, then the post-validate manifest re-read
+        # raises OSError. It must render as PROJECTION_IO_ERROR (exit 2) with the
+        # full adapt envelope on stdout, not escape to a bare INTERNAL_ERROR.
+        import io
+        from contextlib import redirect_stdout
+
+        real_read_text = Path.read_text
+        manifest_reads = {"count": 0}
+
+        def flaky_read_text(self, *args, **kwargs):
+            if self.name == "manifest.json":
+                manifest_reads["count"] += 1
+                # 1st read is validate_harness; 2nd is the adapt re-read.
+                if manifest_reads["count"] >= 2:
+                    raise OSError("simulated manifest re-read failure")
+            return real_read_text(self, *args, **kwargs)
+
+        with instantiated_project() as (project, root):
+            buffer = io.StringIO()
+            with mock.patch.object(Path, "read_text", flaky_read_text):
+                with redirect_stdout(buffer):
+                    rc = harness.cmd_adapt(root, False, "json")
+            self.assertEqual(2, rc)
+            payload = json.loads(buffer.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertEqual("adapt", payload["command"])
+            self.assertEqual(
+                ["PROJECTION_IO_ERROR"], [e["code"] for e in payload["errors"]]
+            )
+            self.assertEqual([], payload["written"])
+            self.assertEqual([], payload["unchanged"])
+            self.assertEqual([], payload["stale"])
+
     def test_adapt_root_missing_dir_exits_2_with_json_envelope(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             missing = Path(temp_dir) / "does-not-exist"
