@@ -1551,3 +1551,140 @@ $ git diff --check 083ad34...183e463
 下一轮只需收口 JSON surrogate 结构化值的无损转义与反碰撞测试；不应再次
 放宽设计或扩大到无关路径。新 HEAD 必须重新执行八轮全部探针、166 项以上
 测试和既有门禁，并提供绑定新 HEAD 的远端 CI。本记录不批准任何后续提交。
+
+## 第九轮复审（2026-07-24，`6d5d67d`）
+
+### 结论
+
+**Approve。**
+
+本结论仅绑定
+`6d5d67dca687d29e6f05b5f051a82257addbd577`。该 HEAD 相对第八轮仅包含
+`6d5d67d fix: make render_json surrogate egress lossless and collision-free`；
+变更限于 `template/.harness/bin/validate.py` 与
+`tests/test_harness_cli.py`。独立 Standards / Spec 双路审阅、真实输入
+反碰撞探针、八轮历史回归、全量门禁和精确 HEAD CI 均通过。
+
+第八轮唯一阻断已关闭：JSON renderer 不再在结构化值层把真实 surrogate
+预清洗为字面量反斜杠序列，而是在 `json.dumps(ensure_ascii=False)` 后只转义
+序列化文本中的实际 surrogate code point。真实 U+DCFF 与普通字面量
+`\\udcff` 现在具有不同 wire bytes，`json.loads()` 后分别无损还原。
+
+### 六维评分
+
+| 维度 | 评分 | 证据 |
+| --- | ---: | --- |
+| A. 需求符合度 | 4/4 | 真实 surrogate / 字面量反碰撞、严格 UTF-8、双 CLI 同字节和原值 round-trip 全部通过。 |
+| B. 事实准确性 | 4/4 | 错误模型与 JSON 转义层次匹配；没有把两个不同原始值折叠为同一字段值。 |
+| C. 通用性 | 4/4 | 修复位于共享 renderer，适用于 path、message 与混合嵌套结构，不依赖平台特例。 |
+| D. 可维护性 | 4/4 | 修改集中且有明确 helper；`harness.py` 和 v0 validator 委托关系未变化。 |
+| E. 验证充分性 | 3/4 | 168 项与 Linux 真实非法字节目录用例覆盖充分；一处测试注释比断言范围更宽，属非阻断维护问题。 |
+| F. 可追溯性 | 4/4 | 单一修复提交、精确 HEAD CI、前轮 finding 与本轮关闭证据可相互追溯。 |
+
+总分：**23/24**；所有维度均达到合入门槛。
+
+### 第八轮 finding 关闭证据
+
+独立构造真实 `\udcff`、合法字面量 `\\udcff`、合法中文与普通反斜杠混合输入，
+同时验证 renderer 与两个 CLI：
+
+```text
+PATH_COLLISION bytes_different=True surrogate_roundtrip=True
+  literal_roundtrip=True cli_equal=True strict_utf8=True
+PATH_WIRE genuine_single_escape=True literal_double_escape=True
+MESSAGE_COLLISION bytes_different=True surrogate_roundtrip=True
+  literal_roundtrip=True cli_equal=True strict_utf8=True
+MIXED_ROUNDTRIP=True valid_unicode_preserved=True
+  literal_backslash_preserved=True
+```
+
+结论：第八轮 Important finding「JSON surrogate 与字面量反斜杠碰撞」
+**已关闭**。payload 在序列化前保持原值；后处理只作用于序列化结果中的实际
+U+D800–U+DFFF，不触碰已经由 JSON encoder 转义的合法反斜杠。
+
+### Standards findings
+
+没有 Critical / Important / Minor correctness finding。
+
+非阻断维护意见：`tests/test_harness_cli.py` 中一处注释描述为同时比较两组 raw
+streams，而相邻断言主要比较解析后的 path；同文件的独立平台无关判别测试已经
+直接证明 raw bytes 不碰撞，因此不影响本轮批准。后续可在不改变行为时收紧注释。
+
+### Spec findings
+
+没有阻断 finding。设计 §7.4 已要求 JSON 出口确定性且信息可辨，本轮是对既有
+裁决的实现修正，不需要新增设计例外。相对第八轮没有设计文档提交，且
+`harness.py`、`tests/test_validate.py` 均未修改；范围没有扩张。
+
+### 历史探针与验证证据
+
+八轮 SHORT / ZERO / MID / REPLACE / CLOSE_AFTER / PRECLOSE_FAULT /
+SOURCE_MANIFEST_REREAD / FINAL_VALIDATE_IO / ADAPT_MANIFEST_REREAD /
+INIT_EXIT1_PROGRESS / SOURCE_VALIDATE_OSERROR / ADAPT_VALIDATE_OSERROR /
+copytree / stamp / manifest write / unreadable projection / target symlink /
+parent symlink / TARGET_LOOP / 目录 / FIFO / END suffix / CRLF /
+Cursor broken marker / dangling `.harness` / adapter controls / parser newline /
+argv `0xff` / invalid UTF-8 / resolve / written-vs-unchanged / absolute target /
+surrogate stdout/stderr / 双 CLI parity 探针由完整测试集回归通过。
+
+```text
+$ python3 template/.harness/bin/validate.py
+Harness contract is valid.
+exit 0
+
+$ python3 template/.harness/bin/harness.py validate
+Harness contract is valid.
+exit 0
+
+$ python3 template/.harness/bin/harness.py adapt --check --root template/.harness
+[ADAPT_SKIPPED_TEMPLATE] .: origin is null; template bundles do not generate projections
+adapt: ok
+exit 0
+
+$ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+Ran 168 tests in 11.011s
+OK (skipped=2：本机 APFS 拒绝两条真实非法字节文件名用例)
+
+$ git diff --check
+无输出，exit 0
+
+$ git diff --check 183e463...6d5d67d
+无输出，exit 0
+```
+
+GitHub Actions run `30103481648`：
+
+```text
+headSha=6d5d67dca687d29e6f05b5f051a82257addbd577
+status=completed
+conclusion=success
+test_real_nonutf8_dir_subprocess_is_lossless_and_distinct ... ok
+test_real_nonutf8_change_record_dir_stays_valid_utf8 ... ok
+Ran 168 tests in 11.172s
+OK
+```
+
+这证明本机因 APFS 跳过的两项在 Linux CI 上真实执行并通过；CI 结论与批准
+HEAD 精确绑定。
+
+其他独立门禁：
+
+- v0 schema v1、surrogate-free 夹具：旧 validator、当前 `validate.py`、
+  当前 `harness.py validate` 在 Text/JSON 下 stdout/stderr 逐字节一致。
+- 三条只读命令执行前后 bundle 指纹均为
+  `cecbd4b44d08b21e32815eef539cc5ee56590ae301b24e3d20e0e9f52c38f840`。
+- Python 3.9 grammar：`validate.py`、`harness.py` 均通过。
+- E2E init / adapt check：均 exit 0；CRLF 用户前缀逐字节保留，三个投影存在。
+- 禁用 token、日期、网络访问和第三方依赖扫描无发现。
+- `tests/test_validate.py` 相对 v0 仍恰好只有获批三处样例事实修正（3+/3-）。
+- 隔离检出干净，local / origin feature HEAD 均为
+  `6d5d67dca687d29e6f05b5f051a82257addbd577`。
+- PR #4 审阅时为 OPEN / Draft / MERGEABLE / CLEAN；解除 Draft 与实际合入
+  由独立合入方在再次锁定 HEAD 后执行。
+
+### 第九轮合入建议
+
+批准把精确 HEAD
+`6d5d67dca687d29e6f05b5f051a82257addbd577` 合入 `main`。合入前必须再次确认
+PR #4 HEAD 未变化、required check 仍成功；合入后补记 merge commit、主干门禁
+与本地/远端分支清理结果。任何新增 feature 提交均使本批准失效。
