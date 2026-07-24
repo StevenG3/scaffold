@@ -95,16 +95,63 @@ def escape_text_field(value):
 
     Printable Unicode is unchanged. Deterministic form: ``\\uXXXX`` for
     ``U+0000``–``U+001F``, ``U+007F`` (DEL), ``U+0085`` (NEL),
-    ``U+2028`` (Line Separator) and ``U+2029`` (Paragraph Separator).
+    ``U+2028`` (Line Separator), ``U+2029`` (Paragraph Separator) and every
+    surrogate code point ``U+D800``–``U+DFFF``. Surrogates arrive from POSIX
+    ``surrogateescape`` over non-UTF-8 filesystem names (e.g. a Change Record
+    directory named with byte ``0xff`` yields ``U+DCFF`` in the reported
+    path); rendering them raw would emit an illegal byte on stdout. Escaping
+    to ``\\uXXXX`` keeps Text output pure ASCII and strictly valid UTF-8 while
+    identifying the original code unit. Surrogate-free values are unchanged.
     """
     parts = []
     for char in str(value):
         code = ord(char)
-        if code in _TEXT_ESCAPE_CODES:
+        if code in _TEXT_ESCAPE_CODES or _SURROGATE_FIRST <= code <= _SURROGATE_LAST:
             parts.append(f"\\u{code:04x}")
         else:
             parts.append(char)
     return "".join(parts)
+
+
+def _escape_surrogates(text):
+    """Deterministic ASCII escape of surrogate code points in ``text``.
+
+    Only ``U+D800``–``U+DFFF`` are rewritten (to ``\\uXXXX``); every other
+    character — including legitimate non-ASCII scalars — is returned verbatim,
+    so any surrogate-free string is byte-identical to its input.
+    """
+    if not _has_surrogate(text):
+        return text
+    parts = []
+    for char in text:
+        code = ord(char)
+        if _SURROGATE_FIRST <= code <= _SURROGATE_LAST:
+            parts.append(f"\\u{code:04x}")
+        else:
+            parts.append(char)
+    return "".join(parts)
+
+
+def _sanitize_json_strings(value):
+    """Recursively escape surrogate code points at the JSON string egress.
+
+    ``render_json`` uses ``ensure_ascii=False`` so normal non-ASCII text stays
+    raw UTF-8. A lone surrogate cannot encode as UTF-8, so it is escaped here
+    (in both keys and values) before serialization. Surrogate-free payloads
+    are structurally identical, keeping non-surrogate output byte-for-byte
+    unchanged.
+    """
+    if isinstance(value, str):
+        return _escape_surrogates(value)
+    if isinstance(value, dict):
+        return {
+            (_escape_surrogates(key) if isinstance(key, str) else key):
+                _sanitize_json_strings(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_json_strings(item) for item in value]
+    return value
 
 
 def render_text(result):
@@ -127,6 +174,11 @@ def render_json(result):
         "root": str(result.root),
         "schema_version": result.schema_version,
     }
+    # Escape surrogate code points at the string egress so the emitted bytes are
+    # always strictly valid UTF-8 (§7.4 ruling). ensure_ascii stays False, so
+    # legitimate non-ASCII scalars remain raw UTF-8 and surrogate-free results
+    # are byte-identical to prior v0 output.
+    payload = _sanitize_json_strings(payload)
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
