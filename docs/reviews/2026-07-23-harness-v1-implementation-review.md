@@ -808,3 +808,197 @@ $ git diff --check 08359a7...bbec6c9
 4. 明确并测试 close-before-consume 时的安全描述符所有权。
 
 新 HEAD 必须重跑四轮全部探针、全量测试和既有门禁。本记录不批准后续提交。
+
+## 第五轮复审（2026-07-24，`93aee76`）
+
+- 复审 HEAD：`93aee7626fd0ead6f1da146a810aa04a76d181ed`
+- 上轮 HEAD：`bbec6c928530f9c426ccf858a357bc6a8f798ecc`
+- 新增提交：`11de76f`、`91c09be`、`a64a6da`、`93aee76`
+- 审阅方式：Standards / Spec 双路独立审阅、第四轮全部探针、本轮三项主动
+  收口、全部历史探针、全量门禁及相邻生命周期故障注入
+- 结论：**Request changes，仍不得合入**
+
+第四轮五个 findings 及本轮主动披露的三项收口均按指定行为通过；125 项测试、
+历史探针和门禁也全部通过。但设计宣称的“全生命周期”仍存在未覆盖的异常类型与
+阶段：`UnicodeDecodeError`、统一入口 `validate` 的裸 `OSError`、成功响应前
+的目标路径解析仍会逃逸。此外，`projected_files = written + unchanged` 与
+“本次实际提交/生成”的公开定义冲突。本结论仅绑定上述精确 HEAD。
+
+### 第五轮六维评分
+
+| 维度 | 分数 | 依据 |
+| --- | ---: | --- |
+| A. 需求符合度 | 2/4 | 点名修复通过，但“所有读取/全生命周期”仍漏 Unicode 解码、validate 和成功 resolve。 |
+| B. 事实准确性 | 2/4 | 未修改的 byte-identical 文件被列入“本次实际提交”的 `projected_files`。 |
+| C. 通用性 | 3/4 | POSIX fd 所有权已明确；解码错误和路径解析边界仍不足以跨环境稳定落地。 |
+| D. 可维护性 | 3/4 | init/adapt 阶段注释与错误边界清楚，但相同异常分类仍以多个局部 catch 拼接。 |
+| E. 验证充分性 | 2/4 | 125 项全绿，却未覆盖非法 UTF-8、validate 对称边界、最终 resolve 和 unchanged 语义。 |
+| F. 可追溯性 | 3/4 | 设计与实现提交对应清晰；精确 feature HEAD 未推送远端，无绑定 CI。 |
+
+总分：**15/24**。A、B、E 为 2 分，且存在 Important findings，不能合入。
+
+### 第四轮 findings 与主动收口验证
+
+| 探针 | 独立结果 | 状态 |
+| --- | --- | --- |
+| `SOURCE_MANIFEST_REREAD` | exit 2 / `INIT_IO_ERROR` JSON；目标未创建，无 cleanup hint | 已关闭 |
+| `FINAL_VALIDATE_IO` | exit 2 / `INIT_IO_ERROR` + cleanup hint；报告三个实际投影 | 已关闭 |
+| `ADAPT_MANIFEST_REREAD` | exit 2 / `PROJECTION_IO_ERROR` 完整 adapt envelope | 已关闭 |
+| `INIT_EXIT1_PROGRESS` | exit 1；报告 `CLAUDE.md` 与 Cursor，和磁盘一致 | 已关闭 |
+| `PRECLOSE_FAULT` | `PROJECTION_IO_ERROR`；原目标不变、temp 清理、close 恰调用一次 | 按修订契约关闭 |
+| 源校验裸 `OSError` | exit 2 / `INIT_IO_ERROR`；target null、进度空、无 cleanup hint | 已关闭 |
+| adapt 校验裸 `OSError` | exit 2 / `PROJECTION_IO_ERROR`；三个进度字段为空 | 已关闭 |
+| ProjectionIOError 的 `written + unchanged` | 返回 `["CLAUDE.md", "AGENTS.md"]`，与当前实现规则一致 | 行为通过；语义见 finding |
+
+短写、零进展写、写中异常、替换异常、close-after-real-close、symlink、父目录
+symlink、目录/FIFO、END 后空行、CRLF、Cursor 破损 marker、不可读目标 JSON、
+dangling `.harness`、adapter/parser 控制字符、copytree、manifest stamp、
+`0xff` argv 均回归通过。
+
+### 设计修订核对
+
+- §7.2 已从局部阶段扩展为 init 生命周期枚举，覆盖源校验、源 Manifest 重读、
+  copy、origin stamp、投影和最终 validate，并明确 cleanup/progress。
+- §7.3 已明确 adapt 校验后 Manifest 重读的对称错误 envelope。
+- §8.3 已明确 fd 恰好 close 一次；close 抛错后视为已消费、不重试，病理性的
+  pre-close 泄漏由短生命周期进程退出回收。实现与该取舍一致。
+
+然而“不得局部补丁”尚未闭环：
+
+1. §7.2 写“所有运行时 I/O 失败”，实现与测试却只覆盖
+   `OSError/json.JSONDecodeError`，遗漏 `read_text(encoding="utf-8")`
+   实际会抛的 `UnicodeDecodeError`。
+2. §7.1 对统一 CLI 的命令级错误仍适用于 `harness.py validate`，但 §7.4
+   没有对称写清其运行时读取边界，实现也未覆盖。
+3. init 成功响应前仍执行一次未保护的 `destination.resolve()`。
+4. §7.1/§7.2 的“已实际提交”与 §7.2 JSON 字段“本次生成”排除 unchanged，
+   而实现方指定 `written + unchanged`。设计必须先统一字段含义。
+
+### Standards findings
+
+#### [Important] Unicode 解码竞态仍逃逸全生命周期 envelope
+
+位置：`template/.harness/bin/harness.py:548-599,692-746,829-857,896-914`
+
+这些边界捕获 `OSError` / `json.JSONDecodeError`，但 UTF-8 解码发生在
+`Path.read_text`，失败类型是 `UnicodeDecodeError`。真实非法 UTF-8 Manifest：
+
+```text
+INIT_BAD_UTF8     rc=2 stdout=b'' stderr=[INTERNAL_ERROR]
+ADAPT_BAD_UTF8    rc=2 stdout=b'' stderr=[INTERNAL_ERROR]
+VALIDATE_BAD_UTF8 rc=2 stdout=b'' stderr=[INTERNAL_ERROR]
+```
+
+校验成功后令第二次读取抛 `UnicodeDecodeError`，`cmd_init` 与 `cmd_adapt`
+也直接抛出，stdout 为空。这违反 §7.1、§7.2 和 §7.3。
+
+整改要求：在 init/adapt 的验证与每个读取边界明确捕获 `UnicodeError`
+（或更窄的 `UnicodeDecodeError`），分别映射为 `INIT_IO_ERROR` /
+`PROJECTION_IO_ERROR`；补真实非法字节和 post-validate decode race 测试。
+
+#### [Important] `projected_files` 把 unchanged 误报为本次提交
+
+位置：`template/.harness/bin/harness.py:863-875,883-888,909-923`
+
+预置 byte-identical `CLAUDE.md`，让随后 `AGENTS.md` 写失败：
+
+```text
+UNCHANGED_PROGRESS rc=2
+reported=['CLAUDE.md']
+CLAUDE inode_same=True bytes_same=True
+```
+
+该文件本次没有写入或提交，却被计入 §7.1 所称“截至失败点已实际提交”和字段
+定义所称“本次生成”。若产品语义确实要报告“失败时已存在且有效的投影”，应先
+修订 §7.1、§7.2 和字段名称/定义；若维持“本次提交/生成”，错误路径只能报告
+`written`。这是设计与实现的事实语义冲突，不可仅用测试固定当前行为。
+
+非阻塞维护性观察：五个并行进度列表与多处 envelope 拼装形成轻微 Data Clumps /
+Duplicated Code；当前规模尚可，不单独阻塞。
+
+### Spec findings
+
+#### [Important] 统一 `validate` 仍缺少对称运行时错误 envelope
+
+位置：`template/.harness/bin/harness.py:263-277`
+
+独立让 `validate.validate_harness` 抛 `OSError`：
+
+```text
+VALIDATE_IO_SEAM rc=None exc=OSError stdout='' stderr=''
+```
+
+脚本入口会退化为裸 `INTERNAL_ERROR`。§7.1 已明确 `harness.py validate`
+正常输出与独立 validator 一致，但命令级错误路径按统一 CLI 契约渲染。因此
+init/adapt 的新 catch 不能替代 validate 对称边界。应以稳定 code、exit 2 和
+所选格式返回；独立 `validate.py` 的 v0 行为保持不变。
+
+#### [Important] 成功响应前的目标 resolve 仍是裸 I/O 缝隙
+
+位置：`template/.harness/bin/harness.py:926-935`
+
+final validation 成功后，success envelope 仍调用未保护的
+`destination.resolve()`。让该次 resolve 抛 `OSError`：
+
+```text
+SUCCESS_TARGET_RESOLVE calls=2 rc=None exc=OSError
+stdout='' stderr='' dest=True
+```
+
+此时 Harness 与三个投影已经落盘，但没有 `INIT_IO_ERROR`、cleanup hint 或
+真实进度，违反 §7.2“参数解析后直至命令返回”的全生命周期定义。应在复制前
+安全解析并缓存规范化目标，或把最终 resolve 纳入 init 错误边界；补故障测试。
+
+### 第五轮验证证据
+
+```text
+$ python3 template/.harness/bin/validate.py
+Harness contract is valid.
+exit 0
+
+$ python3 template/.harness/bin/harness.py validate
+Harness contract is valid.
+exit 0（与独立命令逐字节一致）
+
+$ python3 template/.harness/bin/harness.py adapt --check --root template/.harness
+[ADAPT_SKIPPED_TEMPLATE] .: origin is null; template bundles do not generate projections
+adapt: ok
+exit 0
+
+$ python3 -m unittest discover -s tests -v
+Ran 125 tests in 9.495s
+OK
+
+$ git diff --check
+无输出，exit 0
+
+$ git diff --check 9a5fb58...93aee76
+无输出，exit 0
+```
+
+其他门禁：
+
+- v0 schema v1：旧 validator、当前 validator、当前 CLI 在 Text/JSON 下均
+  exit 0，stdout/stderr 逐字节一致。
+- 三条只读命令前后 bundle 指纹均为
+  `398a6fd556eb2159181231e98f473173f383efe644d8f41238dee97494ddb48b`。
+- Python 3.9 grammar：两个 CLI 文件均通过。
+- E2E init / adapt check 均 exit 0，CRLF 用户前缀逐字节不变，三个投影存在。
+- 禁用 token、日期、网络和第三方依赖扫描无发现。
+- `tests/test_validate.py` 仍只有获批的三处样例事实修正。
+- 全部验证后工作区干净，HEAD 仍为
+  `93aee7626fd0ead6f1da146a810aa04a76d181ed`。
+- 远端只有 `main@9a5fb58`，没有 feature 分支或开放 PR，故无精确 HEAD CI。
+
+### 第五轮合入建议
+
+**不得合入 `93aee7626fd0ead6f1da146a810aa04a76d181ed`。**
+
+下一轮至少应：
+
+1. 统一捕获并渲染 init/adapt/统一 validate 的 Unicode 解码失败；
+2. 收口 init 最终 success target resolve 的 I/O 边界；
+3. 明确 `projected_files` 是“本次写入”还是“当前有效”，再统一设计、实现和测试；
+4. 为以上真实字节和相邻生命周期边界增加回归测试。
+
+新 HEAD 必须重跑五轮全部探针、全量测试与既有门禁。本记录不批准后续提交。
