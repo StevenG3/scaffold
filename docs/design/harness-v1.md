@@ -169,7 +169,7 @@ python3 <scaffold>/template/.harness/bin/harness.py init --target <project-dir> 
 
 1. 源目录 = `harness.py` 所在 `bin/` 的父目录（即所在 `.harness/`）。先对源目录运行完整校验，失败则退出 `1`（不复制损坏模板）。
 2. `--target` 必须是已存在的目录；`<target>/.harness` 这一目录项**只要存在即拒绝**（以 `lstat`/`lexists` 判定：普通文件、目录、符号链接——包括悬空符号链接——一律计为已存在），报 `INIT_TARGET_EXISTS`、退出 `1`，且不得进入复制流程（v1 无升级能力，绝不覆盖）。不提供 `--force`。
-3. 完整复制 `.harness/` 到 `<target>/.harness/`（含 `bin/` 自身，使目标项目可独立运行后续命令）。复制排除的缓存产物为确定清单：`__pycache__`、`*.pyc`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`、`.DS_Store`。复制阶段与其后 `origin` 写入阶段（步骤 4 的 manifest 读取/写回）的 I/O 失败（`shutil.Error` / `OSError`，如源内坏节点、目标磁盘故障）是命令级错误：报 `INIT_IO_ERROR`、退出 `2`、按 §7.1 规则渲染（json 下输出完整 init envelope）；若目标 `.harness/` 已被（部分）创建，必须附带 `INIT_CLEANUP_HINT` notice 指明清理路径。
+3. 完整复制 `.harness/` 到 `<target>/.harness/`（含 `bin/` 自身，使目标项目可独立运行后续命令）。复制排除的缓存产物为确定清单：`__pycache__`、`*.pyc`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`、`.DS_Store`。**init 全生命周期错误契约**：参数解析之后、直至命令返回，流程中**所有**运行时 I/O 失败（`shutil.Error` / `OSError` / 读取时的 `json.JSONDecodeError` 竞态）都不得逃逸为裸 `INTERNAL_ERROR`，逐阶段分类如下——源校验与源 Manifest 的任何读取、复制、`origin` 写回、最终 `validate` 的文件读取：报 `INIT_IO_ERROR`、退出 `2`；投影阶段沿用 §8.3 / §7.1 的 `PROJECTION_*` 分类（节点布局退出 `1`、运行时 I/O `PROJECTION_IO_ERROR` 退出 `2`）。全部按 §7.1 规则渲染（json 下输出完整 init envelope）。只要失败发生时目标 `.harness/` 已存在于磁盘（无论完整或部分），envelope 必须附带 `INIT_CLEANUP_HINT` notice 指明清理路径；envelope 的 `projected_files` 必须报告截至失败点已实际提交的投影——**该进度要求对退出 `1` 的契约错误（如投影节点布局错误、最终校验失败）同样适用**，不得固定为空列表。
 4. 在目标副本的 `manifest.json` 中写入 `origin` 对象（来源名称与 `template_version`）；若给出 `--adapters` 则覆盖 `adapters` 数组（成员校验同 6.3）。这是 `init` 唯一允许修改的被复制文件。
 5. 对目标副本执行 `adapt`（见 7.3）。
 6. 对目标副本执行校验；成功后输出下一步指引（运行 bootstrap Skill 的提示）。任何步骤失败即停止并报告，已复制内容保留供用户检查，同时明确提示清理方式。
@@ -187,6 +187,7 @@ python3 .harness/bin/harness.py adapt [--root <harness-dir>] [--check] [--format
 - 读取 Manifest `adapters` 数组，对每个内置适配器生成对应投影（见第 8 节）；`x-*` 适配器不内置实现，逐个输出提示（code `ADAPTER_EXTERNAL`）且不视为错误。
 - `--check`：不写任何文件；若任一投影文件缺失或其受管块内容与期望不一致，列出差异文件并退出 `1`。供 CI 与 `validate` 之外的门禁使用。
 - 幂等：连续两次 `adapt` 的第二次必须零改动。
+- 校验通过之后的任何运行时读取失败（如 Manifest 重读的 `OSError` 或解码竞态）：报 `PROJECTION_IO_ERROR`、退出 `2`、按 §7.1 渲染完整 adapt envelope，不得逃逸为裸 `INTERNAL_ERROR`。
 
 JSON 附加字段：`written`（本次实际写入的文件列表）、`unchanged`、`stale`（仅 `--check` 下）。
 
@@ -240,7 +241,7 @@ python3 .harness/bin/harness.py validate [--root <harness-dir>] [--format text|j
 - 以上属于可预期契约错误：稳定错误码、一次性收集、退出 `1`；不得落入 `INTERNAL_ERROR` / 退出 `2`。
 - `--check` 与写路径执行相同的节点检查，且 `--check` 保持零写入。
 - 写入前在同一调用内重新核验目标节点状态（尽力缓解检查-使用竞态；在支持 `O_NOFOLLOW` 的平台以 no-follow 语义打开）。本规则防护的是意外与常见恶意布局，不承诺抵御与写入并发的本地攻击者——该边界记录于此，不再扩大。
-- **失败原子性**：正式目标文件在一次完整成功的写入落定之前不得发生任何变化。写入流程为：在目标同目录创建安全的临时普通文件 → 循环写入直至全部字节完成（`os.write` 的短写必须续写，零进展视为失败）→ flush 并 fsync → 重新执行节点安全核验 → 以原子替换（`os.replace`）提交。任一环节失败——**包括文件描述符关闭失败**——：原目标逐字节不变、尽力关闭描述符并清理本次临时文件、该目标不得进入 `written`，错误按 §7.1 以 `PROJECTION_IO_ERROR` 渲染。临时文件属于该目标的声明写集，命名确定性（如 `<name>.harness-tmp`）。
+- **失败原子性**：正式目标文件在一次完整成功的写入落定之前不得发生任何变化。写入流程为：在目标同目录创建安全的临时普通文件 → 循环写入直至全部字节完成（`os.write` 的短写必须续写，零进展视为失败）→ flush 并 fsync → 重新执行节点安全核验 → 以原子替换（`os.replace`）提交。任一环节失败——**包括文件描述符关闭失败**——：原目标逐字节不变、清理本次临时文件、该目标不得进入 `written`，错误按 §7.1 以 `PROJECTION_IO_ERROR` 渲染。**描述符所有权语义**：对每个描述符 `os.close` 恰好调用一次；`close` 抛错视为描述符已被消费，**不得重试关闭**（重试可能关闭已被复用的 fd，危害大于泄漏）。close 在实际释放前失败这一病理场景下，接受进程内残留一个描述符——本 CLI 为短生命周期进程，残留随进程退出回收；该边界记录于此，不再扩大。临时文件属于该目标的声明写集，命名确定性（如 `<name>.harness-tmp`）。
 - `init` 复制产生的 `.harness/` 内容来自模板自身，沿用 v0 的 Manifest 路径安全规则（§6.2 / ADR-0001），不受本节约束。
 
 ## 9. `harness-bootstrap` Skill
