@@ -1688,3 +1688,24 @@ HEAD 精确绑定。
 `6d5d67dca687d29e6f05b5f051a82257addbd577` 合入 `main`。合入前必须再次确认
 PR #4 HEAD 未变化、required check 仍成功；合入后补记 merge commit、主干门禁
 与本地/远端分支清理结果。任何新增 feature 提交均使本批准失效。
+
+### 合入记录
+
+- 2026-07-24 解除 Draft 前再次核对：PR #4 HEAD 仍为
+  `6d5d67dca687d29e6f05b5f051a82257addbd577`，状态
+  MERGEABLE / CLEAN，required `validate` 为 SUCCESS。
+- PR #4 已以 squash 方式合入；merge commit：
+  `1638e62d80913e7a1030159b3ab25630562a945a`。
+- merge commit 上独立重跑：
+  - `validate.py`：exit 0，`Harness contract is valid.`
+  - `harness.py validate`：exit 0，同样输出。
+  - `adapt --check --root template/.harness`：exit 0，template skip notice
+    与 `adapt: ok`。
+  - `python3 -m unittest discover -s tests -v`：168 项，OK
+    （本机 APFS 两项平台跳过）。
+  - `git diff --check`：无输出；检出干净。
+- merge commit 的主干 GitHub Actions：
+  - Validate Harness run `30104152721`：SUCCESS；
+  - Branch Hygiene run `30104152683`：SUCCESS。
+- 远端 `feature/harness-v1` 已由合入流程删除；本地 feature 与 reviewer
+  分支在本记录推送后清理。
