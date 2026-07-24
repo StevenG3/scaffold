@@ -45,12 +45,32 @@ Run once after `harness.py init` installs this Harness into a project, or whenev
 3. Write project rules into `rules/` (for example `rules/project.md`) and register each new file in `manifest.json` under `components`.
 4. Draft `wiki/overview.md` and `wiki/conventions.md` skeletons from scouting findings, marking gaps explicitly.
 5. Record this bootstrap itself as the first Change Record using the change-delivery skill.
+6. Write the customization record described below into the same Change Record directory.
+
+## Customization record
+
+Write a file named `customization-record.md` inside the bootstrap Change Record directory, alongside `summary.md`, `spec.md`, and `tasks.md`. Extra files in a Change Record are permitted by the contract, so this file lives beside them without special registration.
+
+The file must contain a table with one row per template asset the bootstrap touched. Use exactly these columns:
+
+| Asset | Action | Reason | Reusability guess |
+| ----- | ------ | ------ | ----------------- |
+
+- **Asset** - the bundle-relative path of the touched template asset.
+- **Action** - one of `modified`, `replaced`, `added`, or `removed`.
+- **Reason** - one sentence, grounded in scouting or interview evidence, explaining why the asset was touched.
+- **Reusability guess** - one of `generic`, `stack`, or `project`. `generic` means the change would apply to any project. `stack` means it applies to any project on the same technology stack. `project` means it is specific to this project's domain.
+
+Close the file with a line stating that rows marked `stack` or `generic` are candidate evidence for upstream template layering and should be preserved verbatim when the record is later shared upstream.
+
+This customization record is not part of the machine contract; the validator does not parse it.
 
 ## Outputs
 
 - Project rules registered in the manifest.
 - Wiki skeleton under `wiki/`.
 - A complete first Change Record.
+- A customization record (`customization-record.md`) inside the bootstrap Change Record directory.
 
 ## Verification
 
