@@ -1187,3 +1187,172 @@ $ git diff --check d8bb2cc...76a4523
 
 新 HEAD 必须重新执行本文六轮全部探针、140 项以上测试、v0 字节兼容、只读
 指纹、Python 3.9 grammar、E2E 与 diff check。本记录不批准任何后续提交。
+
+## 第七轮复审（2026-07-24，`a270b1d`）
+
+### 结论
+
+**Request changes，PR #4 保持 Draft，不得合入。**
+
+本轮结论仅绑定
+`a270b1d8dcc3f17f8a5dd2e716af8acb68ac304a`。相对第六轮
+`76a4523b2c91cb10249f968ed44795bb57656180` 仅增加实现提交
+`cf49eb7` 和测试提交 `a270b1d`，没有设计文件修改。第六轮三个 Important
+均已独立复现关闭，157 项测试、六轮历史回归和全部既有门禁通过，远端精确
+HEAD CI 也为 SUCCESS。
+
+但相邻 JSON 出口扫描发现一个新的 Important：统一入口
+`harness.py validate --format json` 的 exit-1 校验结果不经过本轮改成
+ASCII-safe 的 `emit` / `emit_command_error`，仍直接调用 v0
+`validate.render_json(ensure_ascii=False)`。校验结果 path/message 含 POSIX
+`surrogateescape` 字符时，stdout 会写出裸 `0xff`，不能严格按 UTF-8
+解码，也不能作为 UTF-8 JSON 消费。这违反 §7.1“JSON 输出始终合法 UTF-8”。
+
+同时，§7.4 要求统一入口正常校验结果与独立 `validate.py` 逐字节一致，而
+独立 renderer 在同一边界也会输出非法 UTF-8。因此“本轮无需设计提交”的判断
+只对第六轮三个直接 finding 成立，不能覆盖新发现的契约冲突；设计方必须先
+裁定这一边界，不能由实现方静默选择优先级。
+
+### 六维评分
+
+| 维度 | 得分 | 独立裁定 |
+| --- | ---: | --- |
+| A. 需求符合度 | 2/4 | 三项指定整改已完成，但统一 validate 仍违反全局合法 UTF-8 要求。 |
+| B. 事实准确性 | 2/4 | “全部字符串字段严格 UTF-8”不涵盖 exit-1 validation result。 |
+| C. 通用性 | 3/4 | init 路径与 JSON envelope 已跨平台收口；POSIX 非 UTF-8 文件名仍会破坏统一入口。 |
+| D. 可维护性 | 3/4 | target 三态和单一绝对缓存清晰；JSON 存在两个渲染边界且契约不同步。 |
+| E. 验证充分性 | 2/4 | 157 项与 13 个 red-first 成立，但 surrogate 测试只覆盖 `emit*`，漏掉 `cmd_validate`。 |
+| F. 可追溯性 | 4/4 | 分支、Draft PR、精确 HEAD CI、提交顺序和本记录均可追溯。 |
+
+**总分：16/24。** A、B、E 未达到合入门槛。
+
+### 第六轮 findings 逐项关闭
+
+| 第六轮 finding | 第七轮独立证据 | 状态 |
+| --- | --- | --- |
+| target 检查吞掉 I/O 错误 | 真实自环 symlink 在 Text/JSON 均 exit 2 / `INIT_IO_ERROR`、`target=null`、零复制；missing/普通文件仍 exit 1；目标 `stat` 与 leaf `lstat` 故障均进入 envelope | 已关闭 |
+| 失败响应未复用绝对 target | 相对 `--target` 下独立注入 copy、stamp、ProjectionIOError、exit-1、final validate I/O、final invalid，并验证 success 与外指 leaf symlink；全部 post-resolve target、INIT error path、cleanup hint 使用同一 `parent.resolve()/.harness`，leaf 未跟随 | 已关闭 |
+| command envelope 可输出非法 UTF-8 | 对 `emit` / `emit_command_error` 分别注入 path/message `\udcff`，原始 stdout 可严格 UTF-8 解码并 `json.loads()`，且只含 ASCII 字节 | 已关闭，但发现相邻 `cmd_validate` 出口 |
+
+本轮新增的 17 项测试连同修改后的 R5 resolve 测试在第六轮实现上重新执行：
+12 项新测试失败/报错，修改后的 R5 测试另有 1 项失败，共 **13 项 red-first**；
+在本轮实现上全部通过。该主张已独立证实。
+
+### Standards findings
+
+#### Important — `cmd_validate` exit-1 JSON 仍可能输出非法 UTF-8
+
+位置：
+
+- `template/.harness/bin/harness.py:307-340`
+- `template/.harness/bin/validate.py:123-130`
+
+`cmd_validate` 成功取得 `ValidationResult` 后直接调用
+`validate.render_json()`；后者保持 `ensure_ascii=False`。这条路径绕过本轮
+修改的两个 renderer。用等价于 POSIX 非 UTF-8 Change Record 目录名的
+`ContractError.path="changes/bad\udcff/summary.md"` 驱动真实
+`cmd_validate`，并通过 `TextIOWrapper(errors="surrogateescape")` 捕获底层
+字节：
+
+```text
+DECODE_ERROR 'utf-8' codec can't decode byte 0xff in position 94
+CMD_VALIDATE_SURROGATE rc=1 strict_utf8=False json=False raw_ff=True bytes=216
+```
+
+这是可返回的契约校验失败，不是 argv 解析错误或运行时读取异常，因此不会被
+`emit_command_error` 捕获。现有 R6 JSON 测试只覆盖 init 的两个 renderer，
+无法发现该分支。
+
+最低整改：先由设计方裁定 §7.1 合法 UTF-8 与 §7.4/v0 字节一致性在
+surrogate validation result 上的优先级；随后建立单一安全 JSON 出口。测试
+必须从 `cmd_validate` 驱动 exit-1 `ValidationResult`，捕获原始 stdout，
+严格 `decode("utf-8")` 后再 `json.loads()`，同时覆盖 surrogate path 与
+message。不得只测试 `json.dumps()` 返回的 Python 字符串。
+
+### Spec findings
+
+#### Important — §7.1 与 §7.4 在 surrogate 校验结果上存在未裁定冲突
+
+- `docs/design/harness-v1.md:159` 要求所有 JSON 输出始终是合法 UTF-8。
+- `docs/design/harness-v1.md:202-204` 要求统一入口的正常校验结果与独立
+  `validate.py` 逐字节一致，并保持独立 v0 行为。
+- v0 `validate.render_json(ensure_ascii=False)` 对含 surrogate 的
+  `ValidationResult` 本身不能产生合法 UTF-8 字节流。
+
+因此不能同时无条件满足“同一结果逐字节一致”“独立 v0 输出不变”和“统一
+入口始终合法 UTF-8”。本轮无设计提交并非完全成立：第六轮三个 finding 无需
+改设计，但这个相邻边界需要设计所有者明确选择，例如：
+
+1. 将无效 UTF-8 JSON 视为 v0 缺陷，批准独立与统一 renderer 同步加固，并
+   明确兼容性只保护原本可编码的结果；或
+2. 仅加固统一入口，并明确 surrogate 边界是 §7.4 字节一致性的例外。
+
+不得通过放宽 §7.1、忽略该输入或让 stdout 继续依赖
+`surrogateescape` 解决。
+
+本轮两提交仅修改 `harness.py` 与 `test_harness_cli.py`，未发现其他 scope
+creep。`stat/lstat` 三态、安全父目录缓存、八类 post-resolve 响应与
+ASCII-safe command envelope 均符合既有 §7.1–§7.2。
+
+### 六轮历史探针与验证证据
+
+六轮 SHORT / ZERO / MID / REPLACE / CLOSE_AFTER / PRECLOSE_FAULT /
+SOURCE_MANIFEST_REREAD / FINAL_VALIDATE_IO / ADAPT_MANIFEST_REREAD /
+INIT_EXIT1_PROGRESS / SOURCE_VALIDATE_OSERROR / ADAPT_VALIDATE_OSERROR /
+copytree / stamp / unreadable projection / target symlink / parent symlink /
+目录 / FIFO / END suffix / CRLF / Cursor broken marker / dangling `.harness` /
+adapter controls / parser newline / argv `0xff` / invalid UTF-8 / resolve /
+written-vs-unchanged 探针均通过；原文件保全、失败原子性、准确进度和只读语义
+无回退。
+
+```text
+$ python3 template/.harness/bin/validate.py
+Harness contract is valid.
+exit 0
+
+$ python3 template/.harness/bin/harness.py validate
+Harness contract is valid.
+exit 0（当前有效 bundle 与独立命令逐字节一致）
+
+$ python3 template/.harness/bin/harness.py adapt --check --root template/.harness
+[ADAPT_SKIPPED_TEMPLATE] .: origin is null; template bundles do not generate projections
+adapt: ok
+exit 0
+
+$ python3 -m unittest discover -s tests -v
+Ran 157 tests in 9.018s
+OK
+
+$ git diff --check
+无输出，exit 0
+
+$ git diff --check fff9650...a270b1d
+无输出，exit 0
+```
+
+其他门禁：
+
+- v0 schema v1：旧 validator、当前 `validate.py`、当前 `harness.py validate`
+  在正常 Text/JSON 夹具下 stdout/stderr 逐字节一致。
+- 三条只读命令前后 bundle 指纹均为
+  `b90c8eef7fc1d2c2db13c2821bd10a7b616d03e7ea28d1e5e7467ce948c91511`。
+- Python 3.9 grammar：两个 CLI 文件均通过。
+- E2E init / adapt check：均 exit 0，CRLF 用户前缀逐字节保留，三个投影存在。
+- 禁用 token、日期、网络访问与第三方依赖扫描无发现。
+- `tests/test_validate.py` 相对 v0 仍恰好只有获批三处样例事实修正。
+- feature 审阅检出干净，HEAD 仍为
+  `a270b1d8dcc3f17f8a5dd2e716af8acb68ac304a`。
+- `origin/feature/harness-v1` 精确匹配该 HEAD；PR #4 为 OPEN / Draft /
+  MERGEABLE / CLEAN。
+- GitHub Actions `Validate Harness` run `30068116586` 绑定该 HEAD，
+  conclusion `SUCCESS`。绿色 CI 未覆盖上述 surrogate validation-result
+  边界，不能覆盖静态与独立字节探针阻断。
+
+### 第七轮合入建议
+
+**不得合入 `a270b1d8dcc3f17f8a5dd2e716af8acb68ac304a`；PR #4 保持 Draft。**
+
+下一轮必须先由设计提交明确 surrogate 校验结果下的合法 UTF-8 与 v0/统一入口
+兼容关系，再以独立实现提交和真实原始字节测试关闭 `cmd_validate` 出口。新
+HEAD 必须重新执行七轮全部探针、157 项以上测试和既有门禁，并提供绑定新
+HEAD 的远端 CI。本记录不批准任何后续提交。
