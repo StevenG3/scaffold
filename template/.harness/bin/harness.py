@@ -66,6 +66,23 @@ def _silent_unlink(path):
         pass
 
 
+def _entry_exists(path):
+    """Fail-closed directory-entry probe (no symlink follow).
+
+    Returns True if a directory entry exists at ``path`` (including a dangling
+    symlink), False only when it is provably absent. Unlike ``os.path.lexists``,
+    an I/O fault during the probe is treated as "exists" so a cleanup hint fails
+    closed rather than being silently dropped (design §7.2).
+    """
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 class _ArgumentParser(argparse.ArgumentParser):
     def error(self, message):
         raise ValueError(message)
@@ -110,8 +127,16 @@ def emit(fmt, command, ok, errors, notices, extra):
             "notices": [asdict(item) for item in notices],
         }
         payload.update(extra)
+        # ensure_ascii=True (design §7.1): a path or message can carry a lone
+        # surrogate (U+D800–U+DFFF) that arrived from the filesystem via POSIX
+        # surrogateescape — e.g. an OSError/shutil.Error over a non-UTF-8 path.
+        # ensure_ascii=False would write that surrogate raw and stdout's own
+        # surrogateescape encoder would emit an illegal byte (0xff), making the
+        # envelope invalid UTF-8. ASCII-safe encoding escapes every such code
+        # point to \uXXXX so the bytes are always strictly valid UTF-8. ASCII
+        # content is byte-identical to the previous output.
         sys.stdout.write(
-            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+            json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
         )
     else:
         for item in errors + notices:
@@ -150,8 +175,14 @@ def emit_command_error(fmt, command, errors, extra, notices=()):
             "notices": [asdict(item) for item in notices],
         }
         payload.update(extra)
+        # ensure_ascii=True (design §7.1): OSError / shutil.Error path and
+        # message strings can contain lone surrogates from POSIX
+        # surrogateescape over a non-UTF-8 filesystem path. Escaping them to
+        # \uXXXX keeps the JSON envelope strictly valid UTF-8; with
+        # ensure_ascii=False stdout's surrogateescape encoder would emit a raw
+        # illegal byte. ASCII content is byte-identical to the previous output.
         sys.stdout.write(
-            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+            json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
         )
     else:
         for item in errors + notices:
@@ -792,7 +823,20 @@ def cmd_init(target, adapters_raw, fmt):
             ],
         )
 
-    if not target.is_dir():
+    # Target directory check inside the init I/O boundary (design §7.2 stage 3).
+    # os.stat (following symlinks, matching the previous Path.is_dir semantics)
+    # gives an explicit tri-state instead of collapsing every OSError to False:
+    #   - ENOENT / ENOTDIR, or a resolved non-directory st_mode: the predictable
+    #     "target missing / not a directory" state -> INIT_TARGET_MISSING,
+    #     exit 1;
+    #   - any other OSError (ELOOP on a symlink loop, EACCES, EILSEQ, ...) or a
+    #     UnicodeError: a runtime path fault -> INIT_IO_ERROR, exit 2.
+    # A self-referential symlink used to escape here: Path.is_dir() turned its
+    # ELOOP into False and mislabeled it INIT_TARGET_MISSING / exit 1. Resolve
+    # has not run yet, so INIT_IO_ERROR reports target null and copies nothing.
+    try:
+        target_info = os.stat(target)
+    except (FileNotFoundError, NotADirectoryError):
         return _init_failure(
             fmt,
             [
@@ -803,34 +847,42 @@ def cmd_init(target, adapters_raw, fmt):
                 )
             ],
         )
-    destination = target / ".harness"
-    # lexists (not exists) so ANY directory entry named .harness — regular
-    # file, directory, or symlink including a dangling one — counts as
-    # already existing and is refused before copytree (design §7.2 step 2).
-    if os.path.lexists(destination):
+    except (OSError, UnicodeError) as error:
+        return emit_command_error(
+            fmt,
+            "init",
+            [
+                validate.ContractError(
+                    "INIT_IO_ERROR",
+                    str(target),
+                    f"failed to inspect target directory: {error}",
+                )
+            ],
+            {"target": None, "projected_files": []},
+        )
+    if not stat.S_ISDIR(target_info.st_mode):
         return _init_failure(
             fmt,
             [
                 validate.ContractError(
-                    "INIT_TARGET_EXISTS",
-                    str(destination),
-                    "a .harness directory already exists; refusing to overwrite",
+                    "INIT_TARGET_MISSING",
+                    str(target),
+                    "target must be an existing directory",
                 )
             ],
-            target=str(destination),
         )
 
-    # Resolve the normalized absolute destination BEFORE any copy (design §7.2
-    # stage 3/8). The success envelope must never run an unprotected resolve()
-    # after all files are on disk (that final resolve was the r5 target-resolve
-    # seam). The leaf .harness does not exist yet, but its parent (target) does;
-    # resolve(strict=False) yields the same path it would post-copy because
-    # .harness is only ever a real directory on a successful run. Cache it and
-    # reuse it in the success envelope. A resolve fault here is a PRE-copy runtime
-    # I/O error: INIT_IO_ERROR, exit 2; nothing is on disk yet, so no cleanup hint
-    # and target reports the unresolved destination string.
+    destination = target / ".harness"
+    # Cache the ONE normalized absolute target that every post-resolve envelope
+    # — success and failure — reuses (design §7.2 stage 3/8). Resolve the PARENT
+    # target (already confirmed a real directory) and append ".harness" WITHOUT
+    # following the leaf: the .harness entry may be a dangling or hostile symlink
+    # and must never be dereferenced to build a report path. This also removes
+    # the r5 unprotected post-copy resolve() in the success envelope. A resolve
+    # fault here is a PRE-copy runtime I/O error: INIT_IO_ERROR, exit 2; nothing
+    # is on disk, so target is null and there is no cleanup hint.
     try:
-        resolved_target = str(destination.resolve())
+        resolved_target = str(target.resolve() / ".harness")
     except (OSError, UnicodeError) as error:
         return emit_command_error(
             fmt,
@@ -842,12 +894,49 @@ def cmd_init(target, adapters_raw, fmt):
                     f"failed to resolve target path: {error}",
                 )
             ],
-            {"target": str(destination), "projected_files": []},
+            {"target": None, "projected_files": []},
+        )
+
+    # .harness existence check, fail closed (design §7.2 stage 2). lstat (no
+    # follow) so ANY directory entry named .harness — regular file, directory,
+    # or symlink including a dangling one — counts as already existing. An
+    # OSError/UnicodeError probing the entry is a runtime path fault, not proof
+    # of absence: INIT_IO_ERROR / exit 2, rather than silently proceeding to
+    # copy (os.path.lexists would have swallowed it into False). Both branches
+    # report the cached absolute target; neither follows the leaf symlink.
+    try:
+        os.lstat(destination)
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeError) as error:
+        return emit_command_error(
+            fmt,
+            "init",
+            [
+                validate.ContractError(
+                    "INIT_IO_ERROR",
+                    resolved_target,
+                    f"failed to inspect target .harness entry: {error}",
+                )
+            ],
+            {"target": resolved_target, "projected_files": []},
+        )
+    else:
+        return _init_failure(
+            fmt,
+            [
+                validate.ContractError(
+                    "INIT_TARGET_EXISTS",
+                    resolved_target,
+                    "a .harness directory already exists; refusing to overwrite",
+                )
+            ],
+            target=resolved_target,
         )
 
     cleanup_hint = validate.ContractError(
         "INIT_CLEANUP_HINT",
-        str(destination),
+        resolved_target,
         "initialization failed after copying; remove this directory to retry",
     )
     try:
@@ -867,18 +956,18 @@ def cmd_init(target, adapters_raw, fmt):
         # Copy-stage I/O fault (bad source node, target disk failure): a
         # command-level error per §7.2 step 3. Render through the envelope with
         # exit 2; when a partial .harness was created, attach the cleanup hint.
-        copy_notices = [cleanup_hint] if os.path.lexists(destination) else []
+        copy_notices = [cleanup_hint] if _entry_exists(destination) else []
         return emit_command_error(
             fmt,
             "init",
             [
                 validate.ContractError(
                     "INIT_IO_ERROR",
-                    str(destination),
+                    resolved_target,
                     f"failed to copy template into project: {error}",
                 )
             ],
-            {"target": str(destination), "projected_files": []},
+            {"target": resolved_target, "projected_files": []},
             notices=copy_notices,
         )
 
@@ -909,11 +998,11 @@ def cmd_init(target, adapters_raw, fmt):
             [
                 validate.ContractError(
                     "INIT_IO_ERROR",
-                    str(destination),
+                    resolved_target,
                     f"failed to stamp project manifest: {error}",
                 )
             ],
-            {"target": str(destination), "projected_files": []},
+            {"target": resolved_target, "projected_files": []},
             notices=[cleanup_hint],
         )
 
@@ -932,7 +1021,7 @@ def cmd_init(target, adapters_raw, fmt):
             "init",
             [io_error.error],
             {
-                "target": str(destination),
+                "target": resolved_target,
                 "projected_files": list(io_error.written),
             },
             notices=[cleanup_hint],
@@ -947,7 +1036,7 @@ def cmd_init(target, adapters_raw, fmt):
             fmt,
             errors,
             notices=[cleanup_hint] + notices,
-            target=str(destination),
+            target=resolved_target,
             projected_files=written,
         )
 
@@ -966,12 +1055,12 @@ def cmd_init(target, adapters_raw, fmt):
             [
                 validate.ContractError(
                     "INIT_IO_ERROR",
-                    str(destination),
+                    resolved_target,
                     f"failed to validate initialized harness: {error}",
                 )
             ],
             {
-                "target": str(destination),
+                "target": resolved_target,
                 "projected_files": written,
             },
             notices=[cleanup_hint],
@@ -984,7 +1073,7 @@ def cmd_init(target, adapters_raw, fmt):
             fmt,
             list(final_result.errors),
             notices=[cleanup_hint],
-            target=str(destination),
+            target=resolved_target,
             projected_files=written,
         )
 
