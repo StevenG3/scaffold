@@ -78,7 +78,7 @@ class ValidatorTests(unittest.TestCase):
         self.assertEqual(0, result.returncode)
         self.assertTrue(payload["valid"])
         self.assertEqual([], payload["errors"])
-        self.assertEqual(1, payload["schema_version"])
+        self.assertEqual(2, payload["schema_version"])
         self.assertEqual(str(SOURCE_HARNESS.resolve()), payload["root"])
 
 
@@ -128,7 +128,7 @@ class ManifestStructureTests(unittest.TestCase):
     def test_unsupported_schema_version(self):
         with copied_harness() as root:
             manifest = read_manifest(root)
-            manifest["schema_version"] = 2
+            manifest["schema_version"] = 3
             write_manifest(root, manifest)
             result = run_validator(root=root, output_format="json")
         self.assertEqual(1, result.returncode)
@@ -143,7 +143,7 @@ class ManifestStructureTests(unittest.TestCase):
             result = run_validator(root=root, output_format="json")
         self.assertEqual(1, result.returncode)
         _, pairs = error_pairs(result)
-        self.assertIn(("COMPONENT_ID_DUPLICATE", "manifest.json#/components/3/id"), pairs)
+        self.assertIn(("COMPONENT_ID_DUPLICATE", "manifest.json#/components/4/id"), pairs)
 
     def test_unsupported_component_kind(self):
         with copied_harness() as root:

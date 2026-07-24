@@ -10,6 +10,11 @@ BUILTIN_KINDS = {"agent", "rule", "skill"}
 TOP_LEVEL_FIELDS = {"schema_version", "entrypoint", "components", "change_management"}
 COMPONENT_FIELDS = {"id", "kind", "path"}
 CHANGE_FIELDS = {"template", "records", "required_files"}
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+BUILTIN_ADAPTER_NAMES = ("claude-code", "codex", "cursor")
+TOP_LEVEL_FIELDS_V2 = TOP_LEVEL_FIELDS | {"template_version", "adapters", "origin"}
+ORIGIN_FIELDS = {"template_name", "template_version", "initialized_at_schema"}
+_SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 
 @dataclass(frozen=True, order=True)
@@ -90,12 +95,45 @@ def escape_text_field(value):
 
     Printable Unicode is unchanged. Deterministic form: ``\\uXXXX`` for
     ``U+0000``–``U+001F``, ``U+007F`` (DEL), ``U+0085`` (NEL),
-    ``U+2028`` (Line Separator) and ``U+2029`` (Paragraph Separator).
+    ``U+2028`` (Line Separator), ``U+2029`` (Paragraph Separator) and every
+    surrogate code point ``U+D800``–``U+DFFF``. Surrogates arrive from POSIX
+    ``surrogateescape`` over non-UTF-8 filesystem names (e.g. a Change Record
+    directory named with byte ``0xff`` yields ``U+DCFF`` in the reported
+    path); rendering them raw would emit an illegal byte on stdout. Escaping
+    to ``\\uXXXX`` keeps Text output pure ASCII and strictly valid UTF-8 while
+    identifying the original code unit. Surrogate-free values are unchanged.
     """
     parts = []
     for char in str(value):
         code = ord(char)
-        if code in _TEXT_ESCAPE_CODES:
+        if code in _TEXT_ESCAPE_CODES or _SURROGATE_FIRST <= code <= _SURROGATE_LAST:
+            parts.append(f"\\u{code:04x}")
+        else:
+            parts.append(char)
+    return "".join(parts)
+
+
+def _escape_serialized_surrogates(serialized):
+    """Post-serialization ASCII escape of surrogate code points.
+
+    Operates on the *already-serialized* JSON string, not on the payload
+    values, so it is lossless and collision-free. ``json.dumps`` has already
+    escaped every literal backslash in the source data (a literal six-character
+    ``\\udcff`` in a path arrives here as ``\\\\udcff``), so only genuine lone
+    surrogate *code points* — which ``ensure_ascii=False`` writes raw and which
+    cannot encode as UTF-8 — remain to be rewritten. Each ``U+D800``–``U+DFFF``
+    code point becomes its single-layer JSON escape ``\\uXXXX`` (lowercase hex,
+    matching ``json.dumps`` style), so ``json.loads`` recovers the original
+    surrogate character while a literal-text twin still loads as plain text.
+    Every other character — including legitimate non-ASCII scalars — is
+    returned verbatim, so any surrogate-free serialization is byte-identical.
+    """
+    if not _has_surrogate(serialized):
+        return serialized
+    parts = []
+    for char in serialized:
+        code = ord(char)
+        if _SURROGATE_FIRST <= code <= _SURROGATE_LAST:
             parts.append(f"\\u{code:04x}")
         else:
             parts.append(char)
@@ -122,7 +160,17 @@ def render_json(result):
         "root": str(result.root),
         "schema_version": result.schema_version,
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    # Serialize the ORIGINAL values first (no pre-serialization string edits),
+    # then escape any surrogate code points in the SERIALIZED text so the
+    # emitted bytes are always strictly valid UTF-8 (§7.4 ruling). ensure_ascii
+    # stays False, so legitimate non-ASCII scalars remain raw UTF-8 and
+    # surrogate-free results are byte-identical to prior v0 output. Because the
+    # escape is applied post-serialization and single-layer, json.loads of the
+    # output recovers the original surrogate, while a literal-text "\udcff" (a
+    # backslash json.dumps already doubled) is left untouched — the two are
+    # never conflated.
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    return _escape_serialized_surrogates(serialized) + "\n"
 
 
 def json_pointer(*parts):
@@ -204,10 +252,8 @@ def validate_manifest_structure(manifest):
         )
         return errors
 
-    reject_unknown_fields(manifest, TOP_LEVEL_FIELDS, (), errors)
-
     schema_version = require_field(manifest, "schema_version", int, (), errors)
-    if schema_version is not None and schema_version != 1:
+    if schema_version is not None and schema_version not in SUPPORTED_SCHEMA_VERSIONS:
         errors.append(
             ContractError(
                 "SCHEMA_VERSION_UNSUPPORTED",
@@ -215,6 +261,11 @@ def validate_manifest_structure(manifest):
                 f"schema_version {schema_version!r} is unsupported",
             )
         )
+
+    allowed_top = TOP_LEVEL_FIELDS_V2 if schema_version == 2 else TOP_LEVEL_FIELDS
+    reject_unknown_fields(manifest, allowed_top, (), errors)
+    if schema_version == 2:
+        _validate_v2_fields(manifest, errors)
 
     require_field(manifest, "entrypoint", str, (), errors)
 
@@ -296,6 +347,106 @@ def validate_manifest_structure(manifest):
                         )
 
     return errors
+
+
+def _validate_semver(value, pointer, errors, field_name):
+    if type(value) is not str or not _SEMVER_RE.match(value):
+        errors.append(
+            ContractError(
+                "FIELD_VALUE_INVALID",
+                pointer,
+                f"field {field_name!r} must be a semantic version like '1.2.3'",
+            )
+        )
+        return False
+    return True
+
+
+def _validate_v2_fields(manifest, errors):
+    if "template_version" in manifest:
+        _validate_semver(
+            manifest["template_version"],
+            json_pointer("template_version"),
+            errors,
+            "template_version",
+        )
+
+    if "adapters" in manifest:
+        adapters = manifest["adapters"]
+        if type(adapters) is not list:
+            errors.append(
+                ContractError(
+                    "FIELD_TYPE_INVALID",
+                    json_pointer("adapters"),
+                    "field 'adapters' must be list",
+                )
+            )
+        else:
+            seen = set()
+            for index, name in enumerate(adapters):
+                pointer = json_pointer("adapters", index)
+                if type(name) is not str or name == "":
+                    errors.append(
+                        ContractError(
+                            "FIELD_TYPE_INVALID",
+                            pointer,
+                            "adapter name must be a non-empty string",
+                        )
+                    )
+                    continue
+                if name not in BUILTIN_ADAPTER_NAMES and not (
+                    name.startswith("x-") and len(name) > 2
+                ):
+                    errors.append(
+                        ContractError(
+                            "FIELD_VALUE_INVALID",
+                            pointer,
+                            f"unsupported adapter {name!r}",
+                        )
+                    )
+                if name in seen:
+                    errors.append(
+                        ContractError(
+                            "FIELD_VALUE_INVALID",
+                            pointer,
+                            f"duplicate adapter {name!r}",
+                        )
+                    )
+                seen.add(name)
+
+    origin = manifest.get("origin")
+    if "origin" in manifest and origin is not None:
+        location = ("origin",)
+        if type(origin) is not dict:
+            errors.append(
+                ContractError(
+                    "FIELD_TYPE_INVALID",
+                    json_pointer("origin"),
+                    "field 'origin' must be null or an object",
+                )
+            )
+        else:
+            reject_unknown_fields(origin, ORIGIN_FIELDS, location, errors)
+            require_field(origin, "template_name", str, location, errors)
+            version = require_field(origin, "template_version", str, location, errors)
+            if version is not None:
+                _validate_semver(
+                    version,
+                    json_pointer("origin", "template_version"),
+                    errors,
+                    "template_version",
+                )
+            initialized = require_field(
+                origin, "initialized_at_schema", int, location, errors
+            )
+            if initialized is not None and initialized not in SUPPORTED_SCHEMA_VERSIONS:
+                errors.append(
+                    ContractError(
+                        "FIELD_VALUE_INVALID",
+                        json_pointer("origin", "initialized_at_schema"),
+                        f"initialized_at_schema {initialized!r} is unsupported",
+                    )
+                )
 
 
 def _is_supported_kind(kind):
@@ -707,12 +858,12 @@ def main(argv=None):
     try:
         args = parse_args(argv)
     except ValueError as error:
-        sys.stderr.write(f"[ARGUMENT_INVALID] .: {error}\n")
+        sys.stderr.write(f"[ARGUMENT_INVALID] .: {escape_text_field(error)}\n")
         return 2
     try:
         result = validate_harness(args.root)
     except RootUnreadableError as error:
-        sys.stderr.write(f"[ROOT_UNREADABLE] .: {error}\n")
+        sys.stderr.write(f"[ROOT_UNREADABLE] .: {escape_text_field(error)}\n")
         return 2
     rendered = render_json(result) if args.format == "json" else render_text(result)
     sys.stdout.write(rendered)
@@ -723,5 +874,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (OSError, UnicodeError, RuntimeError) as error:
-        sys.stderr.write(f"[INTERNAL_ERROR] .: {error}\n")
+        sys.stderr.write(f"[INTERNAL_ERROR] .: {escape_text_field(error)}\n")
         raise SystemExit(2)

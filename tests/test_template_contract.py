@@ -11,11 +11,14 @@ class TemplateContractTests(unittest.TestCase):
         expected = {
             "README.md",
             "agents/coordinator.md",
+            "bin/harness.py",
             "bin/validate.py",
             "changes/README.md",
             "manifest.json",
             "rules/delivery.md",
             "skills/change-delivery/SKILL.md",
+            "skills/harness-bootstrap/SKILL.md",
+            "wiki/README.md",
             "templates/change/spec.md",
             "templates/change/summary.md",
             "templates/change/tasks.md",
@@ -29,16 +32,19 @@ class TemplateContractTests(unittest.TestCase):
 
     def test_manifest_declares_generic_contract(self):
         manifest = json.loads((HARNESS_ROOT / "manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(1, manifest["schema_version"])
+        self.assertEqual(2, manifest["schema_version"])
+        self.assertEqual("1.0.0", manifest["template_version"])
         self.assertEqual("README.md", manifest["entrypoint"])
         self.assertEqual(
-            ["coordinator", "delivery-rule", "change-delivery"],
+            ["coordinator", "delivery-rule", "change-delivery", "harness-bootstrap"],
             [component["id"] for component in manifest["components"]],
         )
         self.assertEqual(
             ["summary.md", "spec.md", "tasks.md"],
             manifest["change_management"]["required_files"],
         )
+        self.assertEqual(["claude-code", "codex", "cursor"], manifest["adapters"])
+        self.assertIsNone(manifest["origin"])
 
     def test_bundle_contains_no_producer_history(self):
         forbidden = ("StevenG3", "2026-07-19", "scaffold", "codex/harness-v0-design")

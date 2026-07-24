@@ -21,6 +21,10 @@ jobs:
           python-version: "3.9"
       - name: Validate distributable Harness
         run: python3 template/.harness/bin/validate.py
+      - name: Validate via harness CLI
+        run: python3 template/.harness/bin/harness.py validate
+      - name: Check template projections are skipped
+        run: python3 template/.harness/bin/harness.py adapt --check --root template/.harness
       - name: Run tests
         run: python3 -m unittest discover -s tests -v
       - name: Check whitespace

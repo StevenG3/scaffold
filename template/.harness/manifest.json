@@ -1,5 +1,6 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "template_version": "1.0.0",
   "entrypoint": "README.md",
   "components": [
     {
@@ -16,6 +17,11 @@
       "id": "change-delivery",
       "kind": "skill",
       "path": "skills/change-delivery/SKILL.md"
+    },
+    {
+      "id": "harness-bootstrap",
+      "kind": "skill",
+      "path": "skills/harness-bootstrap/SKILL.md"
     }
   ],
   "change_management": {
@@ -26,5 +32,11 @@
       "spec.md",
       "tasks.md"
     ]
-  }
+  },
+  "adapters": [
+    "claude-code",
+    "codex",
+    "cursor"
+  ],
+  "origin": null
 }
