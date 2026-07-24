@@ -1224,5 +1224,219 @@ class R6JsonUtf8Tests(unittest.TestCase):
             self.assertTrue(surrogate_in_path, payload)
 
 
+validate = harness.validate
+
+
+def _make_surrogate_result(*, path, message):
+    """A failing ValidationResult whose path/message carry a lone surrogate.
+
+    Mirrors what validate_change_management produces for a Change Record whose
+    directory name arrived via POSIX surrogateescape (a non-UTF-8 filesystem
+    name); constructed directly so the render egress can be exercised on any
+    platform, including filesystems that reject non-UTF-8 names.
+    """
+    return validate.ValidationResult(
+        root=Path("/harness"),
+        schema_version=1,
+        errors=(
+            validate.ContractError(
+                "CHANGE_REQUIRED_FILE_MISSING", path, message
+            ),
+        ),
+    )
+
+
+class R7ValidateSurrogateTests(unittest.TestCase):
+    """R7: cmd_validate's exit-1 validation results flow through validate.py's
+    render_json/render_text. A path or message carrying a POSIX surrogateescape
+    code point (e.g. U+DCFF from byte 0xff in a Change Record directory name)
+    must still emit strictly valid UTF-8 on stdout (design §7.4 ruling), at both
+    the unified entry (harness.py validate) and the standalone validate.py."""
+
+    def _capture_raw_stdout(self, func):
+        raw = io.BytesIO()
+        wrapper = io.TextIOWrapper(
+            raw, encoding="utf-8", errors="surrogateescape", newline=""
+        )
+        with redirect_stdout(wrapper):
+            rc = func()
+        wrapper.flush()
+        data = raw.getvalue()
+        wrapper.detach()
+        return rc, data
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX surrogateescape only")
+    def test_cmd_validate_surrogate_result_stays_valid_utf8_both_formats(self):
+        # Drive the REAL cmd_validate and the standalone validate.main over a
+        # ValidationResult whose path AND message carry a lone surrogate,
+        # capturing raw stdout bytes. Both must be pure ASCII, strictly decode
+        # as UTF-8, and be byte-identical unified-vs-standalone.
+        result = _make_surrogate_result(
+            path="changes/bad\udcff/summary.md",
+            message="required change file missing near \udcff here",
+        )
+        for fmt in ("json", "text"):
+            with mock.patch.object(
+                validate, "validate_harness", return_value=result
+            ):
+                rc_u, data_u = self._capture_raw_stdout(
+                    lambda: harness.cmd_validate(SOURCE_HARNESS, fmt)
+                )
+                rc_s, data_s = self._capture_raw_stdout(
+                    lambda: validate.main(
+                        ["--root", str(SOURCE_HARNESS), "--format", fmt]
+                    )
+                )
+            self.assertEqual(1, rc_u, fmt)
+            self.assertEqual(1, rc_s, fmt)
+            # Pure ASCII: no raw high byte (0xff) leaked onto stdout.
+            self.assertFalse(any(byte > 0x7F for byte in data_u), (fmt, data_u))
+            # Strict UTF-8 decode must succeed (would raise on a raw 0xff).
+            text_u = data_u.decode("utf-8")
+            # Unified and standalone renderers are byte-identical (§7.4).
+            self.assertEqual(data_s, data_u, fmt)
+            if fmt == "json":
+                payload = json.loads(text_u)
+                self.assertEqual(
+                    ["CHANGE_REQUIRED_FILE_MISSING"],
+                    [e["code"] for e in payload["errors"]],
+                )
+                # The escape identifies the original code unit in both fields.
+                self.assertIn("\\udcff", payload["errors"][0]["path"])
+                self.assertIn("\\udcff", payload["errors"][0]["message"])
+            else:
+                # Exactly one physical line for the single error (no split).
+                self.assertEqual(1, text_u.count("\n"), repr(text_u))
+                self.assertIn("\\udcff", text_u)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX surrogateescape only")
+    def test_real_nonutf8_change_record_dir_stays_valid_utf8(self):
+        # The genuine filesystem probe: a Change Record directory named with a
+        # non-UTF-8 byte makes validate report CHANGE_REQUIRED_FILE_MISSING with
+        # a surrogate in the path. Some POSIX filesystems (e.g. APFS) reject
+        # non-UTF-8 names with EILSEQ; skip there, but the Linux CI exercises it.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / ".harness"
+            shutil.copytree(
+                SOURCE_HARNESS, root, ignore=shutil.ignore_patterns("__pycache__")
+            )
+            changes_dir = os.fsencode(str(root / "changes"))
+            try:
+                os.mkdir(changes_dir + b"/bad\xff")
+            except OSError as error:
+                self.skipTest(f"filesystem rejects non-UTF-8 names: {error}")
+            outputs = {}
+            for label, argv in (
+                ("unified", [str(HARNESS_CLI), "validate", "--root", str(root)]),
+                ("standalone", [str(VALIDATOR), "--root", str(root)]),
+            ):
+                for fmt in ("json", "text"):
+                    proc = subprocess.run(
+                        argv + ["--format", fmt],
+                        cwd=REPO_ROOT,
+                        capture_output=True,
+                        check=False,
+                    )
+                    outputs[(label, fmt)] = proc
+                    self.assertEqual(1, proc.returncode, (label, fmt, proc.stderr))
+                    raw = proc.stdout
+                    self.assertFalse(
+                        any(byte > 0x7F for byte in raw), (label, fmt, raw)
+                    )
+                    text = raw.decode("utf-8")  # strict; raises on a raw 0xff
+                    if fmt == "json":
+                        payload = json.loads(text)
+                        self.assertFalse(payload["valid"])
+                        self.assertTrue(
+                            any(
+                                "\\udcff" in e["path"] for e in payload["errors"]
+                            ),
+                            payload,
+                        )
+                    else:
+                        # One physical line per error: line count == error count.
+                        lines = [ln for ln in text.split("\n") if ln]
+                        self.assertTrue(lines)
+                        self.assertTrue(
+                            any("\\udcff" in ln for ln in lines), text
+                        )
+            # Unified and standalone are byte-identical on this fixture too.
+            for fmt in ("json", "text"):
+                self.assertEqual(
+                    outputs[("standalone", fmt)].stdout,
+                    outputs[("unified", fmt)].stdout,
+                    fmt,
+                )
+
+
+class R7ValidateByteParityTests(unittest.TestCase):
+    """R7: the surrogate hardening must not disturb any encodable result.
+    Surrogate-free failing fixtures and legitimate non-ASCII (raw UTF-8) output
+    must stay unified-vs-standalone byte-identical, with ensure_ascii=False's
+    raw-UTF-8 behavior preserved for valid text (§7.4 compatibility restatement).
+    """
+
+    @contextmanager
+    def _failing_harness(self, mutate):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / ".harness"
+            shutil.copytree(
+                SOURCE_HARNESS, root, ignore=shutil.ignore_patterns("__pycache__")
+            )
+            mutate(root)
+            yield root
+
+    def _run_both(self, root, fmt):
+        unified = subprocess.run(
+            [sys.executable, str(HARNESS_CLI), "validate", "--root", str(root),
+             "--format", fmt],
+            cwd=REPO_ROOT, capture_output=True, check=False,
+        )
+        standalone = subprocess.run(
+            [sys.executable, str(VALIDATOR), "--root", str(root), "--format", fmt],
+            cwd=REPO_ROOT, capture_output=True, check=False,
+        )
+        return unified, standalone
+
+    def test_surrogate_free_failing_fixture_unified_equals_standalone(self):
+        def mutate(root):
+            manifest = json.loads((root / "manifest.json").read_text("utf-8"))
+            # Duplicate a component id -> COMPONENT_ID_DUPLICATE, exit 1.
+            manifest["components"][0]["id"] = manifest["components"][1]["id"]
+            (root / "manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+
+        with self._failing_harness(mutate) as root:
+            for fmt in ("json", "text"):
+                unified, standalone = self._run_both(root, fmt)
+                self.assertEqual(1, unified.returncode, fmt)
+                self.assertEqual(1, standalone.returncode, fmt)
+                self.assertEqual(standalone.stdout, unified.stdout, fmt)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX path semantics")
+    def test_legitimate_non_ascii_path_stays_raw_utf8(self):
+        # A Change Record directory named with valid non-ASCII (Chinese) yields
+        # CHANGE_REQUIRED_FILE_MISSING with those scalars in the path. They must
+        # render as raw UTF-8 (ensure_ascii=False preserved), NOT \uXXXX.
+        chinese = "变更记录"
+
+        def mutate(root):
+            (root / "changes" / chinese).mkdir()
+
+        with self._failing_harness(mutate) as root:
+            unified, standalone = self._run_both(root, "json")
+            self.assertEqual(1, unified.returncode, unified.stderr)
+            # Raw UTF-8 bytes for the Chinese scalars are present ...
+            self.assertIn(chinese.encode("utf-8"), unified.stdout)
+            # ... and they are NOT ASCII-escaped as 变 etc.
+            self.assertNotIn(b"\\u53d8", unified.stdout)
+            self.assertEqual(standalone.stdout, unified.stdout)
+            payload = json.loads(unified.stdout.decode("utf-8"))
+            self.assertTrue(
+                any(chinese in e["path"] for e in payload["errors"]), payload
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
