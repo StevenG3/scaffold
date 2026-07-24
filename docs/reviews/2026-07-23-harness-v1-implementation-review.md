@@ -1002,3 +1002,188 @@ $ git diff --check 9a5fb58...93aee76
 4. 为以上真实字节和相邻生命周期边界增加回归测试。
 
 新 HEAD 必须重跑五轮全部探针、全量测试与既有门禁。本记录不批准后续提交。
+
+## 第六轮复审（2026-07-24，`76a4523`）
+
+### 结论
+
+**Request changes，不得合入。**
+
+本轮结论仅绑定
+`76a4523b2c91cb10249f968ed44795bb57656180`。设计修订
+`f7b5f88` 先于实现修复 `e826c7b` 与测试 `76a4523`，且正确补充了 Unicode
+读取、统一 `validate`、init 全生命周期、预解析目标以及
+`projected_files` 语义 A。第五轮的三个直接 finding 均已关闭，140 项测试与
+全部既有门禁也通过。
+
+但相邻 I/O 缝隙扫描独立发现三个 Important：init 的 target 检查仍不在错误
+边界内；已缓存的规范化绝对目标没有用于失败响应；命令级 JSON 错误消息含
+POSIX `surrogateescape` 字符时会产生非法 UTF-8。这三项都直接违反本轮修订后
+的 §7.1/§7.2，故不能批准。
+
+### 六维评分
+
+| 维度 | 得分 | 独立裁定 |
+| --- | ---: | --- |
+| A. 需求符合度 | 2/4 | 第五轮指定整改已覆盖，但 init 全生命周期和合法 UTF-8 envelope 仍未闭环。 |
+| B. 事实准确性 | 2/4 | “失败 envelope 复用缓存”“JSON 始终合法 UTF-8”与实际实现不符。 |
+| C. 通用性 | 3/4 | 标准库、平台中立与语义 A 成立；POSIX 路径字节和不可访问路径仍有通用性缺口。 |
+| D. 可维护性 | 2/4 | 生命周期逻辑分散，缓存值与原始值并存，新增契约未形成单一出口。 |
+| E. 验证充分性 | 2/4 | 140 项测试与真实非法 Manifest 很充分，但漏掉 target 检查错误、失败路径绝对值和异常消息代理字符。 |
+| F. 可追溯性 | 3/4 | 设计、实现、测试分提交且顺序正确；分支未推送，无精确 HEAD CI。 |
+
+**总分：14/24。** A、B、D、E 未达到合入门槛。
+
+### 第五轮 findings 与指定探针
+
+| finding / 探针 | 本轮独立结果 | 状态 |
+| --- | --- | --- |
+| init / adapt / 统一 validate 读取真实非法 UTF-8 Manifest | 分别 exit 2，JSON 可严格解析，stderr 空，错误码依次为 `INIT_IO_ERROR` / `PROJECTION_IO_ERROR` / `VALIDATE_IO_ERROR`，无裸 `INTERNAL_ERROR` | 已关闭 |
+| 独立 `validate.py` 非法 UTF-8 | 保持 v0：exit 2，stdout 空，stderr 裸 `INTERNAL_ERROR` | 兼容通过 |
+| 源 Manifest 二读 / adapt 二读解码竞态 | 分别稳定映射 `INIT_IO_ERROR` / `PROJECTION_IO_ERROR` | 已关闭 |
+| stamp 读取 / final validate 解码竞态 | 均为 `INIT_IO_ERROR`、exit 2，带 cleanup hint 和真实进度 | 已关闭 |
+| 成功前 `resolve()` 故障 | `INIT_IO_ERROR`、无 cleanup hint、无目标副本 | 已关闭 |
+| 语义 A：byte-identical `CLAUDE.md` 后续失败 | `projected_files=[]`，原 inode 与全字节均不变 | 已关闭 |
+| written + unchanged + failure 三态 | `written=['AGENTS.md']`、`unchanged=['CLAUDE.md']`、失败项不混入 | 已关闭 |
+
+历史 SHORT / ZERO / MID / REPLACE / CLOSE_AFTER / PRECLOSE_FAULT /
+SOURCE_MANIFEST_REREAD / FINAL_VALIDATE_IO / ADAPT_MANIFEST_REREAD /
+INIT_EXIT1_PROGRESS / SOURCE_VALIDATE_OSERROR / ADAPT_VALIDATE_OSERROR /
+copytree / stamp / unreadable projection / target symlink / parent symlink /
+目录 / FIFO / END suffix / CRLF / Cursor broken marker / dangling `.harness` /
+adapter controls / parser newline / argv `0xff` 探针全部重新执行，均保持前五轮
+已裁定的 fail-closed、失败原子性、准确进度和块外字节保全结果。
+
+### Standards findings
+
+#### Important — target 路径检查吞掉 I/O 错误并错误降级为 exit 1
+
+位置：`template/.harness/bin/harness.py:795-810`
+
+`Path.is_dir()` 会把路径查询的 `OSError` 当作 `False`，而随后的
+`os.path.lexists()` 也在保护边界外。真实自环符号链接探针：
+
+```text
+TARGET_LOOP rc=1 errors=['INIT_TARGET_MISSING'] target=None stderr_empty=True
+```
+
+该路径不是“目标不存在”的可预期状态；设计 §7.2 已把 target 路径检查和失败
+状态构造纳入 init 全生命周期，并要求运行时路径故障映射
+`INIT_IO_ERROR` / exit 2。注入 `is_dir` / `lexists` 的 `OSError` 还会直接逃逸
+到统一裸内部错误。
+
+最低整改：用显式 `stat` / `lstat` 结果区分“不存在或不是目录”（exit 1）与
+“查询失败”（`INIT_IO_ERROR` / exit 2）；将 target、`.harness` 目录项检查及
+cleanup 状态查询置于同一个明确边界。增加真实不可访问/循环路径与故障注入的
+Text/JSON 回归。
+
+#### Important — 缓存的绝对 target 未用于失败 envelope
+
+位置：`template/.harness/bin/harness.py:833-987`
+
+代码在复制前得到 `resolved_target`，但 cleanup hint 和复制、stamp、投影、
+final validate 的全部失败返回仍使用 `str(destination)`。从临时 cwd 以相对
+target 注入复制故障：
+
+```text
+RELATIVE_COPY_FAILURE rc=2
+target='project/.harness' absolute=False
+codes=['INIT_IO_ERROR'] hint_path='project/.harness'
+```
+
+这违反 §7.2“成功与失败 envelope 复用缓存”和 §7.2 JSON 字段的规范化绝对
+路径定义，也使 cleanup 指引依赖调用者当前目录。
+
+最低整改：预解析成功后，所有成功与失败 envelope、错误 path 与
+`INIT_CLEANUP_HINT` 均只使用同一缓存绝对路径；预解析失败阶段保持无复制、无
+cleanup hint。补相对 target 在 copy/stamp/projection/final-validation/exit-1
+失败路径上的字段断言。
+
+#### Important — JSON 错误 envelope 可能不是合法 UTF-8
+
+位置：`template/.harness/bin/harness.py:135-155`
+
+`emit_command_error()` 以 `ensure_ascii=False` 原样渲染异常消息。POSIX 文件
+系统错误可以经 `surrogateescape` 带入代理字符；stdout 默认也使用
+`surrogateescape`。给 `copytree` 注入包含 `\udcff` 的 `shutil.Error` 并捕获
+原始 stdout 字节：
+
+```text
+SURROGATE_ERROR_JSON rc=2 exc=None utf8_valid=False raw_ff=True
+```
+
+即命令返回了 envelope，但其字节流不能以严格 UTF-8 解码，与 §7.1
+“JSON 输出必须始终是合法 UTF-8”“path/message 经转义”直接冲突。
+
+最低整改：在 JSON 渲染边界对所有字符串做可逆安全转义，最小方案可使用
+ASCII-safe JSON 编码；不得只处理 argv。增加以 `TextIOWrapper(errors=
+"surrogateescape")` 捕获原始字节、再严格 `decode("utf-8")` 和
+`json.loads()` 的测试，错误 path 与 message 都应覆盖。
+
+### Spec findings 与设计核对
+
+- `f7b5f88` 独立修改 `docs/design/harness-v1.md`，位于实现提交之前，满足
+  设计所有权与提交顺序要求。
+- §7.1 已枚举 `OSError`、`JSONDecodeError`、`UnicodeError` 并规定三类阶段
+  错误码；§7.3 与 §7.4 已补 adapt / validate 对称边界。
+- §7.2 已枚举九个 init 生命周期阶段，并将 resolve 明确为复制前阶段；§7.1、
+  §7.2 及 JSON 字段对语义 A 的表述一致，未发现 “written + unchanged” 残留。
+- 设计文本本身足以覆盖第五轮 Spec findings；本轮阻断是实现没有落实其中
+  target 检查、失败 envelope 缓存复用和合法 UTF-8 三项，不需要再放宽设计。
+- `copytree` 保留 `(shutil.Error, OSError)` 是可接受的显式边界；未复用读取
+  异常元组不构成 finding。
+
+### 第六轮验证证据
+
+```text
+$ python3 template/.harness/bin/validate.py
+Harness contract is valid.
+exit 0
+
+$ python3 template/.harness/bin/harness.py validate
+Harness contract is valid.
+exit 0（与独立命令逐字节一致）
+
+$ python3 template/.harness/bin/harness.py adapt --check --root template/.harness
+[ADAPT_SKIPPED_TEMPLATE] .: origin is null; template bundles do not generate projections
+adapt: ok
+exit 0
+
+$ python3 -m unittest discover -s tests -v
+Ran 140 tests in 8.787s
+OK
+
+$ git diff --check
+无输出，exit 0
+
+$ git diff --check d8bb2cc...76a4523
+无输出，exit 0
+```
+
+其他门禁：
+
+- v0 schema v1：旧 validator、当前 `validate.py`、当前 `harness.py validate`
+  在 Text/JSON 下 stdout/stderr 逐字节一致。
+- 三条只读命令前后 bundle 指纹均为
+  `79f98d158401d77c6504a1997d90a379e6ccebe7ce375dfa2bcf56d8e2d050aa`。
+- Python 3.9 grammar：两个 CLI 文件均通过。
+- E2E init / adapt check：均 exit 0，CRLF 用户前缀逐字节保留，三个投影存在。
+- 禁用 token、日期、网络访问和第三方依赖扫描无发现。
+- `tests/test_validate.py` 相对 v0 仍恰好只有批准的三处样例事实修正。
+- 全部验证后 feature worktree 干净，HEAD 仍为
+  `76a4523b2c91cb10249f968ed44795bb57656180`。
+- feature 分支未推送，GitHub 无开放 PR 或绑定精确 HEAD 的 CI；本轮不能声称
+  具备远端 CI 证据。静态/探针阻断已足够拒绝，未要求为失败版本补跑 CI。
+
+### 第六轮合入建议
+
+**不得合入 `76a4523b2c91cb10249f968ed44795bb57656180`。**
+
+下一轮必须至少关闭：
+
+1. target 与 `.harness` 目录项检查的 init I/O 边界；
+2. 规范化绝对 target 在全部 post-resolve 响应和 cleanup hint 中的复用；
+3. 文件系统异常含代理字符时 JSON envelope 的严格 UTF-8 合法性。
+
+新 HEAD 必须重新执行本文六轮全部探针、140 项以上测试、v0 字节兼容、只读
+指纹、Python 3.9 grammar、E2E 与 diff check。本记录不批准任何后续提交。
