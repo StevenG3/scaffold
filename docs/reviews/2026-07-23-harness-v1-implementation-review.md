@@ -1356,3 +1356,198 @@ $ git diff --check fff9650...a270b1d
 兼容关系，再以独立实现提交和真实原始字节测试关闭 `cmd_validate` 出口。新
 HEAD 必须重新执行七轮全部探针、157 项以上测试和既有门禁，并提供绑定新
 HEAD 的远端 CI。本记录不批准任何后续提交。
+
+## 第八轮复审（2026-07-24，`183e463`）
+
+### 结论
+
+**Request changes，PR #4 保持 Draft，不得合入。**
+
+本轮结论仅绑定
+`183e463f7e4e8d873191db2b6ef486a5eaed50a1`。相对第七轮
+`a270b1d8dcc3f17f8a5dd2e716af8acb68ac304a` 增加五个提交，顺序为：
+
+1. `559b45b`：设计裁决 v0 surrogate 输出缺陷；
+2. `afc21af`：加固 `validate.py` Text/JSON renderer；
+3. `11a2000`：增加双入口 surrogate 与字节兼容测试；
+4. `eaf50fb`：设计扩展到独立 validator stderr；
+5. `183e463`：实现 stderr 与最终兜底转义并补测试。
+
+两次设计裁决均先于对应实现；扩展到独立 `validate.py` 三条 stderr 诊断及
+`harness.py` 最终兜底，属于同一个“终端出口合法 UTF-8 且一错一行”不变量，
+参数、退出码、输出流向和无代理输出均未改变，范围正当。
+
+第七轮的裸 `0xff` 泄漏已关闭：统一入口和独立入口在 Text/JSON 下都能严格
+UTF-8 解码且逐字节一致，Linux CI 的真实非法文件名探针也确实执行通过。
+但是新 JSON sanitizer 在序列化之前把真实 surrogate 改成普通六字符文本，
+造成结构化 path/message 的信息丢失：真实 `U+DCFF` 与合法文件名中的字面量
+`\udcff` 渲染成完全相同的 JSON，`json.loads()` 后也无法区分。这不满足设计
+裁决要求的“信息可辨”，故仍不能批准。
+
+### 六维评分
+
+| 维度 | 得分 | 独立裁定 |
+| --- | ---: | --- |
+| A. 需求符合度 | 2/4 | 合法 UTF-8 已实现，但 JSON 结构化字段没有保留原始诊断语义。 |
+| B. 事实准确性 | 2/4 | path/message 会与合法反斜杠文本碰撞，消费者无法确认真实路径。 |
+| C. 通用性 | 2/4 | Linux 非 UTF-8 文件名可处理，但诊断映射不是单射，在合法 POSIX 文件名空间中产生别名。 |
+| D. 可维护性 | 3/4 | 共享 renderer 方向正确；序列化前递归改写制造了不必要的语义层。 |
+| E. 验证充分性 | 2/4 | 166 项和真实 Linux 探针充分，但现有断言主动接受字面量替代，缺少反碰撞判别。 |
+| F. 可追溯性 | 4/4 | 设计/实现顺序、Draft PR、精确 HEAD CI 与本记录完整。 |
+
+**总分：15/24。** A、B、C、E 未达到合入门槛。
+
+### 第七轮 finding 与本轮新增范围
+
+| 项目 | 独立结果 | 状态 |
+| --- | --- | --- |
+| `cmd_validate` surrogate JSON 裸字节 | 两入口双格式 rc 1、原始 stdout 严格 UTF-8、统一/独立逐字节一致 | 原 finding 已关闭 |
+| 独立 `validate.py` surrogate `--root` | exit 2、stdout 空、stderr 严格 UTF-8、单物理行、无裸 `0xff` | 通过 |
+| 未知参数换行 / surrogate | 均 exit 2、stdout 空、stderr 单行且严格 UTF-8 | 通过 |
+| 换行 `--root` | exit 2、`ROOT_UNREADABLE` 单行 | 通过 |
+| 无代理失败结果 | 两入口 Text/JSON 逐字节一致 | 通过 |
+| 合法中文 Change Record | 两入口 Text/JSON 逐字节一致；JSON 保留原始中文 UTF-8，未全量 ASCII 化 | 通过 |
+| 独立 stderr 与两个 CLI 最终兜底扩展 | 同类出口收口，设计先行且没有参数/退出码/流向变化 | 批准 |
+
+### Standards findings
+
+#### Important — JSON surrogate 预清洗导致诊断值碰撞
+
+位置：
+
+- `template/.harness/bin/validate.py:116-154`
+- `template/.harness/bin/validate.py:170-182`
+- `tests/test_harness_cli.py:1298-1306`
+
+`_sanitize_json_strings()` 在调用 `json.dumps()` 前，把实际 surrogate
+`U+DCFF` 替换成由反斜杠、字母和数字组成的普通字符串 `\udcff`。之后
+`json.dumps()` 会把该反斜杠再转义，`json.loads()` 得到的是字面量六字符，
+不是原始 surrogate。
+
+独立判别探针以 `os.fsdecode(b"bad\xff")` 构造真实
+`surrogateescape` 来源，并与合法字面量 `r"bad\udcff"` 比较：
+
+```text
+CMD_VALIDATE_SURROGATE json rc=1/1 strict=True byte_equal=True
+JSON_SEMANTICS equals_original=False equals_literal=True
+COLLISION_JSON True
+COLLISION_TEXT True
+```
+
+Text 的可读转义允许用 `\udcff` 表示不可显示 code unit；但 JSON 是结构化
+接口，其解析后的 `errors[].path/message` 应继续表示原值。当前实现会把两个
+不同的合法输入映射为同一结构化结果，使工具或用户无法判断错误究竟对应非法
+字节名还是名为反斜杠序列的普通文件。
+
+现有测试反而在 `json.loads()` 后断言字面量 `\\udcff`，固化了有损行为，
+但没有构造真实 surrogate 与合法字面量的对照。
+
+最低整改：
+
+1. JSON payload 保持原始字符串，不在结构化值层预清洗；
+2. 先以现有 `ensure_ascii=False` 完成 JSON 序列化，再只替换序列化结果中
+   的实际 surrogate code point 为单层 JSON `\uXXXX` 转义；
+3. 合法字面量中的反斜杠已被 `json.dumps()` 编成双反斜杠，不得被二次处理；
+4. 新增判别测试：两个原始输入的 JSON bytes 必须不同，
+   `json.loads()` 后分别等于原 surrogate 与字面量字符串；
+5. 保持所有 surrogate-free Text/JSON 结果逐字节不变，合法中文仍输出原始
+   UTF-8；Text 现有单行表示无需因本 finding 扩张契约。
+
+非阻断 smell：`harness.py` 的 `_escape_argv_field` 与
+`validate.escape_text_field` 已覆盖同一控制字符/代理字符集合，存在
+Duplicated Code / Shotgun Surgery 风险；本轮不要求为此扩大修改。
+
+### Spec findings 与设计裁定
+
+- `559b45b` 对第七轮提出的冲突采用批准的选项 1：将原非法 UTF-8 输出判为
+  v0 缺陷，并把兼容承诺限定为一切原本可编码结果。裁定清晰且正当。
+- `eaf50fb` 把唯一例外扩展到 `[ARGUMENT_INVALID]`、
+  `[ROOT_UNREADABLE]`、`[INTERNAL_ERROR]` stderr 插值，属于同一输出安全
+  不变量；实现未改变参数、退出码和流向，批准该扩展。
+- `tests/test_validate.py` 本轮零修改，相对 v0 仍只有既有批准的三处样例修正。
+- 实施计划对后续 stderr 扩展仅引用 §7.4、没有逐项复述，是非阻断文档精度
+  问题；设计正文已明确定义唯一例外。
+- 设计本身无需再次放宽；当前实现没有达到裁决中的“确定性、信息可辨”。应按
+  上述最小整改保留 JSON 字段语义。
+
+### 出口扫描
+
+两个 CLI 的终端输出点已逐一核对：
+
+- `validate.py`：正常 stdout 仅来自 `render_text/render_json`；三条 stderr
+  插值均经过 `escape_text_field`。
+- `harness.py`：JSON `emit*` 使用 ASCII-safe JSON；Text error/notices 经过
+  escape；parser、非法 argv 和最终兜底均经过 `_escape_argv_field`；正常
+  validate 委托共享 validator renderer。
+- `written:` 与成功提示等剩余直接 stdout 内容只来自封闭适配器表、相对投影
+  路径或固定常量；未发现新的外部字符串裸写点。
+
+除 JSON 结构化字段碰撞外，出口扫描没有其他 hard finding。
+
+### 七轮历史探针与验证证据
+
+七轮 SHORT / ZERO / MID / REPLACE / CLOSE_AFTER / PRECLOSE_FAULT /
+SOURCE_MANIFEST_REREAD / FINAL_VALIDATE_IO / ADAPT_MANIFEST_REREAD /
+INIT_EXIT1_PROGRESS / SOURCE_VALIDATE_OSERROR / ADAPT_VALIDATE_OSERROR /
+copytree / stamp / unreadable projection / target symlink / parent symlink /
+目录 / FIFO / END suffix / CRLF / Cursor broken marker / dangling `.harness` /
+adapter controls / parser newline / argv `0xff` / invalid UTF-8 / resolve /
+written-vs-unchanged / absolute target / command-envelope surrogate /
+validate-result surrogate 探针均回归通过；本轮判别探针独立发现上述新碰撞。
+
+```text
+$ python3 template/.harness/bin/validate.py
+Harness contract is valid.
+exit 0
+
+$ python3 template/.harness/bin/harness.py validate
+Harness contract is valid.
+exit 0
+
+$ python3 template/.harness/bin/harness.py adapt --check --root template/.harness
+[ADAPT_SKIPPED_TEMPLATE] .: origin is null; template bundles do not generate projections
+adapt: ok
+exit 0
+
+$ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+Ran 166 tests in 10.577s
+OK (skipped=1：本机 APFS 拒绝非法文件名)
+
+$ git diff --check
+无输出，exit 0
+
+$ git diff --check 083ad34...183e463
+无输出，exit 0
+```
+
+首次并发审阅测试曾因审阅进程在隔离目录生成未跟踪
+`bin/__pycache__/validate.cpython-314.pyc` 而触发分发包纯净性测试的
+1 failure / 1 error；移走该审阅临时产物并确认 HEAD/索引不变后，上述完整
+166 项干净重跑通过。该首次结果不是提交缺陷，也未被用作通过证据。
+
+其他门禁：
+
+- v0 schema v1、surrogate-free 夹具：旧 validator、当前 `validate.py`、
+  当前 `harness.py validate` 在 Text/JSON 下 stdout/stderr 逐字节一致。
+- 三条只读命令前后 bundle 指纹均为
+  `9c8911cbb77407aa84d900bb8b85f1e49709ec76d3c508614c699ea09dd60760`。
+- Python 3.9 grammar：两个 CLI 文件均通过。
+- E2E init / adapt check：均 exit 0，CRLF 用户前缀逐字节保留，三个投影存在。
+- 禁用 token、日期、网络访问与第三方依赖扫描无发现。
+- `tests/test_validate.py` 相对 v0 仍恰好只有获批三处样例事实修正。
+- feature 审阅检出干净，HEAD 仍为
+  `183e463f7e4e8d873191db2b6ef486a5eaed50a1`。
+- `origin/feature/harness-v1` 精确匹配该 HEAD；PR #4 为 OPEN / Draft /
+  MERGEABLE / CLEAN。
+- GitHub Actions run `30094724666` 精确绑定该 HEAD、conclusion
+  `SUCCESS`；日志确认 Linux 上
+  `test_real_nonutf8_change_record_dir_stays_valid_utf8 ... ok`，166 项全过。
+  该 CI 未包含 surrogate-vs-literal 判别断言，不能覆盖本轮阻断。
+
+### 第八轮合入建议
+
+**不得合入 `183e463f7e4e8d873191db2b6ef486a5eaed50a1`；PR #4 保持 Draft。**
+
+下一轮只需收口 JSON surrogate 结构化值的无损转义与反碰撞测试；不应再次
+放宽设计或扩大到无关路径。新 HEAD 必须重新执行八轮全部探针、166 项以上
+测试和既有门禁，并提供绑定新 HEAD 的远端 CI。本记录不批准任何后续提交。
