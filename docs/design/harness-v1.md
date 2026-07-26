@@ -61,6 +61,7 @@ v1 不实现以下内容：
 template/.harness/
 ├── manifest.json              # 升级到 schema_version 2
 ├── README.md                  # 更新：加入 CLI 与 bootstrap 使用说明
+├── LICENSE                    # 新增：MIT 全文通知（法定通知例外，见下文要点）
 ├── agents/coordinator.md      # 不变
 ├── rules/delivery.md          # 不变
 ├── skills/

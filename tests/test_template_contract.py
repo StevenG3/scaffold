@@ -9,6 +9,7 @@ HARNESS_ROOT = REPO_ROOT / "template" / ".harness"
 class TemplateContractTests(unittest.TestCase):
     def test_bundle_contains_declared_runtime_assets(self):
         expected = {
+            "LICENSE",
             "README.md",
             "agents/coordinator.md",
             "bin/harness.py",
@@ -48,8 +49,17 @@ class TemplateContractTests(unittest.TestCase):
 
     def test_bundle_contains_no_producer_history(self):
         forbidden = ("StevenG3", "2026-07-19", "scaffold", "codex/harness-v0-design")
+        # Designer ruling (harness-v1.md §5.1): the bundled LICENSE carries the MIT
+        # notice, whose copyright holder is lawful notice rather than producer
+        # history. Exempt exactly that one token for exactly that one file; every
+        # other token for LICENSE, and every token for every other file, still apply.
+        exempt_tokens_by_path = {"LICENSE": ("StevenG3",)}
         for path in HARNESS_ROOT.rglob("*"):
             if path.is_file():
+                relative = path.relative_to(HARNESS_ROOT).as_posix()
+                exempt = exempt_tokens_by_path.get(relative, ())
                 text = path.read_text(encoding="utf-8")
                 for token in forbidden:
+                    if token in exempt:
+                        continue
                     self.assertNotIn(token, text, f"{token!r} leaked into {path}")

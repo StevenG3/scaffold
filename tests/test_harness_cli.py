@@ -1658,5 +1658,26 @@ class R7StandaloneStderrDiagnosticsTests(unittest.TestCase):
         )
 
 
+class LicenseNoticeReachesTargetTests(unittest.TestCase):
+    """MIT requires the notice to travel with every distributed copy.
+
+    The distribution unit is ``template/.harness/``, so a real ``init`` must
+    land the licence text inside the target project's ``.harness/``.
+    """
+
+    def test_real_init_lands_byte_identical_license(self):
+        source_license = SOURCE_HARNESS / "LICENSE"
+        self.assertTrue(source_license.is_file(), "bundle is missing LICENSE")
+        with temp_project() as project:
+            result = run_cli(HARNESS_CLI, "init", "--target", str(project))
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            installed = project / ".harness" / "LICENSE"
+            self.assertTrue(installed.is_file(), "init did not install LICENSE")
+            self.assertEqual(source_license.read_bytes(), installed.read_bytes())
+            text = installed.read_text(encoding="utf-8")
+            self.assertIn("MIT License", text)
+            self.assertIn("Copyright (c) 2026 StevenG3", text)
+
+
 if __name__ == "__main__":
     unittest.main()
