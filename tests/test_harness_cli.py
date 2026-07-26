@@ -16,6 +16,12 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_HARNESS = REPO_ROOT / "template" / ".harness"
+
+# Reuse the notice validator that pins the audited MIT text, so the installed
+# copy is checked for substance and not merely for equality with the bundle.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_template_contract import assert_valid_mit_notice  # noqa: E402
+
 HARNESS_CLI = SOURCE_HARNESS / "bin" / "harness.py"
 VALIDATOR = SOURCE_HARNESS / "bin" / "validate.py"
 
@@ -1656,6 +1662,27 @@ class R7StandaloneStderrDiagnosticsTests(unittest.TestCase):
             b"[ROOT_UNREADABLE] .: harness root is missing or not a directory\n",
             result.stderr,
         )
+
+
+class LicenseNoticeReachesTargetTests(unittest.TestCase):
+    """MIT requires the notice to travel with every distributed copy.
+
+    The distribution unit is ``template/.harness/``, so a real ``init`` must
+    land the licence text inside the target project's ``.harness/``.
+    """
+
+    def test_real_init_lands_byte_identical_license(self):
+        source_license = SOURCE_HARNESS / "LICENSE"
+        self.assertTrue(source_license.is_file(), "bundle is missing LICENSE")
+        with temp_project() as project:
+            result = run_cli(HARNESS_CLI, "init", "--target", str(project))
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            installed = project / ".harness" / "LICENSE"
+            self.assertTrue(installed.is_file(), "init did not install LICENSE")
+            self.assertEqual(source_license.read_bytes(), installed.read_bytes())
+            installed_bytes = installed.read_bytes()
+            assert_valid_mit_notice(installed_bytes)
+            self.assertIn("MIT License", installed_bytes.decode("utf-8"))
 
 
 if __name__ == "__main__":
