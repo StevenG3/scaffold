@@ -91,7 +91,7 @@ The table is an index, not the evidence itself. The rewritten content must stay 
 
 1. **If the project uses version control**, commit in two stages, in this order:
    1. **Asset commits** - every target asset change made by the bootstrap lands in one or more referenceable commits that contain no Change Record audit metadata.
-   2. **Audit commit** - the Change Record files land afterwards, and `summary.md` records the asset commit id, or the commit range if there was more than one.
+   2. **Audit commit** - the Change Record files land afterwards, and `summary.md` lists every asset commit individually, each by its full or uniquely resolvable id. Range notation is never used, so the list needs no contiguous commits and can admit no unrelated ones.
 
    The asset diffs are the evidence; no copies are made. `summary.md` only ever references asset commits that already exist when it is written, never a commit containing its own final content.
 2. **Otherwise**, before writing, bootstrap must copy the original of every target asset it will mark `modified`, `replaced`, or `removed` into an `originals/` subdirectory of this Change Record directory, preserving the asset's bundle-relative path. Those copies are the evidence, and `summary.md` must say that `originals/` is the carrier because no version control is in use.
@@ -107,9 +107,13 @@ The table is an index, not the evidence itself. The rewritten content must stay 
 | `rules/delivery.md` | `modified` | Added the reviewer approval the user requires before merge; the four delivery states and the rest of the shipped rule stand. | `generic` |
 | `wiki/conventions.md` | `added` | Scouting found build, test, and lint conventions that come from the project's technology stack rather than its domain. | `stack` |
 
-Example evidence sentence for `summary.md`, version-control case:
+Example evidence sentence for `summary.md`, version-control case with a single asset commit:
 
-> All bootstrap target asset changes are in asset commits `a1b2c3d..e4f5a6b`; see those diffs for the exact rewritten content. This Change Record lands in a later audit commit.
+> All bootstrap target asset changes are in asset commit `a1b2c3d`; see that diff for the exact rewritten content. This Change Record lands in a later audit commit.
+
+Example evidence sentence for `summary.md`, version-control case with more than one asset commit:
+
+> All bootstrap target asset changes are in asset commits `a1b2c3d` and `e4f5a6b`; see those diffs for the exact rewritten content. This Change Record lands in a later audit commit.
 
 Example evidence sentence for `summary.md`, no version control:
 
