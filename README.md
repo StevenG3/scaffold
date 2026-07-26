@@ -14,7 +14,7 @@ AI Coding 正从 Prompt Engineering、Context Engineering 走向 **Harness Engin
 - 用 Git 版本化管理上述资产，便于团队复用与持续迭代
 - 将设计参考与演进决策留在仓库内，保证「发现一次 Agent 错误 → 工程化消除同类错误」可追溯
 
-> v0 已固定分发包的目录布局与 Manifest 契约（见下文「设计与决策」）；完整流程阶段与 Skill 清单仍在演进中，将按决策逐步扩充。
+> 分发包契约由 v0 奠基，v1 已扩展至 Manifest Schema v2 与自安装 CLI（见下文「设计与决策」）；后续演进（v2 分层等）按公开规划与真实接入反馈推进。
 
 ## 参考资料
 
