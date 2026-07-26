@@ -24,11 +24,11 @@ AI Coding 正从 Prompt Engineering、Context Engineering 走向 **Harness Engin
 ## 第三方内容与许可
 
 - 仓库内 `docs/reference/` 下对外部文章仅保留**摘要与链接**，不进行全文再分发。
-- 本仓库自身代码与文档的开源许可证**待定**；无论最终采用何种许可证，均**不**授予对第三方原文全文的转载或再分发权利。
+- 本仓库自身代码与文档以 **MIT 许可证**开源（见 [LICENSE](LICENSE)）；该许可证**不**授予对第三方原文全文的转载或再分发权利。
 
 ## 状态
 
-仓库已交付 Harness v0 可移植垂直切片：包含自包含分发包、版本化 Manifest、最小 Agent / Rule / Skill / Change Template、标准库校验器及 CI 门禁。完整流水线、MCP 和安装器不在 v0 范围内。
+Harness v1 已交付并合入：自安装单文件 CLI（`init` / `adapt` / `validate`）、Manifest Schema v2、以受管区块形式生成的平台投影（CLAUDE.md / AGENTS.md / .cursor/rules/harness.mdc）、带定制记录的 harness-bootstrap Skill，以及 168 个测试与配套 CI 门禁；[不变式闭包设计法](docs/process/invariant-closure-design.md)（docs/process/）已作为正式流程生效，v2 分层能力的规划（[docs/design/harness-v2-planning.md](docs/design/harness-v2-planning.md)）以真实使用反馈为准入门槛，反馈到位后再启动。
 
 ## 设计与决策
 
@@ -46,8 +46,8 @@ AI Coding 正从 Prompt Engineering、Context Engineering 走向 **Harness Engin
 
 ## 快速验证
 
-运行 `python3 template/.harness/bin/validate.py` 验证分发契约，运行 `python3 -m unittest discover -s tests -v` 执行完整测试。将 `template/.harness/` 复制到目标项目即可开始项目级定制；分发包要求 Python 3.9 或更高版本。
+运行 `python3 template/.harness/bin/validate.py` 验证分发契约，运行 `python3 -m unittest discover -s tests -v` 执行完整测试。向目标项目实例化 Harness 只需一条命令：`python3 template/.harness/bin/harness.py init --target <目标项目>`（自安装 + 平台投影 + 校验；随后在目标项目中运行 harness-bootstrap Skill 完成定制）。分发包要求 Python 3.9 或更高版本。
 
 ## License
 
-待定（见上文「第三方内容与许可」）。
+MIT（见 [LICENSE](LICENSE)；第三方内容例外见上文「第三方内容与许可」）。
