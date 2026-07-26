@@ -16,6 +16,12 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_HARNESS = REPO_ROOT / "template" / ".harness"
+
+# Reuse the notice validator that pins the audited MIT text, so the installed
+# copy is checked for substance and not merely for equality with the bundle.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_template_contract import assert_valid_mit_notice  # noqa: E402
+
 HARNESS_CLI = SOURCE_HARNESS / "bin" / "harness.py"
 VALIDATOR = SOURCE_HARNESS / "bin" / "validate.py"
 
@@ -1674,9 +1680,9 @@ class LicenseNoticeReachesTargetTests(unittest.TestCase):
             installed = project / ".harness" / "LICENSE"
             self.assertTrue(installed.is_file(), "init did not install LICENSE")
             self.assertEqual(source_license.read_bytes(), installed.read_bytes())
-            text = installed.read_text(encoding="utf-8")
-            self.assertIn("MIT License", text)
-            self.assertIn("Copyright (c) 2026 StevenG3", text)
+            installed_bytes = installed.read_bytes()
+            assert_valid_mit_notice(installed_bytes)
+            self.assertIn("MIT License", installed_bytes.decode("utf-8"))
 
 
 if __name__ == "__main__":
