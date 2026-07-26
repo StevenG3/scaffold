@@ -28,7 +28,7 @@ AI Coding 正从 Prompt Engineering、Context Engineering 走向 **Harness Engin
 
 ## 状态
 
-Harness v1 已交付并合入：自安装单文件 CLI（`init` / `adapt` / `validate`）、Manifest Schema v2、平台投影（CLAUDE.md 与 AGENTS.md 以受管区块更新，区块外的用户内容逐字节保留；Cursor 规则文件 `.cursor/rules/harness.mdc` 由工具整文件生成并拥有，每次投影整体重建）、带定制记录的 harness-bootstrap Skill，以及 169 个测试与配套 CI 门禁；[不变式闭包设计法](docs/process/invariant-closure-design.md)（docs/process/）已作为正式流程生效，v2 分层能力的规划（[docs/design/harness-v2-planning.md](docs/design/harness-v2-planning.md)）以真实使用反馈为准入门槛，反馈到位后再启动。
+Harness v1 已交付并合入：自安装单文件 CLI（`init` / `adapt` / `validate`）、Manifest Schema v2、平台投影（CLAUDE.md 与 AGENTS.md 以受管区块更新，区块外的用户内容逐字节保留；Cursor 规则文件 `.cursor/rules/harness.mdc` 由工具整文件生成并拥有，每次投影整体重建）、带定制记录的 harness-bootstrap Skill，以及完整测试套件与配套 CI 门禁；[不变式闭包设计法](docs/process/invariant-closure-design.md)（docs/process/）已作为正式流程生效，v2 分层能力的规划（[docs/design/harness-v2-planning.md](docs/design/harness-v2-planning.md)）以真实使用反馈为准入门槛，反馈到位后再启动。
 
 ## 设计与决策
 
