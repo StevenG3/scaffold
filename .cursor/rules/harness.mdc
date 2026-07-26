@@ -13,6 +13,7 @@ Components:
 
 - coordinator (agent): `.harness/agents/coordinator.md`
 - delivery-rule (rule): `.harness/rules/delivery.md`
+- project-rules (rule): `.harness/rules/project.md`
 - change-delivery (skill): `.harness/skills/change-delivery/SKILL.md`
 - harness-bootstrap (skill): `.harness/skills/harness-bootstrap/SKILL.md`
 
