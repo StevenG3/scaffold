@@ -79,7 +79,7 @@ template/.harness/
 
 - `harness.py` 与 `validate.py` 同处 `bin/`，随分发包分发。`harness.py validate` 直接 `import` 复用 `validate.py` 的校验逻辑，不复制实现。
 - `wiki/` 仅是约定目录加说明文件，不进入 Manifest 机器契约；bootstrap Skill 将项目知识写入其中。
-- 分发包内不出现 scaffold 专属名称、日期与历史（沿用 v0 验收标准）。
+- 分发包内不出现 scaffold 专属名称、日期与历史（沿用 v0 验收标准）。**唯一例外（设计裁决，回应 PR #6 审阅）**：分发包根含 `LICENSE`（MIT 全文）——MIT 通知条件要求版权与许可声明随软件的所有副本分发，故其中的版权持有人与年份是**法定通知**而非生产者历史泄漏。producer-history 机械检查对 `LICENSE` 这一个文件豁免版权持有人 token；其余文件的全部 token 扫描、以及 `LICENSE` 内除版权行外的其他约束不放松。`init` 复制保证该文件随实例化副本存在。分发许可证不授予本项目无权授予的第三方原文权利（第三方内容 caveat 由仓库根 README 承载，不变）。
 
 ### 5.2 生产者侧增量
 
