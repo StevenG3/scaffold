@@ -9,12 +9,13 @@ independently constructed expectation, byte for byte. Inputs and
 carriers are shown in full and are never truncated.
 
 Self-test attestation for the run that produced this table:
-comparator self-test 5/5 passed, argv self-test 15/15 passed,
-fuzz value mismatches: 0.
+comparator 5/5, common-cause 5/5, argv 22/22 passed.
+Exhaustive sweep of all 65793 inputs of length 0-2: 0 mismatches.
+Sampled sweep: 200000 draws over lengths 0-6, 137527 unique inputs, 0 value mismatches.
 A corrupted comparator changes these counts, so this artifact
 carries the evidence of its own validity rather than asserting it.
 
-Result digest: `00788ca3647b09bef3790de066bcdc5e9ce6289ab663f61b59ad488fb6ea00d0`
+Result digest: `837bab632d8da7d73c66826c96dda4035b452b0a219be3f1e59a62e83ad2ed9c`
 
 ## A group -- declared adversarial byte domain (process section 2.3)
 
@@ -115,7 +116,14 @@ Result digest: `00788ca3647b09bef3790de066bcdc5e9ce6289ab663f61b59ad488fb6ea00d0
 All 69 directed cases match BOTH their expected branch and their
 expected carrier value. Failures: 0.
 
-Directed cases validate the PREDICATE: is each input placed in the right
-branch, and is the right value recorded. Random fuzzing can only show
-that no input escapes the partition. Neither substitutes for the other
--- see `run-manifest.md`.
+What each layer establishes, and no more:
+
+- Directed cases: independently constructed expectations at pinned
+  boundaries -- branch AND carrier value, byte-exact.
+- Exhaustive sweep: EVERY input of length 0-2 agrees with the oracle.
+  This is a universal claim, and it is made only over that subdomain.
+- Sampled sweep: each DRAWN input of length 0-6 is oracle-compared.
+  Inputs that were never drawn are NOT proven; the full 0-6 domain is
+  2.8e14 inputs and is not exhausted.
+
+See `run-manifest.md`, including its trusted-computing-base disclosure.

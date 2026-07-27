@@ -23,10 +23,12 @@ It contains a mechanical implementation of the carrier rule as written in
      correct one.
   3. An ARGV SELF-TEST asserting that unknown flags and mutually exclusive
      mode combinations are rejected rather than silently reinterpreted.
-  4. RANDOM fuzzing over the full byte domain. Fuzzing can only show that no
-     input escapes the partition; it cannot show that the partition places
-     inputs in the RIGHT branch, still less that it records the right bytes.
-     That is why the directed cases and the self-tests exist.
+  4. An EXHAUSTIVE sweep of every input of length 0-2 (65793 inputs) against
+     the oracle. This is the one place a universal claim is affordable, and it
+     is claimed only over that subdomain.
+  5. A SAMPLED sweep over lengths 0-6. Each DRAWN input is oracle-compared for
+     branch and value; inputs never drawn are not checked and nothing is
+     claimed about them. The full 0-6 domain is 2.8e14 inputs.
 
 Expected carriers are constructed INDEPENDENTLY of the code under test:
 verbatim expectations are literal strings written out by hand, and hash
@@ -88,6 +90,60 @@ UNRENDERABLE_SET = frozenset(
     + list(range(0xE0000, 0xE0080))  # tag characters
 )
 
+# ---------------------------------------------------------------------------
+# VERIFICATION-SIDE CONSTANTS.
+#
+# These belong to the checking side and must never be read from the code under
+# test. An external review showed why: when the directed expectation and the
+# oracle both read the SUT's CARRIER_EMPTY, editing that one constant to
+# "<wrong>" left every check green. A literal written out separately here fails
+# that mutation immediately.
+# ---------------------------------------------------------------------------
+
+EXPECTED_EMPTY_LITERAL = "<empty>"   # independent copy; do NOT use CARRIER_EMPTY
+
+# The oracle's OWN transcription of the unrenderable code-point set. This is a
+# second literal list, not an alias: sharing one set made SUT and oracle fail
+# in the same direction, so deleting a member that no directed case covered
+# left both agreeing and the run green. assert_set_agreement() cross-checks the
+# two transcriptions at import, so deleting from either one fires immediately.
+# A deletion applied to BOTH lists is still a genuine common cause -- see the
+# trusted-computing-base disclosure in run-manifest.md.
+ORACLE_UNRENDERABLE_SET = frozenset(
+    list(range(0x0000, 0x0020))
+    + [0x007F]
+    + list(range(0x0080, 0x00A0))
+    + [0x00AD]
+    + [0x061C]
+    + [0x200B, 0x200C, 0x200D]
+    + [0x200E, 0x200F]
+    + [0x2028, 0x2029]
+    + [0x202A, 0x202B, 0x202C, 0x202D, 0x202E]
+    + [0x2060, 0x2061, 0x2062, 0x2063, 0x2064]
+    + [0x2066, 0x2067, 0x2068, 0x2069]
+    + [0x206A, 0x206B, 0x206C, 0x206D, 0x206E, 0x206F]
+    + [0xFFF9, 0xFFFA, 0xFFFB]
+    + list(range(0xFE00, 0xFE10))
+    + [0xFEFF]
+    + list(range(0xE0000, 0xE0080))
+)
+
+
+def set_divergence(set_a, set_b):
+    """Return (only_in_a, only_in_b) as sorted lists. Empty pair means agreement."""
+    return (sorted(set_a - set_b), sorted(set_b - set_a))
+
+
+def assert_set_agreement():
+    """Fail loudly at import if the two transcriptions disagree."""
+    only_sut, only_oracle = set_divergence(UNRENDERABLE_SET, ORACLE_UNRENDERABLE_SET)
+    if only_sut or only_oracle:
+        raise AssertionError(
+            "unrenderable set transcriptions disagree; only in SUT: %s; "
+            "only in oracle: %s"
+            % ([hex(cp) for cp in only_sut], [hex(cp) for cp in only_oracle]))
+
+
 BRANCH_EMPTY = "(a) empty"
 BRANCH_LINE = "(b) last-non-empty-line verbatim"
 BRANCH_NO_LINE = "(b) no non-empty line -> bytes+sha256"
@@ -102,6 +158,9 @@ BRANCHES = (
 )
 
 CARRIER_EMPTY = "<empty>"
+
+# Fires at import if a common-cause edit hits only one transcription.
+assert_set_agreement()
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +243,7 @@ def resolve_expectation(raw, spec):
     """Carrier specs: ("empty",), ("verbatim", literal), ("hash", literal_len)."""
     kind = spec[0]
     if kind == "empty":
-        return CARRIER_EMPTY
+        return EXPECTED_EMPTY_LITERAL
     if kind == "verbatim":
         return spec[1]
     if kind == "hash":
@@ -329,7 +388,7 @@ DIRECTED = [(name, raw, branch, resolve_expectation(raw, spec))
 def oracle_carrier(raw):
     """Independent transcription of the carrier rule. Never calls carrier()."""
     if not raw:
-        return BRANCH_EMPTY, CARRIER_EMPTY
+        return BRANCH_EMPTY, EXPECTED_EMPTY_LITERAL
 
     hashed = "bytes=%d sha256=%s" % (len(raw), hashlib.sha256(raw).hexdigest())
 
@@ -360,7 +419,7 @@ def oracle_carrier(raw):
 
     decoded = last_non_empty.decode("utf-8")
     for code_point in map(ord, decoded):
-        if code_point in UNRENDERABLE_SET:
+        if code_point in ORACLE_UNRENDERABLE_SET:
             return BRANCH_UNRENDERABLE, hashed
     return BRANCH_LINE, decoded
 
@@ -389,20 +448,49 @@ def run_directed(predicate=carrier):
     return rows, failures
 
 
+EXHAUSTIVE_MAX_LEN = 2
+
+
+def run_exhaustive():
+    """Compare SUT against the oracle on EVERY input of length 0..2.
+
+    1 + 256 + 65536 = 65793 inputs. This is the only part of the byte domain
+    where a universal claim is affordable, and it is made only here: lengths
+    3..6 are sampled, never exhausted (the full 0..6 domain is 2.8e14 inputs).
+    """
+    total = 0
+    mismatches = 0
+    for length in range(EXHAUSTIVE_MAX_LEN + 1):
+        for index in range(256 ** length):
+            raw = index.to_bytes(length, "big") if length else b""
+            total += 1
+            try:
+                branch, recorded = carrier(raw)
+            except Exception:  # noqa: BLE001
+                mismatches += 1
+                continue
+            expected_branch, expected_carrier = oracle_carrier(raw)
+            if branch != expected_branch or recorded != expected_carrier:
+                mismatches += 1
+    return total, mismatches
+
+
 def run_fuzz():
     """Fuzz the full byte domain, checking BRANCH and CARRIER VALUE.
 
-    Every input is scored against oracle_carrier(), an independent
-    transcription. Returns (counts, undefined, mismatches) where mismatches
-    counts inputs on which the implementation and the oracle disagree about
-    the branch or about the recorded value.
+    This is SAMPLING, not exhaustion: 200000 draws over lengths 0..6, whose
+    full domain is 2.8e14 inputs. Every DRAWN input is scored against
+    oracle_carrier(); inputs never drawn are not checked here and nothing about
+    them is claimed. Returns (counts, undefined, mismatches, unique_inputs).
     """
     rng = random.Random(SEED)
     counts = {branch: 0 for branch in BRANCHES}
     undefined = 0
     mismatches = 0
+    unique = set()
     for _ in range(ITERATIONS):
         raw = bytes(rng.getrandbits(8) for _ in range(rng.randint(0, MAX_LEN)))
+        unique.add(raw)
         try:
             branch, recorded = carrier(raw)
         except Exception:  # noqa: BLE001 - any escape at all is a rule defect
@@ -415,7 +503,7 @@ def run_fuzz():
         expected_branch, expected_carrier = oracle_carrier(raw)
         if branch != expected_branch or recorded != expected_carrier:
             mismatches += 1
-    return counts, undefined, mismatches
+    return counts, undefined, mismatches, len(unique)
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +565,50 @@ def selftest_comparator():
     return results
 
 
+def selftest_common_cause():
+    """Attack the shared trusted computing base itself.
+
+    Two mutations that an external review showed were survivable when the
+    checking side read the SUT's own constants: corrupting the empty-stream
+    carrier, and deleting a set member no directed case covers.
+    """
+    results = []
+
+    # Common cause 1: the SUT's empty carrier is wrong. The independent literal
+    # must disagree with it. (Before the split, both sides read one constant.)
+    sut_branch, sut_empty = carrier(b"")
+    results.append((
+        "empty carrier checked against independent literal",
+        sut_empty == EXPECTED_EMPTY_LITERAL and sut_branch == BRANCH_EMPTY))
+    results.append((
+        "a wrong empty carrier would be rejected",
+        not compare(BRANCH_EMPTY, EXPECTED_EMPTY_LITERAL, sut_branch, "<wrong>")))
+
+    # Common cause 2: a set member deleted on one side only. The cross-check
+    # must report the divergence. U+0001 is deliberately chosen: no directed
+    # case covers it, which is exactly why the shared-set version stayed green.
+    mutated = frozenset(ORACLE_UNRENDERABLE_SET - {0x0001})
+    only_sut, only_oracle = set_divergence(UNRENDERABLE_SET, mutated)
+    results.append((
+        "one-sided set deletion is detected",
+        only_sut == [0x0001] and not only_oracle))
+
+    # Control: the real transcriptions must agree, or every check above is moot.
+    only_sut, only_oracle = set_divergence(UNRENDERABLE_SET, ORACLE_UNRENDERABLE_SET)
+    results.append((
+        "control: the two set transcriptions agree",
+        not only_sut and not only_oracle))
+
+    # The uncovered member must actually be classified by the rule, so that a
+    # deletion would change behaviour rather than being inert.
+    branch, _ = carrier(b"\x01\n")
+    results.append((
+        "uncovered set member still classified unrenderable",
+        branch == BRANCH_UNRENDERABLE))
+
+    return results
+
+
 def selftest_argv():
     """Assert bad argv is rejected rather than silently reinterpreted."""
     return [
@@ -504,6 +636,19 @@ def selftest_argv():
         ("help accepted and exits 0",
          parse_args(["--help"])[2] == "help" and parse_args(["--help"])[0] == 0),
         ("short help accepted", parse_args(["-h"])[2] == "help"),
+        ("help with unknown flag rejected",
+         parse_args(["--help", "--bogus"])[0] == 2),
+        ("help with baseline rejected",
+         parse_args(["--help", "--baseline"])[0] == 2),
+        ("help with emit rejected",
+         parse_args(["--help", "--emit-markdown"])[0] == 2),
+        ("help with path rejected", parse_args(["-h", "stray.md"])[0] == 2),
+        ("help with both modes rejected",
+         parse_args(["--help", "--baseline", "--emit-markdown"])[0] == 2),
+        ("help after other tokens rejected",
+         parse_args(["--baseline", "--help"])[0] == 2),
+        ("both help forms together rejected",
+         parse_args(["-h", "--help"])[0] == 2),
     ]
 
 
@@ -523,24 +668,34 @@ USAGE = (
     "The two mode flags are mutually exclusive.\n"
 )
 KNOWN_FLAGS = ("--baseline", "--emit-markdown")
+HELP_FLAGS = ("-h", "--help")
 
 
 def parse_args(argv):
     """Return (exit_code, error_message, mode, path). exit_code 0 when accepted.
 
-    Modes: "default", "baseline", "emit", "help". `path` is set only for emit
-    mode with an explicit destination, in which case the table is written
-    atomically instead of streamed to stdout.
+    The COMPLETE argv is validated before any mode is selected. An external
+    review showed why: returning early on -h let `--help --bogus`,
+    `--help --baseline --emit-markdown` and `-h stray.md` all exit 0, quietly
+    reopening the argument domain that the manifest claimed was closed. `-h`
+    and `--help` are therefore valid only on their own.
     """
-    if "-h" in argv or "--help" in argv:
-        return 0, None, "help", None
-
     flags = [arg for arg in argv if arg.startswith("-")]
     positionals = [arg for arg in argv if not arg.startswith("-")]
 
-    unknown = [arg for arg in flags if arg not in KNOWN_FLAGS]
+    unknown = [arg for arg in flags if arg not in KNOWN_FLAGS and arg not in HELP_FLAGS]
     if unknown:
         return 2, "unknown argument(s): %s" % " ".join(unknown), None, None
+
+    help_tokens = [arg for arg in flags if arg in HELP_FLAGS]
+    if help_tokens:
+        # "on its own" means exactly one token in the whole argv -- not merely
+        # "no non-help tokens", which would still admit `-h --help`.
+        if len(argv) != 1:
+            return (2,
+                    "-h/--help must be the only argument; got: %s" % " ".join(argv),
+                    None, None)
+        return 0, None, "help", None
 
     baseline = "--baseline" in flags
     emit = "--emit-markdown" in flags
@@ -592,7 +747,7 @@ def write_atomically(path, text):
         raise
 
 
-def result_digest(rows, counts, undefined, mismatches, failures):
+def result_digest(rows, counts, undefined, mismatches, unique, exhaustive, failures):
     """SHA-256 over sorted result lines.
 
     The payload binds the input bytes AND the actual recorded carrier, so a
@@ -608,6 +763,9 @@ def result_digest(rows, counts, undefined, mismatches, failures):
     lines += ["fuzz\t%s\t%d" % (branch, counts[branch]) for branch in BRANCHES]
     lines += ["fuzz\tundefined\t%d" % undefined,
               "fuzz\tvalue_mismatches\t%d" % mismatches,
+              "fuzz\tunique_inputs\t%d" % unique,
+              "exhaustive\ttotal\t%d" % exhaustive[0],
+              "exhaustive\tmismatches\t%d" % exhaustive[1],
               "directed\tfailures\t%d" % failures]
     payload = "\n".join(sorted(lines)) + "\n"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -622,7 +780,7 @@ GROUP_TITLES = {
 }
 
 
-def emit_markdown(rows, failures, digest, selftest_summary, mismatches):
+def emit_markdown(rows, failures, digest, summary, mismatches, unique, exhaustive):
     """Emit boundary-cases.md on stdout. Values are shown in full, untruncated."""
     out = []
     out.append("# Boundary case table -- gate evidence carrier rule")
@@ -636,9 +794,11 @@ def emit_markdown(rows, failures, digest, selftest_summary, mismatches):
     out.append("carriers are shown in full and are never truncated.")
     out.append("")
     out.append("Self-test attestation for the run that produced this table:")
-    out.append("comparator self-test %d/%d passed, argv self-test %d/%d passed,"
-               % selftest_summary)
-    out.append("fuzz value mismatches: %d." % mismatches)
+    out.append("comparator %d/%d, common-cause %d/%d, argv %d/%d passed." % summary)
+    out.append("Exhaustive sweep of all %d inputs of length 0-2: %d mismatches."
+               % exhaustive)
+    out.append("Sampled sweep: %d draws over lengths 0-6, %d unique inputs, %d "
+               "value mismatches." % (ITERATIONS, unique, mismatches))
     out.append("A corrupted comparator changes these counts, so this artifact")
     out.append("carries the evidence of its own validity rather than asserting it.")
     out.append("")
@@ -683,10 +843,17 @@ def emit_markdown(rows, failures, digest, selftest_summary, mismatches):
                            % (name, expected_branch, repr(expected_carrier),
                               actual_branch, repr(actual_carrier)))
     out.append("")
-    out.append("Directed cases validate the PREDICATE: is each input placed in the right")
-    out.append("branch, and is the right value recorded. Random fuzzing can only show")
-    out.append("that no input escapes the partition. Neither substitutes for the other")
-    out.append("-- see `run-manifest.md`.")
+    out.append("What each layer establishes, and no more:")
+    out.append("")
+    out.append("- Directed cases: independently constructed expectations at pinned")
+    out.append("  boundaries -- branch AND carrier value, byte-exact.")
+    out.append("- Exhaustive sweep: EVERY input of length 0-2 agrees with the oracle.")
+    out.append("  This is a universal claim, and it is made only over that subdomain.")
+    out.append("- Sampled sweep: each DRAWN input of length 0-6 is oracle-compared.")
+    out.append("  Inputs that were never drawn are NOT proven; the full 0-6 domain is")
+    out.append("  2.8e14 inputs and is not exhausted.")
+    out.append("")
+    out.append("See `run-manifest.md`, including its trusted-computing-base disclosure.")
     return "\n".join(out) + "\n"
 
 
@@ -705,12 +872,15 @@ def _print_directed(rows, label):
 
 def selftest_summary():
     comparator_checks = selftest_comparator()
+    common_cause_checks = selftest_common_cause()
     argv_checks = selftest_argv()
     failures = ([name for name, ok in comparator_checks if not ok]
+                + [name for name, ok in common_cause_checks if not ok]
                 + [name for name, ok in argv_checks if not ok])
     summary = (sum(1 for _, ok in comparator_checks if ok), len(comparator_checks),
+               sum(1 for _, ok in common_cause_checks if ok), len(common_cause_checks),
                sum(1 for _, ok in argv_checks if ok), len(argv_checks))
-    return comparator_checks, argv_checks, summary, failures
+    return comparator_checks, common_cause_checks, argv_checks, summary, failures
 
 
 def main(argv):
@@ -731,10 +901,13 @@ def main(argv):
     # the run itself completed. --baseline is EXPECTED to show failures, so a
     # non-zero exit there would mean the opposite of what a reader assumes.
     if mode == "emit":
-        counts, undefined, mismatches = run_fuzz()
-        _, _, summary, _ = selftest_summary()
-        digest = result_digest(rows, counts, undefined, mismatches, failures)
-        text = emit_markdown(rows, failures, digest, summary, mismatches)
+        counts, undefined, mismatches, unique = run_fuzz()
+        exhaustive = run_exhaustive()
+        _, _, _, summary, _ = selftest_summary()
+        digest = result_digest(rows, counts, undefined, mismatches, unique,
+                               exhaustive, failures)
+        text = emit_markdown(rows, failures, digest, summary, mismatches,
+                             unique, exhaustive)
         if path is None:
             sys.stdout.write(text)
         else:
@@ -757,40 +930,56 @@ def main(argv):
     # Default mode. This is the only mode whose exit code is a verdict.
     _print_directed(rows, "CURRENT RULE")
 
-    comparator_checks, argv_checks, summary, selftest_failures = selftest_summary()
+    (comparator_checks, common_cause_checks, argv_checks,
+     summary, selftest_failures) = selftest_summary()
 
     print("")
     print("== COMPARATOR SELF-TEST ==")
     print("mutated expectations must be REJECTED; the control must be ACCEPTED")
     for name, ok in comparator_checks:
-        print("  %-44s %s" % (name, "PASS" if ok else "FAIL"))
+        print("  %-52s %s" % (name, "PASS" if ok else "FAIL"))
+
+    print("")
+    print("== COMMON-CAUSE SELF-TEST ==")
+    print("attacks on data shared between the code under test and the checker")
+    for name, ok in common_cause_checks:
+        print("  %-52s %s" % (name, "PASS" if ok else "FAIL"))
 
     print("")
     print("== ARGV SELF-TEST ==")
     for name, ok in argv_checks:
-        print("  %-44s %s" % (name, "PASS" if ok else "FAIL"))
+        print("  %-52s %s" % (name, "PASS" if ok else "FAIL"))
 
-    counts, undefined, mismatches = run_fuzz()
+    exhaustive_total, exhaustive_mismatches = run_exhaustive()
     print("")
-    print("== RANDOM FUZZ ==")
-    print("seed=%d iterations=%d max_len=%d domain=all 256 byte values"
-          % (SEED, ITERATIONS, MAX_LEN))
+    print("== EXHAUSTIVE SWEEP, LENGTHS 0-%d ==" % EXHAUSTIVE_MAX_LEN)
+    print("inputs checked: %d (every input of those lengths)" % exhaustive_total)
+    print("value/branch mismatches vs independent oracle: %d" % exhaustive_mismatches)
+
+    counts, undefined, mismatches, unique = run_fuzz()
+    print("")
+    print("== SAMPLED SWEEP, LENGTHS 0-%d ==" % MAX_LEN)
+    print("seed=%d draws=%d unique inputs=%d domain=all 256 byte values"
+          % (SEED, ITERATIONS, unique))
+    print("(the full length 0-%d domain is 282578800148737 inputs; this is a "
+          "sample, not an exhaustion)" % MAX_LEN)
     for branch in BRANCHES:
         print("  %-44s %d" % (branch, counts[branch]))
     print("undefined/exception cases: %d" % undefined)
     print("value mismatches vs independent oracle: %d" % mismatches)
-    print("note: every fuzz input is scored against an independent transcription")
-    print("      of the rule, so the fuzz domain checks recorded VALUES too, not")
-    print("      only branch labels. Directed cases add byte-exact expectations.")
+    print("note: each DRAWN input is oracle-compared; inputs never drawn are not")
+    print("      checked and nothing is claimed about them.")
 
     print("")
     print("self-test failures: %d" % len(selftest_failures))
     print("result digest (sha256 of sorted result lines, inputs and actual "
           "carriers bound in): %s"
-          % result_digest(rows, counts, undefined, mismatches, failures))
+          % result_digest(rows, counts, undefined, mismatches, unique,
+                          (exhaustive_total, exhaustive_mismatches), failures))
     if selftest_failures:
         return 1
-    return 0 if failures == 0 and undefined == 0 and mismatches == 0 else 1
+    return 0 if (failures == 0 and undefined == 0 and mismatches == 0
+                 and exhaustive_mismatches == 0) else 1
 
 
 if __name__ == "__main__":

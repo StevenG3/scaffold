@@ -122,15 +122,15 @@ stderr: <empty>
 | --- | --- |
 | `evidence/carrier_sweep.py` | 载体规则的机械实现 + 扫描器。仅标准库、seed 写死在常量、无时钟/环境输入、源码纯 ASCII。三种模式：默认（定向 + 双自检 + 随机，**唯一以退出码承载判定**）、`--emit-markdown`（生成逐条表，报告模式）、`--baseline`（以整改前判据跑同一批用例，预期见红，报告模式）；未知参数**与互斥模式组合**均拒绝执行并退出 2。 |
 | `evidence/boundary-cases.md` | 69 个定向用例逐条表，**由 `--emit-markdown` 生成并原子写入**，含**期望载体与实际载体两列**，输入与载体均以完整 `repr` 呈现、不截断；表头写明该次运行的自检通过数与随机域失配数，**自带有效性证据**。不得手工编辑。 |
-| `evidence/run-manifest.md` | 归属裁定与契约缺口、被验证对象、方法学声明、用例来源、算法与参数、复现与再生成命令、结果与红基线、结果摘要。 |
+| `evidence/run-manifest.md` | 归属裁定与契约缺口、被验证对象、方法学声明、**交付前 ∀ 句审计表**、**可信计算基披露**、用例来源、算法与参数、复现与再生成命令、结果与红基线、结果摘要。 |
 
 复现命令与结果：
 
 ```text
 $ python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py
 exit=0
-stdout: result digest (sha256 of sorted result lines, inputs and actual carriers bound in): 00788ca3647b09bef3790de066bcdc5e9ce6289ab663f61b59ad488fb6ea00d0
-        （同流附记：directed cases: 69, failures: 0 / self-test failures: 0 / undefined/exception cases: 0 / value mismatches vs independent oracle: 0）
+stdout: result digest (sha256 of sorted result lines, inputs and actual carriers bound in): 837bab632d8da7d73c66826c96dda4035b452b0a219be3f1e59a62e83ad2ed9c
+        （同流附记：directed 69/0 / self-test failures: 0 / exhaustive 0-2: 65793 inputs, 0 mismatches / sampled: 200000 draws, 137527 unique, 0 mismatches）
 stderr: <empty>
 ```
 
@@ -143,7 +143,7 @@ _digest 被打桩： failures=47  digest=2c88f988cda012e0...  digest_unchanged=F
 
 整改前同一攻击的结果是 `failures=0`、`digest_unchanged=True`。
 
-定向用例 69 个、失败 0（**分支与载体值双重比对**）；比较器自检 5 项、argv 自检 15 项均通过；随机迭代 20 万、逃出划分 0、**载体值失配 0**（对独立 oracle 逐输入比对）；五个分支全部被覆盖，无死分支。
+定向用例 69 个、失败 0（**分支与载体值双重比对**）；比较器自检 5 项、共因自检 5 项、argv 自检 22 项均通过；**长度 0–2 全域穷举** 65,793 个输入、失配 0；长度 0–6 抽样 20 万次（137,527 个唯一输入）、逃出划分 0、载体值失配 0——**抽样只对被抽到的输入成立，未被抽到的输入不在证明范围内**。
 结果摘要**绑定输入字节与实际载体值**。
 
 **红基线**（先见红，再见绿）：
@@ -305,6 +305,22 @@ owner 指示本轮先走**内部**独立审阅再交外部审阅方。内部审�
 更值得记的是修法的选择：把句子缩小到「仅定向域」也能消除矛盾，但那样只是让陈述变弱；
 给随机域配独立 oracle 才是让原来的强陈述**成为真的**。
 可以缩小陈述，也可以做大实现——判断依据是那个强陈述本身是否值得成立，而不是哪种改法省事。
+
+## 整改记录（外部复审 50a6060）
+
+审阅记录：`docs/reviews/2026-07-27-pr-7-scaffold-self-adoption-rereview-50a6060.md`，结论 Request changes，Standards 2 项 / Spec 2 项 Important（合并为 3 个不同问题）+ 2 项 Minor，六维总分 17/24。
+
+| Finding | 裁决与整改 |
+| --- | --- |
+| 期望与 oracle 仍与被测代码共享判定数据 | 接受。此前「独立」只做到「不调用 `carrier()`/`_digest()`」，但双方仍读同一个 `CARRIER_EMPTY` 与同一个 `UNRENDERABLE_SET`——审阅方两个探针都全绿：把 `CARRIER_EMPTY` 改成 `"<wrong>"`、或删掉未被定向覆盖的 U+0001，被测实现已违反规则而检查毫无反应。整改：①空流期望改用独立字面量 `EXPECTED_EMPTY_LITERAL`；②oracle 拥有**自己的第二份**码点集字面列表，导入时交叉断言逐元素相同，单侧改动立即报错；③新增 5 项**共因自检**（错误空载体、单侧删除未覆盖成员、被删成员确实会改变行为，外加两项对照）；④`run-manifest.md` 新增**可信计算基披露**，逐项列出仍然共享的东西（Python 运行时、`hashlib`、UTF-8 解码器、两份集合的交叉断言、以及**同一人对规则文本的两次转写**），独立性声明只在该披露之外成立。实测：两个探针现在分别 **exit 1**（自检失败）与 **exit 1**（导入断言）。 |
+| help 模式绕过 argv 校验 | 接受。`parse_args()` 见到 `-h`/`--help` 即提前返回，早于未知参数、互斥模式与路径校验，于是 `--help --bogus`、`--help --baseline --emit-markdown`、`-h stray.md` 全部 exit 0——**新增的 help 入口把上一轮刚声称闭合的参数域重新打开了**。整改：先校验完整 argv 再选择模式；help 必须是 argv 中的**唯一** token（`-h --help` 亦拒绝）；argv 自检由 15 项扩至 **22 项**，覆盖 help × 未知参数 / × 各模式 / × 路径 / × 三元组合 / × 顺序颠倒。 |
+| 20 万抽样被写成对长度 0–6 的全域检测能力 | 接受，**两手并用**。(a) 在负担得起的地方给出真正的全称证明：新增**长度 0–2 全域穷举**（65,793 个输入全部与 oracle 比对，失配 0）；(b) 对长度 3–6 **撤回**全域措辞，精确表述为「固定 seed 的 200,000 次抽取、**137,527 个唯一输入**，每个被抽到的输入都经 oracle 比对；**未被抽到的输入不在证明范围内**」。全域共 282,578,800,148,737 个输入，不试图穷举。所有文档（manifest、生成表结论、summary）统一采用分层限定表述。 |
+| Minor：生成表仍称 fuzz「只能证明没有输入逃出划分」 | 已改为分层表述：定向 = 钉住边界的独立期望；穷举 0–2 = 该子域上的全称结论；抽样 3–6 = 对被抽到输入的 oracle 比对。 |
+| Minor：依赖清单遗漏 `os` / `tempfile` | 已补齐。 |
+
+**本轮的方法学观察**：三项 Finding 是同一个物种的三次现身——**一个 ∀ 陈述，其声称的论域大于它真正成立的论域**。「期望是独立的」（真论域：不含共享常量与共享集合）、「参数域已闭合」（真论域：不含 help 组合）、「随机域上普遍成立」（真论域：137,527 个被抽到的输入）。十五轮 finding 回头看几乎全是这一个物种。
+
+因此本轮起引入**交付前 ∀ 句审计**作为常设义务：把改动产物中每一句全称陈述逐条列出，标注它是「由构造保证」「已限定到真论域」还是「已撤回」，并随交付提交该审计表。这不是又一条规则，而是把「陈述的论域是否等于其真论域」变成每次交付都必须机械回答的问题——前面十五轮的返工，正是因为这个问题从来没有被系统地问过。
 
 ## Decision
 
