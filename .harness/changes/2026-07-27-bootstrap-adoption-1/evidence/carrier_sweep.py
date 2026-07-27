@@ -129,6 +129,57 @@ ORACLE_UNRENDERABLE_SET = frozenset(
 )
 
 
+# The checking side's OWN branch labels. Same treatment as the empty carrier:
+# an internal review showed that carrier(), oracle_carrier() and every directed
+# expectation all read one set of BRANCH_* constants, so making two of them
+# identical silently collapsed the five-way partition to four and every check
+# stayed green. These literals are written out separately and cross-asserted
+# against the SUT's at import.
+ORACLE_BRANCH_EMPTY = "(a) empty"
+ORACLE_BRANCH_LINE = "(b) last-non-empty-line verbatim"
+ORACLE_BRANCH_NO_LINE = "(b) no non-empty line -> bytes+sha256"
+ORACLE_BRANCH_UNRENDERABLE = "(b) unrenderable code point -> bytes+sha256"
+ORACLE_BRANCH_UNDECODABLE = "(c) not UTF-8 decodable -> bytes+sha256"
+ORACLE_BRANCHES = (
+    ORACLE_BRANCH_EMPTY,
+    ORACLE_BRANCH_LINE,
+    ORACLE_BRANCH_NO_LINE,
+    ORACLE_BRANCH_UNRENDERABLE,
+    ORACLE_BRANCH_UNDECODABLE,
+)
+
+
+def branch_label_problems(sut_branches, oracle_branches):
+    """Return a list of problems with the two branch-label transcriptions.
+
+    Two distinct failures are checked, because they fail differently:
+      - collision: two labels in one transcription are the same string, which
+        collapses the partition without any pair disagreeing;
+      - divergence: the transcriptions disagree pairwise.
+    """
+    problems = []
+    if len(set(sut_branches)) != len(sut_branches):
+        problems.append("SUT branch labels are not distinct: %r" % (sut_branches,))
+    if len(set(oracle_branches)) != len(oracle_branches):
+        problems.append("oracle branch labels are not distinct: %r" % (oracle_branches,))
+    if len(sut_branches) != len(oracle_branches):
+        problems.append("branch label count differs: %d vs %d"
+                        % (len(sut_branches), len(oracle_branches)))
+    else:
+        for index, (left, right) in enumerate(zip(sut_branches, oracle_branches)):
+            if left != right:
+                problems.append("branch label %d differs: %r vs %r"
+                                % (index, left, right))
+    return problems
+
+
+def assert_branch_labels():
+    """Fail loudly at import on label collision or SUT/oracle divergence."""
+    problems = branch_label_problems(BRANCHES, ORACLE_BRANCHES)
+    if problems:
+        raise AssertionError("; ".join(problems))
+
+
 def set_divergence(set_a, set_b):
     """Return (only_in_a, only_in_b) as sorted lists. Empty pair means agreement."""
     return (sorted(set_a - set_b), sorted(set_b - set_a))
@@ -159,8 +210,10 @@ BRANCHES = (
 
 CARRIER_EMPTY = "<empty>"
 
-# Fires at import if a common-cause edit hits only one transcription.
+# Fire at import if a common-cause edit hits only one transcription, or if
+# two branch labels collide (which would collapse the partition silently).
 assert_set_agreement()
+assert_branch_labels()
 
 
 # ---------------------------------------------------------------------------
@@ -262,110 +315,110 @@ def resolve_expectation(raw, spec):
 # ---------------------------------------------------------------------------
 DIRECTED_SPECS = [
     # -- Group A: declared adversarial byte domain (section 2.3) --
-    ("A CRLF line ending", b"OK\r\n", BRANCH_LINE, ("verbatim", "OK")),
-    ("A CRLF only", b"\r\n", BRANCH_NO_LINE, ("hash", 2)),
-    ("A no trailing newline", b"OK", BRANCH_LINE, ("verbatim", "OK")),
-    ("A empty stream", b"", BRANCH_EMPTY, ("empty",)),
+    ("A CRLF line ending", b"OK\r\n", ORACLE_BRANCH_LINE, ("verbatim", "OK")),
+    ("A CRLF only", b"\r\n", ORACLE_BRANCH_NO_LINE, ("hash", 2)),
+    ("A no trailing newline", b"OK", ORACLE_BRANCH_LINE, ("verbatim", "OK")),
+    ("A empty stream", b"", ORACLE_BRANCH_EMPTY, ("empty",)),
     ("A non-ASCII CJK", "\u5951\u7ea6\u6709\u6548\u3002\n".encode("utf-8"),
-     BRANCH_LINE, ("verbatim", "\u5951\u7ea6\u6709\u6548\u3002")),
+     ORACLE_BRANCH_LINE, ("verbatim", "\u5951\u7ea6\u6709\u6548\u3002")),
     ("A non-ASCII emoji", "done \U0001f600\n".encode("utf-8"),
-     BRANCH_LINE, ("verbatim", "done \U0001f600")),
-    ("A C0 control NUL", b"\x00\n", BRANCH_UNRENDERABLE, ("hash", 2)),
-    ("A C0 control BEL", b"\x07\n", BRANCH_UNRENDERABLE, ("hash", 2)),
-    ("A DEL U+007F", b"\x7f\n", BRANCH_UNRENDERABLE, ("hash", 2)),
-    ("A NEL U+0085", "A\u0085B\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 5)),
-    ("A U+2028 line sep", "A\u2028B\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
-    ("A U+2029 para sep", "A\u2029B\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
-    ("A surrogate bytes D800", b"\xed\xa0\x80", BRANCH_UNDECODABLE, ("hash", 3)),
-    ("A surrogate bytes DFFF", b"\xed\xbf\xbf", BRANCH_UNDECODABLE, ("hash", 3)),
+     ORACLE_BRANCH_LINE, ("verbatim", "done \U0001f600")),
+    ("A C0 control NUL", b"\x00\n", ORACLE_BRANCH_UNRENDERABLE, ("hash", 2)),
+    ("A C0 control BEL", b"\x07\n", ORACLE_BRANCH_UNRENDERABLE, ("hash", 2)),
+    ("A DEL U+007F", b"\x7f\n", ORACLE_BRANCH_UNRENDERABLE, ("hash", 2)),
+    ("A NEL U+0085", "A\u0085B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
+    ("A U+2028 line sep", "A\u2028B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("A U+2029 para sep", "A\u2029B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("A surrogate bytes D800", b"\xed\xa0\x80", ORACLE_BRANCH_UNDECODABLE, ("hash", 3)),
+    ("A surrogate bytes DFFF", b"\xed\xbf\xbf", ORACLE_BRANCH_UNDECODABLE, ("hash", 3)),
     ("A literal escape vs real char", b"line\\nnot-a-newline\n",
-     BRANCH_LINE, ("verbatim", "line\\nnot-a-newline")),
-    ("A literal <empty> collision", b"<empty>\n", BRANCH_LINE, ("verbatim", "<empty>")),
+     ORACLE_BRANCH_LINE, ("verbatim", "line\\nnot-a-newline")),
+    ("A literal <empty> collision", b"<empty>\n", ORACLE_BRANCH_LINE, ("verbatim", "<empty>")),
     # -- Group B: the rule's unrenderable code-point set --
-    ("B C1 control U+0080", "A\u0080B\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 5)),
-    ("B C1 control U+009F", "A\u009fB\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 5)),
-    ("B SOFT HYPHEN U+00AD", "A\u00adB\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 5)),
+    ("B C1 control U+0080", "A\u0080B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
+    ("B C1 control U+009F", "A\u009fB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
+    ("B SOFT HYPHEN U+00AD", "A\u00adB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
     ("B ARABIC LETTER MARK U+061C", "A\u061cB\n".encode("utf-8"),
-     BRANCH_UNRENDERABLE, ("hash", 5)),
-    ("B ZWSP U+200B", "A\u200bB\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
-    ("B ZWNJ U+200C", "A\u200cB\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
-    ("B ZWJ U+200D", "A\u200dB\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
-    ("B LRM U+200E", "A\u200eB\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
-    ("B RLM U+200F", "A\u200fB\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
-    ("B LRE U+202A", "A\u202aB\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
-    ("B RLO U+202E", "A\u202eB\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
-    ("B WORD JOINER U+2060", "A\u2060B\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
+    ("B ZWSP U+200B", "A\u200bB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B ZWNJ U+200C", "A\u200cB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B ZWJ U+200D", "A\u200dB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B LRM U+200E", "A\u200eB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B RLM U+200F", "A\u200fB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B LRE U+202A", "A\u202aB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B RLO U+202E", "A\u202eB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B WORD JOINER U+2060", "A\u2060B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
     ("B INVISIBLE TIMES U+2062", "A\u2062B\n".encode("utf-8"),
-     BRANCH_UNRENDERABLE, ("hash", 6)),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
     ("B INVISIBLE PLUS U+2064", "A\u2064B\n".encode("utf-8"),
-     BRANCH_UNRENDERABLE, ("hash", 6)),
-    ("B LRI U+2066", "A\u2066B\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
-    ("B FSI U+2068", "A\u2068B\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
-    ("B PDI U+2069", "A\u2069B\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B LRI U+2066", "A\u2066B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B FSI U+2068", "A\u2068B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B PDI U+2069", "A\u2069B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
     ("B INHIBIT SYMMETRIC SWAP U+206A", "A\u206aB\n".encode("utf-8"),
-     BRANCH_UNRENDERABLE, ("hash", 6)),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
     ("B NOMINAL DIGIT SHAPES U+206F", "A\u206fB\n".encode("utf-8"),
-     BRANCH_UNRENDERABLE, ("hash", 6)),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
     ("B VARIATION SELECTOR-1 U+FE00", "A\ufe00B\n".encode("utf-8"),
-     BRANCH_UNRENDERABLE, ("hash", 6)),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
     ("B VARIATION SELECTOR-16 U+FE0F", "A\ufe0fB\n".encode("utf-8"),
-     BRANCH_UNRENDERABLE, ("hash", 6)),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
     ("B ANNOTATION ANCHOR U+FFF9", "A\ufff9B\n".encode("utf-8"),
-     BRANCH_UNRENDERABLE, ("hash", 6)),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
     ("B ANNOTATION TERMINATOR U+FFFB", "A\ufffbB\n".encode("utf-8"),
-     BRANCH_UNRENDERABLE, ("hash", 6)),
-    ("B BOM U+FEFF", "\ufeffOK\n".encode("utf-8"), BRANCH_UNRENDERABLE, ("hash", 6)),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B BOM U+FEFF", "\ufeffOK\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
     ("B LANGUAGE TAG U+E0001", "A\U000e0001B\n".encode("utf-8"),
-     BRANCH_UNRENDERABLE, ("hash", 7)),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 7)),
     ("B TAG LATIN SMALL A U+E0061", "A\U000e0061B\n".encode("utf-8"),
-     BRANCH_UNRENDERABLE, ("hash", 7)),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 7)),
     ("B CANCEL TAG U+E007F", "A\U000e007fB\n".encode("utf-8"),
-     BRANCH_UNRENDERABLE, ("hash", 7)),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 7)),
     # Visible neighbours just outside the set. These MUST stay verbatim.
     # Every one is an assigned, visible (or visibly spacing) character; the set
     # makes no claim about unassigned code points, so none are used here.
     ("B neighbour U+00A0 NBSP visible-spacing", "A\u00a0B\n".encode("utf-8"),
-     BRANCH_LINE, ("verbatim", "A\u00a0B")),
+     ORACLE_BRANCH_LINE, ("verbatim", "A\u00a0B")),
     ("B neighbour U+2010 HYPHEN visible", "A\u2010B\n".encode("utf-8"),
-     BRANCH_LINE, ("verbatim", "A\u2010B")),
+     ORACLE_BRANCH_LINE, ("verbatim", "A\u2010B")),
     ("B neighbour U+2027 HYPHENATION POINT visible", "A\u2027B\n".encode("utf-8"),
-     BRANCH_LINE, ("verbatim", "A\u2027B")),
+     ORACLE_BRANCH_LINE, ("verbatim", "A\u2027B")),
     ("B neighbour U+202F NNBSP visible-spacing", "A\u202fB\n".encode("utf-8"),
-     BRANCH_LINE, ("verbatim", "A\u202fB")),
+     ORACLE_BRANCH_LINE, ("verbatim", "A\u202fB")),
     ("B neighbour U+3000 IDEOGRAPHIC SPACE visible-spacing", "A\u3000B\n".encode("utf-8"),
-     BRANCH_LINE, ("verbatim", "A\u3000B")),
+     ORACLE_BRANCH_LINE, ("verbatim", "A\u3000B")),
     # -- Group C: byte-level definition of "line" --
-    ("C lone LF", b"\n", BRANCH_NO_LINE, ("hash", 1)),
-    ("C lone CR", b"\r", BRANCH_NO_LINE, ("hash", 1)),
-    ("C several blank lines", b"\n\n\n", BRANCH_NO_LINE, ("hash", 3)),
-    ("C several CRLF blanks", b"\r\n\r\n", BRANCH_NO_LINE, ("hash", 4)),
-    ("C single space line", b" \n", BRANCH_LINE, ("verbatim", " ")),
-    ("C spaces no newline", b"   ", BRANCH_LINE, ("verbatim", "   ")),
-    ("C trailing blanks after text", b"OK\n\n\n", BRANCH_LINE, ("verbatim", "OK")),
-    ("C trailing CRLF blanks after text", b"OK\r\n\r\n", BRANCH_LINE, ("verbatim", "OK")),
-    ("C CR inside line not trailing", b"A\rB\n", BRANCH_UNRENDERABLE, ("hash", 4)),
-    ("C only one trailing CR stripped", b"OK\r\r\n", BRANCH_UNRENDERABLE, ("hash", 5)),
-    ("C lone CR line", b"\r\r\n", BRANCH_UNRENDERABLE, ("hash", 3)),
+    ("C lone LF", b"\n", ORACLE_BRANCH_NO_LINE, ("hash", 1)),
+    ("C lone CR", b"\r", ORACLE_BRANCH_NO_LINE, ("hash", 1)),
+    ("C several blank lines", b"\n\n\n", ORACLE_BRANCH_NO_LINE, ("hash", 3)),
+    ("C several CRLF blanks", b"\r\n\r\n", ORACLE_BRANCH_NO_LINE, ("hash", 4)),
+    ("C single space line", b" \n", ORACLE_BRANCH_LINE, ("verbatim", " ")),
+    ("C spaces no newline", b"   ", ORACLE_BRANCH_LINE, ("verbatim", "   ")),
+    ("C trailing blanks after text", b"OK\n\n\n", ORACLE_BRANCH_LINE, ("verbatim", "OK")),
+    ("C trailing CRLF blanks after text", b"OK\r\n\r\n", ORACLE_BRANCH_LINE, ("verbatim", "OK")),
+    ("C CR inside line not trailing", b"A\rB\n", ORACLE_BRANCH_UNRENDERABLE, ("hash", 4)),
+    ("C only one trailing CR stripped", b"OK\r\r\n", ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
+    ("C lone CR line", b"\r\r\n", ORACLE_BRANCH_UNRENDERABLE, ("hash", 3)),
     # -- Group D: UTF-8 decodability boundaries --
-    ("D undecodable tail byte", b"OK\n\xff", BRANCH_UNDECODABLE, ("hash", 4)),
-    ("D undecodable no non-empty line", b"\n\xff", BRANCH_UNDECODABLE, ("hash", 2)),
+    ("D undecodable tail byte", b"OK\n\xff", ORACLE_BRANCH_UNDECODABLE, ("hash", 4)),
+    ("D undecodable no non-empty line", b"\n\xff", ORACLE_BRANCH_UNDECODABLE, ("hash", 2)),
     ("D truncated multi-byte seq", "\u5951".encode("utf-8")[:2],
-     BRANCH_UNDECODABLE, ("hash", 2)),
-    ("D overlong encoding of slash", b"\xc0\xaf", BRANCH_UNDECODABLE, ("hash", 2)),
+     ORACLE_BRANCH_UNDECODABLE, ("hash", 2)),
+    ("D overlong encoding of slash", b"\xc0\xaf", ORACLE_BRANCH_UNDECODABLE, ("hash", 2)),
     ("D two-byte boundary U+07FF", "\u07ff\n".encode("utf-8"),
-     BRANCH_LINE, ("verbatim", "\u07ff")),
+     ORACLE_BRANCH_LINE, ("verbatim", "\u07ff")),
     ("D four-byte astral plane", "\U0001f600\n".encode("utf-8"),
-     BRANCH_LINE, ("verbatim", "\U0001f600")),
+     ORACLE_BRANCH_LINE, ("verbatim", "\U0001f600")),
     # -- Group E: real gate outputs recorded by this Change Record --
     ("E gate 1/2/6 stdout", b"Harness contract is valid.\n",
-     BRANCH_LINE, ("verbatim", "Harness contract is valid.")),
+     ORACLE_BRANCH_LINE, ("verbatim", "Harness contract is valid.")),
     ("E gate 3 stdout two lines",
      b"[ADAPT_SKIPPED_TEMPLATE] .: origin is null\nadapt: ok\n",
-     BRANCH_LINE, ("verbatim", "adapt: ok")),
+     ORACLE_BRANCH_LINE, ("verbatim", "adapt: ok")),
     ("E gate 4 stderr tail",
      b"Ran 175 tests in 12.316s\n\nOK (skipped=2)\n",
-     BRANCH_LINE, ("verbatim", "OK (skipped=2)")),
-    ("E gate 5 both streams", b"", BRANCH_EMPTY, ("empty",)),
+     ORACLE_BRANCH_LINE, ("verbatim", "OK (skipped=2)")),
+    ("E gate 5 both streams", b"", ORACLE_BRANCH_EMPTY, ("empty",)),
 ]
 
 # Resolved at import: (name, raw, expected_branch, expected_carrier).
@@ -388,14 +441,14 @@ DIRECTED = [(name, raw, branch, resolve_expectation(raw, spec))
 def oracle_carrier(raw):
     """Independent transcription of the carrier rule. Never calls carrier()."""
     if not raw:
-        return BRANCH_EMPTY, EXPECTED_EMPTY_LITERAL
+        return ORACLE_BRANCH_EMPTY, EXPECTED_EMPTY_LITERAL
 
     hashed = "bytes=%d sha256=%s" % (len(raw), hashlib.sha256(raw).hexdigest())
 
     try:
         raw.decode("utf-8")
     except UnicodeDecodeError:
-        return BRANCH_UNDECODABLE, hashed
+        return ORACLE_BRANCH_UNDECODABLE, hashed
 
     # Split on 0x0A by hand rather than with bytes.split(), so a defect in one
     # transcription's use of the library shows up as a disagreement.
@@ -415,13 +468,13 @@ def oracle_carrier(raw):
         if len(trimmed) > 0:
             last_non_empty = trimmed
     if last_non_empty is None:
-        return BRANCH_NO_LINE, hashed
+        return ORACLE_BRANCH_NO_LINE, hashed
 
     decoded = last_non_empty.decode("utf-8")
     for code_point in map(ord, decoded):
         if code_point in ORACLE_UNRENDERABLE_SET:
-            return BRANCH_UNRENDERABLE, hashed
-    return BRANCH_LINE, decoded
+            return ORACLE_BRANCH_UNRENDERABLE, hashed
+    return ORACLE_BRANCH_LINE, decoded
 
 
 # ---------------------------------------------------------------------------
@@ -599,6 +652,23 @@ def selftest_common_cause():
         "control: the two set transcriptions agree",
         not only_sut and not only_oracle))
 
+    # Common cause 3: branch labels. Making two of them the same string collapses
+    # the five-way partition to four without any pair disagreeing, so a
+    # uniqueness check is needed in addition to the pairwise cross-check.
+    collided = ("(a) empty", "(a) empty", BRANCH_NO_LINE,
+                BRANCH_UNRENDERABLE, BRANCH_UNDECODABLE)
+    results.append((
+        "colliding branch labels are detected",
+        bool(branch_label_problems(collided, ORACLE_BRANCHES))))
+    renamed = (BRANCH_EMPTY, "(b) RENAMED", BRANCH_NO_LINE,
+               BRANCH_UNRENDERABLE, BRANCH_UNDECODABLE)
+    results.append((
+        "a one-sided branch label rename is detected",
+        bool(branch_label_problems(renamed, ORACLE_BRANCHES))))
+    results.append((
+        "control: the two branch label transcriptions agree",
+        not branch_label_problems(BRANCHES, ORACLE_BRANCHES)))
+
     # The uncovered member must actually be classified by the rule, so that a
     # deletion would change behaviour rather than being inert.
     branch, _ = carrier(b"\x01\n")
@@ -649,6 +719,9 @@ def selftest_argv():
          parse_args(["--baseline", "--help"])[0] == 2),
         ("both help forms together rejected",
          parse_args(["-h", "--help"])[0] == 2),
+        ("empty path rejected", parse_args(["--emit-markdown", ""])[0] == 2),
+        ("whitespace-only path rejected",
+         parse_args(["--emit-markdown", "   "])[0] == 2),
     ]
 
 
@@ -715,6 +788,11 @@ def parse_args(argv):
                 "--emit-markdown takes at most one path: %s"
                 % " ".join(positionals),
                 None, None)
+    if any(not arg.strip() for arg in positionals):
+        # An empty path used to be accepted and then died deep inside the write
+        # with a FileNotFoundError traceback and exit 1 -- indistinguishable at
+        # a glance from a rule failure, which is what exit 1 is reserved for.
+        return (2, "--emit-markdown path must not be empty", None, None)
 
     if baseline:
         return 0, None, "baseline", None

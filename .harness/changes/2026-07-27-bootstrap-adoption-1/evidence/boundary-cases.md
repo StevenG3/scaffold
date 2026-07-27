@@ -9,7 +9,7 @@ independently constructed expectation, byte for byte. Inputs and
 carriers are shown in full and are never truncated.
 
 Self-test attestation for the run that produced this table:
-comparator 5/5, common-cause 5/5, argv 22/22 passed.
+comparator 5/5, common-cause 8/8, argv 24/24 passed.
 Exhaustive sweep of all 65793 inputs of length 0-2: 0 mismatches.
 Sampled sweep: 200000 draws over lengths 0-6, 137527 unique inputs, 0 value mismatches.
 A corrupted comparator changes these counts, so this artifact
