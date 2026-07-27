@@ -26,30 +26,42 @@ It contains a mechanical implementation of the carrier rule as written in
   4. An EXHAUSTIVE sweep of every input of length 0-2 (65793 inputs) against
      the oracle. This is the one place a universal claim is affordable, and it
      is claimed only over that subdomain.
-  5. A SAMPLED sweep over lengths 0-6. Each DRAWN input is oracle-compared for
-     branch and value; inputs never drawn are not checked and nothing is
-     claimed about them. The full 0-6 domain is 2.8e14 inputs.
+  5. A SAMPLED sweep over lengths 0-6. Each DRAWN input gets an independent
+     oracle check of BOTH branch and carrier value; what sampling cannot
+     establish is anything about inputs never drawn. The full 0-6 domain is
+     2.8e14 inputs.
 
 Expected carriers are constructed INDEPENDENTLY of the code under test:
 verbatim expectations are literal strings written out by hand, and hash
 expectations pair a literal byte count with a direct hashlib.sha256() call.
 Neither `_digest()` nor `carrier()` is ever used to build an expectation.
 
-Deterministic: standard library only, fixed seed, no clock or environment
-input. Re-running on any Python 3.9+ reproduces the same result digest.
+Deterministic, with a stated scope: standard library only, fixed seed, no
+clock or environment input. Re-running under the SAME interpreter version
+reproduces the same sample set and the same result digest bit for bit. NO
+cross-version promise is made: the sample is drawn with random.randint() and
+getrandbits(), and CPython documents that most random-module algorithms may
+change between releases -- the cross-version guarantee covers random() under a
+compatible seeder, not this combination of calls.
+See https://docs.python.org/3/library/random.html#notes-on-reproducibility
+The measured interpreter version is recorded in run-manifest.md.
 
 Usage:  python3 carrier_sweep.py [--baseline | --emit-markdown]
 
 The two flags are mutually exclusive; passing both is rejected.
 
 Exit codes are per mode:
-  default          0 if every directed case matches its expected branch AND
-                   carrier, both self-tests pass, and no input escapes the
-                   partition; 1 otherwise. This is the only mode whose exit
-                   code is a verdict.
+  default          0 only if the single certification state holds: directed
+                   cases pass on branch AND carrier, all four self-test classes
+                   pass (comparator, common-cause, argv, certification), the
+                   exhaustive length 0-2 sweep has no mismatch, and the sampled
+                   sweep has no mismatch and no undefined input. 1 otherwise.
+                   This is the only mode whose exit code is a verdict.
   --baseline       always 0 unless the run itself errors. It is a reporting
-                   mode and is EXPECTED to show failures.
-  --emit-markdown  always 0 unless the run itself errors. Reporting mode.
+                   mode, is EXPECTED to show failures, and never writes a file.
+  --emit-markdown  0 only when certification holds. On failure it refuses to
+                   write PATH and exits 1; without PATH it prints the
+                   uncertified table on stdout, with a banner, and exits 1.
   bad arguments    2, with a message and usage on stderr. This covers unknown
                    flags and mutually exclusive combinations alike.
 
@@ -828,10 +840,15 @@ def write_atomically(path, text):
 def result_digest(rows, counts, undefined, mismatches, unique, exhaustive, failures):
     """SHA-256 over sorted result lines.
 
-    The payload binds the input bytes AND the actual recorded carrier, so a
-    wrong carrier value moves the digest. Binding only branch labels would let
-    an implementation that records garbage reproduce the recorded digest
-    exactly -- which is precisely the hole an external review demonstrated.
+    DETECTION RANGE, stated exactly. The payload binds:
+      - every DIRECTED row: input bytes, expected and ACTUAL carrier;
+      - AGGREGATE counts for the exhaustive and sampled layers.
+    It therefore moves when a directed row's recorded carrier changes, or when
+    any layer's counts change. It does NOT bind the carrier of an input that
+    was never executed: an external review poisoned b"\x00" * 6 -- absent from
+    the directed cases, from the length 0-2 exhaustive sweep, and from this
+    seed's sample -- and the digest was unchanged. Errors on inputs never
+    executed are OUTSIDE this digest's detection range.
     """
     lines = ["directed\t%s\t%s\t%s\t%s\t%s\t%s"
              % (name, repr(raw), expected_branch, repr(expected_carrier),
@@ -849,6 +866,57 @@ def result_digest(rows, counts, undefined, mismatches, unique, exhaustive, failu
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+CERT_LAYERS = (
+    "directed",
+    "comparator self-test",
+    "common-cause self-test",
+    "argv self-test",
+    "exhaustive length 0-2",
+    "sampled length 0-6",
+)
+
+
+def certification_state(directed_failures, selftest_failures, exhaustive_mismatches,
+                        sampled_mismatches, undefined):
+    """The ONE certification state, a conjunction over every verdict layer.
+
+    An external review showed the cost of having more than one: emit_markdown()
+    consumed only the directed layer, so poisoning carrier(b"\x00\x00") -- an
+    input no directed case covers but the exhaustive sweep necessarily visits --
+    produced an official table that recorded "1 mismatches" and "EVERY input
+    agrees" at the same time, exit 0, and could atomically overwrite the
+    committed evidence.
+
+    Returns (certified, layers) where layers is a list of (name, ok, detail).
+    """
+    comparator_failed = [n for n in selftest_failures if n.startswith("comparator:")]
+    common_failed = [n for n in selftest_failures if n.startswith("common-cause:")]
+    argv_failed = [n for n in selftest_failures if n.startswith("argv:")]
+    layers = [
+        ("directed", directed_failures == 0,
+         "%d failures" % directed_failures),
+        ("comparator self-test", not comparator_failed,
+         "%d failures" % len(comparator_failed)),
+        ("common-cause self-test", not common_failed,
+         "%d failures" % len(common_failed)),
+        ("argv self-test", not argv_failed,
+         "%d failures" % len(argv_failed)),
+        ("exhaustive length 0-2", exhaustive_mismatches == 0,
+         "%d mismatches" % exhaustive_mismatches),
+        ("sampled length 0-6", sampled_mismatches == 0 and undefined == 0,
+         "%d value mismatches, %d undefined" % (sampled_mismatches, undefined)),
+    ]
+    return all(ok for _, ok, _ in layers), layers
+
+
+UNCERTIFIED_BANNER = (
+    "# THIS TABLE DOES NOT CERTIFY THE RULE\n"
+    "\n"
+    "One or more verdict layers FAILED, so this output is diagnostic only. It was\n"
+    "NOT written to the official table and must not be committed as evidence.\n"
+)
+
+
 GROUP_TITLES = {
     "A": "A group -- declared adversarial byte domain (process section 2.3)",
     "B": "B group -- the rule's unrenderable code-point set, plus visible neighbours",
@@ -858,13 +926,28 @@ GROUP_TITLES = {
 }
 
 
-def emit_markdown(rows, failures, digest, summary, mismatches, unique, exhaustive):
-    """Emit boundary-cases.md on stdout. Values are shown in full, untruncated."""
+def emit_markdown(rows, failures, digest, summary, mismatches, unique, exhaustive,
+                  certified, layers):
+    """Emit the boundary-case table. Values are shown in full, untruncated.
+
+    Every verdict layer feeds the conclusion. No sentence asserting agreement
+    survives a failure in the layer it describes.
+    """
+    exhaustive_total, exhaustive_mismatches = exhaustive
     out = []
+    if not certified:
+        out.append(UNCERTIFIED_BANNER)
     out.append("# Boundary case table -- gate evidence carrier rule")
     out.append("")
     out.append("DO NOT EDIT BY HAND. Generated by `carrier_sweep.py --emit-markdown`;")
     out.append("regenerate rather than editing, or the result digest stops matching.")
+    out.append("")
+    out.append("Certification state: **%s**." % ("CERTIFIED" if certified else "NOT CERTIFIED"))
+    out.append("")
+    out.append("| verdict layer | result | status |")
+    out.append("| --- | --- | --- |")
+    for name, ok, detail in layers:
+        out.append("| %s | %s | %s |" % (name, detail, "PASS" if ok else "**FAIL**"))
     out.append("")
     out.append("Directed cases: **%d**, failures: **%d**." % (len(rows), failures))
     out.append("A case passes only if BOTH its branch and its carrier value match the")
@@ -877,8 +960,10 @@ def emit_markdown(rows, failures, digest, summary, mismatches, unique, exhaustiv
                % exhaustive)
     out.append("Sampled sweep: %d draws over lengths 0-6, %d unique inputs, %d "
                "value mismatches." % (ITERATIONS, unique, mismatches))
-    out.append("A corrupted comparator changes these counts, so this artifact")
-    out.append("carries the evidence of its own validity rather than asserting it.")
+    out.append("These counts change under the mutation classes the self-tests")
+    out.append("enumerate (wrong SHA, wrong byte count, wrong verbatim line, wrong")
+    out.append("branch, wrong empty carrier, one-sided set or label edits); no claim")
+    out.append("is made about mutation classes outside that enumeration.")
     out.append("")
     out.append("Result digest: `%s`" % digest)
     for key in "ABCDE":
@@ -904,34 +989,46 @@ def emit_markdown(rows, failures, digest, summary, mismatches, unique, exhaustiv
     out.append("")
     out.append("## Conclusion")
     out.append("")
-    if failures == 0:
-        out.append("All %d directed cases match BOTH their expected branch and their"
-                   % len(rows))
-        out.append("expected carrier value. Failures: 0.")
-    else:
-        out.append("**%d of %d directed cases FAILED.** Their branch or their carrier"
-                   % (failures, len(rows)))
-        out.append("value differs from the independently constructed expectation, so")
-        out.append("this table does NOT certify the rule. Failing cases:")
+    if not certified:
+        out.append("**This table does NOT certify the rule.** Failing layers:")
         out.append("")
+        for name, ok, detail in layers:
+            if not ok:
+                out.append("- %s: %s" % (name, detail))
+        out.append("")
+    if failures == 0:
+        out.append("- Directed: all %d cases match BOTH their expected branch and"
+                   % len(rows))
+        out.append("  their expected carrier value.")
+    else:
+        out.append("- Directed: **%d of %d cases FAILED** -- branch or carrier value"
+                   % (failures, len(rows)))
+        out.append("  differs from the independently constructed expectation:")
         for (name, raw, expected_branch, expected_carrier,
              actual_branch, actual_carrier, ok) in rows:
             if not ok:
-                out.append("- `%s`: expected `%s` / `%s`, got `%s` / `%s`"
+                out.append("  - `%s`: expected `%s` / `%s`, got `%s` / `%s`"
                            % (name, expected_branch, repr(expected_carrier),
                               actual_branch, repr(actual_carrier)))
+    if exhaustive_mismatches == 0:
+        out.append("- Exhaustive: every input of length 0-2 (%d of them) agrees with"
+                   % exhaustive_total)
+        out.append("  the oracle. This universal claim is made over that subdomain only.")
+    else:
+        out.append("- Exhaustive: **%d of %d inputs of length 0-2 DISAGREE** with the"
+                   % (exhaustive_mismatches, exhaustive_total))
+        out.append("  oracle. No universal claim holds over this subdomain.")
+    if mismatches == 0:
+        out.append("- Sampled: each of the %d drawn inputs was oracle-compared for"
+                   % ITERATIONS)
+        out.append("  branch AND carrier value; %d unique inputs. What sampling cannot"
+                   % unique)
+        out.append("  establish is anything about inputs never drawn.")
+    else:
+        out.append("- Sampled: **%d drawn inputs DISAGREE** with the oracle." % mismatches)
     out.append("")
-    out.append("What each layer establishes, and no more:")
-    out.append("")
-    out.append("- Directed cases: independently constructed expectations at pinned")
-    out.append("  boundaries -- branch AND carrier value, byte-exact.")
-    out.append("- Exhaustive sweep: EVERY input of length 0-2 agrees with the oracle.")
-    out.append("  This is a universal claim, and it is made only over that subdomain.")
-    out.append("- Sampled sweep: each DRAWN input of length 0-6 is oracle-compared.")
-    out.append("  Inputs that were never drawn are NOT proven; the full 0-6 domain is")
-    out.append("  2.8e14 inputs and is not exhausted.")
-    out.append("")
-    out.append("See `run-manifest.md`, including its trusted-computing-base disclosure.")
+    out.append("See `run-manifest.md`, including its trusted-computing-base disclosure")
+    out.append("and its forall-sentence audit.")
     return "\n".join(out) + "\n"
 
 
@@ -952,13 +1049,61 @@ def selftest_summary():
     comparator_checks = selftest_comparator()
     common_cause_checks = selftest_common_cause()
     argv_checks = selftest_argv()
-    failures = ([name for name, ok in comparator_checks if not ok]
-                + [name for name, ok in common_cause_checks if not ok]
-                + [name for name, ok in argv_checks if not ok])
+    failures = (["comparator: " + name for name, ok in comparator_checks if not ok]
+                + ["common-cause: " + name for name, ok in common_cause_checks if not ok]
+                + ["argv: " + name for name, ok in argv_checks if not ok])
     summary = (sum(1 for _, ok in comparator_checks if ok), len(comparator_checks),
                sum(1 for _, ok in common_cause_checks if ok), len(common_cause_checks),
                sum(1 for _, ok in argv_checks if ok), len(argv_checks))
     return comparator_checks, common_cause_checks, argv_checks, summary, failures
+
+
+def _selftest_certification():
+    """Prove the certification state actually flips when a layer fails.
+
+    Three regressions the external review demanded, plus the all-green control.
+    Each asserts BOTH that certification goes false and that the emitted
+    conclusion text stops asserting agreement for the failing layer.
+    """
+    checks = []
+    green = certification_state(0, [], 0, 0, 0)
+    checks.append(("control: all layers green certifies", green[0]))
+
+    exhaustive_bad = certification_state(0, [], 1, 0, 0)
+    checks.append(("exhaustive failure blocks certification", not exhaustive_bad[0]))
+
+    sampled_bad = certification_state(0, [], 0, 3, 0)
+    checks.append(("sampled failure blocks certification", not sampled_bad[0]))
+
+    selftest_bad = certification_state(0, ["comparator: x"], 0, 0, 0)
+    checks.append(("self-test failure blocks certification", not selftest_bad[0]))
+
+    undefined_bad = certification_state(0, [], 0, 0, 2)
+    checks.append(("undefined input blocks certification", not undefined_bad[0]))
+
+    directed_bad = certification_state(1, [], 0, 0, 0)
+    checks.append(("directed failure blocks certification", not directed_bad[0]))
+
+    # Conclusion text must follow the state, not just the exit code.
+    rows, _ = run_directed()
+    summary = (5, 5, 8, 8, 24, 24)
+    text_bad = emit_markdown(rows, 0, "d", summary, 0, 1, (65793, 1),
+                             exhaustive_bad[0], exhaustive_bad[1])
+    checks.append(("failing exhaustive removes the universal agreement line",
+                   "EVERY input" not in text_bad
+                   and "every input of length 0-2 agrees" not in text_bad
+                   and "does NOT certify" in text_bad))
+    text_sampled = emit_markdown(rows, 0, "d", summary, 3, 1, (65793, 0),
+                                 sampled_bad[0], sampled_bad[1])
+    checks.append(("failing sampled layer is reported as failing",
+                   "does NOT certify" in text_sampled
+                   and "drawn inputs DISAGREE" in text_sampled))
+    text_ok = emit_markdown(rows, 0, "d", summary, 0, 1, (65793, 0),
+                            green[0], green[1])
+    checks.append(("all-green table carries no uncertified banner",
+                   "does NOT certify" not in text_ok
+                   and "NOT CERTIFIED" not in text_ok))
+    return checks
 
 
 def main(argv):
@@ -975,25 +1120,10 @@ def main(argv):
     predicate = carrier_baseline if mode == "baseline" else carrier
     rows, failures = run_directed(predicate)
 
-    # Reporting modes. Their exit code carries no verdict: it reports only that
-    # the run itself completed. --baseline is EXPECTED to show failures, so a
-    # non-zero exit there would mean the opposite of what a reader assumes.
-    if mode == "emit":
-        counts, undefined, mismatches, unique = run_fuzz()
-        exhaustive = run_exhaustive()
-        _, _, _, summary, _ = selftest_summary()
-        digest = result_digest(rows, counts, undefined, mismatches, unique,
-                               exhaustive, failures)
-        text = emit_markdown(rows, failures, digest, summary, mismatches,
-                             unique, exhaustive)
-        if path is None:
-            sys.stdout.write(text)
-        else:
-            write_atomically(path, text)
-            sys.stderr.write("wrote %s\n" % path)
-        return 0
-
     if mode == "baseline":
+        # Reporting mode: exit code carries no verdict. The baseline is EXPECTED
+        # to be red, so tying its exit code to the failure count would invert
+        # what a reader assumes.
         _print_directed(rows, "BASELINE (pre-fix predicate)")
         print("")
         print("Reporting mode: this exit code carries no verdict. The baseline is")
@@ -1005,11 +1135,47 @@ def main(argv):
                       % (name, expected_branch, actual_branch))
         return 0
 
-    # Default mode. This is the only mode whose exit code is a verdict.
-    _print_directed(rows, "CURRENT RULE")
-
     (comparator_checks, common_cause_checks, argv_checks,
      summary, selftest_failures) = selftest_summary()
+    cert_checks = _selftest_certification()
+    selftest_failures = selftest_failures + [
+        "certification: " + name for name, ok in cert_checks if not ok]
+    exhaustive = run_exhaustive()
+    counts, undefined, mismatches, unique = run_fuzz()
+    certified, layers = certification_state(
+        failures, selftest_failures, exhaustive[1], mismatches, undefined)
+    digest = result_digest(rows, counts, undefined, mismatches, unique,
+                           exhaustive, failures)
+
+    if mode == "emit":
+        text = emit_markdown(rows, failures, digest, summary, mismatches, unique,
+                             exhaustive, certified, layers)
+        if not certified:
+            # Never write an uncertified table to the official path, and never
+            # exit 0 from a run whose verdict is negative. Diagnostic output
+            # goes to stdout only, carrying its own banner.
+            if path is not None:
+                sys.stderr.write(
+                    "carrier_sweep.py: refusing to write %s -- certification "
+                    "FAILED\n" % path)
+                for name, ok, detail in layers:
+                    if not ok:
+                        sys.stderr.write("  failing layer: %s (%s)\n" % (name, detail))
+                sys.stderr.write(
+                    "  diagnostic output: rerun without a PATH to print the "
+                    "uncertified table on stdout\n")
+                return 1
+            sys.stdout.write(text)
+            return 1
+        if path is None:
+            sys.stdout.write(text)
+        else:
+            write_atomically(path, text)
+            sys.stderr.write("wrote %s\n" % path)
+        return 0
+
+    # Default mode. Its exit code is the certification verdict.
+    _print_directed(rows, "CURRENT RULE")
 
     print("")
     print("== COMPARATOR SELF-TEST ==")
@@ -1028,13 +1194,17 @@ def main(argv):
     for name, ok in argv_checks:
         print("  %-52s %s" % (name, "PASS" if ok else "FAIL"))
 
-    exhaustive_total, exhaustive_mismatches = run_exhaustive()
+    print("")
+    print("== CERTIFICATION SELF-TEST ==")
+    print("each verdict layer must be able to block certification")
+    for name, ok in cert_checks:
+        print("  %-52s %s" % (name, "PASS" if ok else "FAIL"))
+
     print("")
     print("== EXHAUSTIVE SWEEP, LENGTHS 0-%d ==" % EXHAUSTIVE_MAX_LEN)
-    print("inputs checked: %d (every input of those lengths)" % exhaustive_total)
-    print("value/branch mismatches vs independent oracle: %d" % exhaustive_mismatches)
+    print("inputs checked: %d (every input of those lengths)" % exhaustive[0])
+    print("value/branch mismatches vs independent oracle: %d" % exhaustive[1])
 
-    counts, undefined, mismatches, unique = run_fuzz()
     print("")
     print("== SAMPLED SWEEP, LENGTHS 0-%d ==" % MAX_LEN)
     print("seed=%d draws=%d unique inputs=%d domain=all 256 byte values"
@@ -1045,19 +1215,18 @@ def main(argv):
         print("  %-44s %d" % (branch, counts[branch]))
     print("undefined/exception cases: %d" % undefined)
     print("value mismatches vs independent oracle: %d" % mismatches)
-    print("note: each DRAWN input is oracle-compared; inputs never drawn are not")
-    print("      checked and nothing is claimed about them.")
+    print("note: each DRAWN input is oracle-compared for branch AND carrier value;")
+    print("      what sampling cannot establish is anything about inputs never drawn.")
 
     print("")
+    print("== CERTIFICATION ==")
+    for name, ok, detail in layers:
+        print("  %-28s %-32s %s" % (name, detail, "PASS" if ok else "FAIL"))
+    print("  certified: %s" % ("YES" if certified else "NO"))
     print("self-test failures: %d" % len(selftest_failures))
-    print("result digest (sha256 of sorted result lines, inputs and actual "
-          "carriers bound in): %s"
-          % result_digest(rows, counts, undefined, mismatches, unique,
-                          (exhaustive_total, exhaustive_mismatches), failures))
-    if selftest_failures:
-        return 1
-    return 0 if (failures == 0 and undefined == 0 and mismatches == 0
-                 and exhaustive_mismatches == 0) else 1
+    print("result digest (binds directed rows' actual carriers plus aggregate "
+          "counts): %s" % digest)
+    return 0 if certified else 1
 
 
 if __name__ == "__main__":
