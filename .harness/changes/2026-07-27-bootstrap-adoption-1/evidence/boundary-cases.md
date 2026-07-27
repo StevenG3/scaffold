@@ -8,7 +8,13 @@ A case passes only if BOTH its branch and its carrier value match the
 independently constructed expectation, byte for byte. Inputs and
 carriers are shown in full and are never truncated.
 
-Result digest: `179b7a01c134cf70f68606c939e155390f0c21113811172a2f8d43e88fca63c6`
+Self-test attestation for the run that produced this table:
+comparator self-test 5/5 passed, argv self-test 15/15 passed,
+fuzz value mismatches: 0.
+A corrupted comparator changes these counts, so this artifact
+carries the evidence of its own validity rather than asserting it.
+
+Result digest: `00788ca3647b09bef3790de066bcdc5e9ce6289ab663f61b59ad488fb6ea00d0`
 
 ## A group -- declared adversarial byte domain (process section 2.3)
 

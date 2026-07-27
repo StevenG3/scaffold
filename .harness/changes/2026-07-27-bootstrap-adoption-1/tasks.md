@@ -104,4 +104,13 @@
 - [x] `--baseline` 与 `--emit-markdown` 组合被拒绝（两种顺序，退出 2），argv 自检覆盖该回归。
 - [x] 复现审阅方变异探针：打桩 `_digest()` 后 `failures=47`、`digest_unchanged=False`（整改前为 0 / True）。
 - [x] 再生成 `boundary-cases.md`；刷新脚本 SHA 与结果摘要；7 条门禁、零回灌、推送、远端 CI。
-- [ ] 内部审阅方以变异攻击 brief 复核本次 delta（**不**交外部审阅方）。
+- [x] 内部审阅方以变异攻击 brief 复核（a402986b）：顶住 11 类变异，判定 Ready；另 1 Important + 2 Minor + 1 nit。
+
+## R6b 整改（内部变异攻击复审 a402986b）
+
+- [x] Important A：为随机域加独立值 oracle（`oracle_carrier()`，第二次独立转写，不调用 `carrier()`/`_digest()`），`run_fuzz()` 逐输入比对分支与载体值，失配即见红；M10 前后由「绿、digest 不变」变为「`fuzz_mismatches=170981`、digest 改变」。
+- [x] Minor B：两项自检在 emit 模式同样运行，通过数与失配数写入表头；实测比较器污染改变表头（5/5 → 1/5、4/5、2/5）。
+- [x] Minor C：`--emit-markdown PATH` 由脚本原子写入（临时文件 + `os.replace()`），run-manifest 改用安全命令，stdout 形式保留供 diff。
+- [x] nit：`-h`/`--help` 打印用法到 stdout 并退出 0；argv 自检扩至 15 项。
+- [x] 再生成 `boundary-cases.md`；刷新脚本 SHA 与结果摘要；7 条门禁、零回灌、推送、远端 CI。
+- [ ] 交外部审阅方（Codex）独立审阅。

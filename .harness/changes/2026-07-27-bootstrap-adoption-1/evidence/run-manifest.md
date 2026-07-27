@@ -40,9 +40,28 @@ NEL / U+2028 / U+2029 这类反例即使被随机生成，也会被判为「有�
 结果摘要也绑定了**实际载体值**。同一变异探针的当前结果：
 
 ```text
-未变异：       failures=0   digest=179b7a01c134cf70...
-_digest 被打桩：failures=47  digest=2c88f988cda012e0...  digest_unchanged=False
+未变异：       failures=0   digest=00788ca3647b09be...
+_digest 被打桩：failures=47  digest 改变
 ```
+
+**但仅有定向用例的载体核对仍不足以支撑一个全称陈述。** 内部变异审阅构造了 M10：
+只污染**不在这 69 个输入之内**的载体值。定向用例逐条仍然全绿，而摘要恰好绑定的
+就是定向行，于是 digest 一字不变——「摘要能检出错误载体」这句话对定向域为真，
+对定向域之外为假。
+
+因此**随机域也获得了独立值 oracle**：`oracle_carrier()` 是同一规则的**第二次独立转写**，
+它不调用 `carrier()` / `_digest()`，手工遍历字节而非使用 `split()`，
+并直接由 `hashlib` 重建哈希串。`run_fuzz()` 对**每一个**随机输入同时比对分支与载体值，
+两次转写只要在任意输入上分歧即计入失配并使运行见红。M10 的前后对比：
+
+```text
+整改前（无 oracle）： fuzz 不检查载体值    digest 不变      -> 绿
+整改后：              fuzz_mismatches=170981  digest 改变  -> 红
+                      （定向 failures 仍为 0，说明抓住 M10 的正是随机域 oracle）
+```
+
+据此，「扫描会在载体值出错时见红」这一陈述现在**在随机域上普遍成立**，
+而不再只对 69 个定向输入成立；定向用例额外提供**逐字节**的期望值。
 
 **期望载体独立构造**，不经被测代码：原文期望是手写的字面字符串；
 哈希期望由**字面字节数** + 直接调用 `hashlib.sha256(raw).hexdigest()` 组成
@@ -50,6 +69,11 @@ _digest 被打桩：failures=47  digest=2c88f988cda012e0...  digest_unchanged=Fa
 字面字节数会与真实输入长度比对，写错即在导入时报错。
 
 **比较器本身也必须被验证。** 一个恒真的比较器会让全部用例通过、外观与正确实现无异。
+生成表也带上自检结果：`--emit-markdown` 在输出头部写明该次运行的
+比较器自检与 argv 自检通过数及随机域失配数——比较器一旦被污染，这些计数随之变化
+（实测：恒真 → 1/5，恒假 → 4/5，忽略载体半边 → 2/5），因此该产物**自带有效性证据**，
+而不是仅仅声称有效。
+
 默认模式因此内置**比较器自检**：把已知正确的期望分别变异为「错误 SHA」「错误字节数」
 「错误原文末行」「错误分支」，断言四者**均被拒绝**；再加一条**对照**——未变异的期望
 必须**被接受**，否则一个恒假的比较器也能通过前四项。任一自检未达预期即非零退出。
@@ -80,7 +104,7 @@ _digest 被打桩：failures=47  digest=2c88f988cda012e0...  digest_unchanged=Fa
 | 依赖 | 仅标准库（`hashlib`、`random`、`sys`） |
 | 确定性 | 无时钟、无环境、无文件输入；任何 Python 3.9+ 重跑结果一致 |
 | 源码编码 | 纯 ASCII：不可呈现码点一律以 `\uXXXX` 转义出现，diff 可读 |
-| 脚本 SHA-256 | `01f0c0b9891ba3114c6dd7d88e084c6f98363fdaa923ee2142c6c7303b186227` |
+| 脚本 SHA-256 | `b3cf02f8d21dad3e91dcfc78471dd063a0a460534964403c82085c410360fa87` |
 
 ## 复现与再生成命令
 
@@ -88,9 +112,15 @@ _digest 被打桩：failures=47  digest=2c88f988cda012e0...  digest_unchanged=Fa
 # 扫描（定向 + 随机），打印结果摘要
 python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py
 
-# 再生成 boundary-cases.md（该文件由脚本生成，不得手工编辑）
+# 再生成 boundary-cases.md（推荐：原子写入，脚本自己落盘）
 python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \
-    --emit-markdown > .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/boundary-cases.md
+    --emit-markdown .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/boundary-cases.md
+
+# 仅查看/diff（流向 stdout，不落盘）
+python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py --emit-markdown
+
+# 用法
+python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py --help
 
 # 红基线：以整改前的判据跑同一批定向用例，预期见红
 python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py --baseline
@@ -100,12 +130,15 @@ python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.
 
 | 模式 | 退出码含义 |
 | --- | --- |
-| 默认（无参数） | **判定语义**：0 表示「定向用例零失败且无输入逃出划分」，1 表示存在规则缺陷。这是唯一以退出码承载判定的模式。 |
+| 默认（无参数） | **判定语义**：0 表示「定向用例零失败、比较器与 argv 两项自检零失败、无输入逃出划分、随机域零载体失配」，1 表示存在缺陷。这是唯一以退出码承载判定的模式。 |
 | `--baseline` | **报告模式**：退出码**不承载判定语义**，只表示运行本身完成（正常为 0）。该模式**预期见红**，若以失败数决定退出码，读者会把「基线如期见红」误读成「扫描失败」。 |
 | `--emit-markdown` | **报告模式**：同上，退出码不承载判定语义，正常为 0。 |
 | 未知参数 | 拒绝执行，stderr 打印错误与用法行，退出 **2**。 |
 | **模式组合** | `--baseline` 与 `--emit-markdown` **互斥**，同时给出即拒绝执行、退出 **2**（两种顺序均拒绝）。此前二者可同时启用，会把 baseline 的 30 个失败与当前判据的 fuzz 计数混进同一个 digest，并按文档给出的重定向方式静默覆盖正式 `boundary-cases.md`。 |
 | 重复同一 flag | 视为同一模式，接受。 |
+| `--emit-markdown PATH` | 接受；表由脚本**原子写入**（同目录临时文件 + `os.replace()`）。此前文档给出的是 shell 重定向，shell 一打开文件就截断，运行中途失败会在 Change Record 里留下零长度或半截的正式表。 |
+| 无 `--emit-markdown` 的路径参数 / 多个路径 | 拒绝，退出 2。 |
+| `-h` / `--help` | 用法打印到 **stdout**，退出 **0**。 |
 
 参数域已闭合：任一 argv 要么落入三个模式之一，要么被拒绝并退出 2；
 默认模式内置的 **argv 自检**逐条断言上述行为（含两种组合顺序）。
@@ -119,7 +152,8 @@ python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.
 | 定向用例数 | 69（分支 + 载体值双重比对） |
 | 定向用例失败数 | **0** |
 | 比较器自检 | 4 项变异全部被拒 + 1 项对照被接受，失败 **0** |
-| argv 自检 | 9 项全部符合预期，失败 **0** |
+| argv 自检 | 15 项全部符合预期，失败 **0** |
+| fuzz 载体值失配 | **0**（对独立 oracle 逐输入比对） |
 | 随机迭代数 | 200000 |
 | 逃出划分 / 异常用例 | **0** |
 | 分支 (a) 命中 | 28784 |
@@ -148,7 +182,7 @@ directed cases: 69, failures: 30
 对「定向用例逐条结果（**含输入字节、期望载体与实际载体**）+ 各分支命中数 + 失败/逃逸计数」排序后取 SHA-256：
 
 ```text
-179b7a01c134cf70f68606c939e155390f0c21113811172a2f8d43e88fca63c6
+00788ca3647b09bef3790de066bcdc5e9ce6289ab663f61b59ad488fb6ea00d0
 ```
 
 摘要**绑定输入字节与实际载体值**，因此改动任一用例的输入、或让实现记录错误载体，摘要都会变化（上文变异探针即为实证）。

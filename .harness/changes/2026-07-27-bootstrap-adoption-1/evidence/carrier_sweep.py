@@ -57,8 +57,10 @@ character, so the script stays reviewable in a plain text diff.
 """
 
 import hashlib
+import os
 import random
 import sys
+import tempfile
 
 # Fixed seed. Changing this invalidates the recorded result digest.
 SEED = 20260727
@@ -313,6 +315,57 @@ DIRECTED = [(name, raw, branch, resolve_expectation(raw, spec))
 
 
 # ---------------------------------------------------------------------------
+# Independent value oracle for the fuzz domain.
+#
+# This is a SECOND, deliberately different transcription of the same rule. It
+# never calls carrier() or _digest(): it walks bytes by hand instead of using
+# split(), and rebuilds the hash string from a direct hashlib call. Two
+# independent transcriptions that disagree on ANY fuzz input turn the run red,
+# so the fuzz domain now checks recorded VALUES, not just branch labels --
+# without it, an implementation that recorded garbage for inputs outside the
+# 69 directed cases reproduced the recorded digest exactly and stayed green.
+# ---------------------------------------------------------------------------
+
+def oracle_carrier(raw):
+    """Independent transcription of the carrier rule. Never calls carrier()."""
+    if not raw:
+        return BRANCH_EMPTY, CARRIER_EMPTY
+
+    hashed = "bytes=%d sha256=%s" % (len(raw), hashlib.sha256(raw).hexdigest())
+
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return BRANCH_UNDECODABLE, hashed
+
+    # Split on 0x0A by hand rather than with bytes.split(), so a defect in one
+    # transcription's use of the library shows up as a disagreement.
+    segments = []
+    current = bytearray()
+    for byte in raw:
+        if byte == 0x0A:
+            segments.append(bytes(current))
+            current = bytearray()
+        else:
+            current.append(byte)
+    segments.append(bytes(current))
+
+    last_non_empty = None
+    for segment in segments:
+        trimmed = segment[:-1] if (segment and segment[-1] == 0x0D) else segment
+        if len(trimmed) > 0:
+            last_non_empty = trimmed
+    if last_non_empty is None:
+        return BRANCH_NO_LINE, hashed
+
+    decoded = last_non_empty.decode("utf-8")
+    for code_point in map(ord, decoded):
+        if code_point in UNRENDERABLE_SET:
+            return BRANCH_UNRENDERABLE, hashed
+    return BRANCH_LINE, decoded
+
+
+# ---------------------------------------------------------------------------
 # Comparator.
 # ---------------------------------------------------------------------------
 
@@ -337,9 +390,17 @@ def run_directed(predicate=carrier):
 
 
 def run_fuzz():
+    """Fuzz the full byte domain, checking BRANCH and CARRIER VALUE.
+
+    Every input is scored against oracle_carrier(), an independent
+    transcription. Returns (counts, undefined, mismatches) where mismatches
+    counts inputs on which the implementation and the oracle disagree about
+    the branch or about the recorded value.
+    """
     rng = random.Random(SEED)
     counts = {branch: 0 for branch in BRANCHES}
     undefined = 0
+    mismatches = 0
     for _ in range(ITERATIONS):
         raw = bytes(rng.getrandbits(8) for _ in range(rng.randint(0, MAX_LEN)))
         try:
@@ -349,9 +410,12 @@ def run_fuzz():
             continue
         if branch not in counts or not recorded:
             undefined += 1
-        else:
-            counts[branch] += 1
-    return counts, undefined
+            continue
+        counts[branch] += 1
+        expected_branch, expected_carrier = oracle_carrier(raw)
+        if branch != expected_branch or recorded != expected_carrier:
+            mismatches += 1
+    return counts, undefined, mismatches
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +493,17 @@ def selftest_argv():
         ("default mode accepted", parse_args([])[2] == "default"),
         ("baseline mode accepted", parse_args(["--baseline"])[2] == "baseline"),
         ("emit mode accepted", parse_args(["--emit-markdown"])[2] == "emit"),
+        ("emit with path accepted",
+         parse_args(["--emit-markdown", "out.md"])[2:] == ("emit", "out.md")),
+        ("path without emit rejected",
+         parse_args(["out.md"])[0] == 2),
+        ("two paths rejected",
+         parse_args(["--emit-markdown", "a.md", "b.md"])[0] == 2),
+        ("baseline with path rejected",
+         parse_args(["--baseline", "out.md"])[0] == 2),
+        ("help accepted and exits 0",
+         parse_args(["--help"])[2] == "help" and parse_args(["--help"])[0] == 0),
+        ("short help accepted", parse_args(["-h"])[2] == "help"),
     ]
 
 
@@ -440,33 +515,84 @@ USAGE = (
     "usage: carrier_sweep.py [--baseline | --emit-markdown]\n"
     "  (no flag)        run directed + self-tests + fuzz; exit 1 on any failure\n"
     "  --baseline       report the pre-fix predicate's results (reporting mode)\n"
-    "  --emit-markdown  write boundary-cases.md on stdout (reporting mode)\n"
-    "The two flags are mutually exclusive.\n"
+    "  --emit-markdown [PATH]\n"
+    "                   emit the boundary-case table (reporting mode). With no\n"
+    "                   PATH it streams to stdout; with PATH it is written\n"
+    "                   atomically, so a failed run cannot truncate the table.\n"
+    "  -h, --help       print this usage on stdout and exit 0\n"
+    "The two mode flags are mutually exclusive.\n"
 )
 KNOWN_FLAGS = ("--baseline", "--emit-markdown")
 
 
 def parse_args(argv):
-    """Return (exit_code, error_message, mode). exit_code is 0 when accepted."""
-    unknown = [arg for arg in argv if arg not in KNOWN_FLAGS]
+    """Return (exit_code, error_message, mode, path). exit_code 0 when accepted.
+
+    Modes: "default", "baseline", "emit", "help". `path` is set only for emit
+    mode with an explicit destination, in which case the table is written
+    atomically instead of streamed to stdout.
+    """
+    if "-h" in argv or "--help" in argv:
+        return 0, None, "help", None
+
+    flags = [arg for arg in argv if arg.startswith("-")]
+    positionals = [arg for arg in argv if not arg.startswith("-")]
+
+    unknown = [arg for arg in flags if arg not in KNOWN_FLAGS]
     if unknown:
-        return 2, "unknown argument(s): %s" % " ".join(unknown), None
-    baseline = "--baseline" in argv
-    emit = "--emit-markdown" in argv
+        return 2, "unknown argument(s): %s" % " ".join(unknown), None, None
+
+    baseline = "--baseline" in flags
+    emit = "--emit-markdown" in flags
     if baseline and emit:
         return (2,
                 "--baseline and --emit-markdown are mutually exclusive; "
                 "combining them would mix baseline failures into the generated "
                 "table and its digest",
-                None)
+                None, None)
+    if positionals and not emit:
+        return (2,
+                "a path argument is only valid with --emit-markdown: %s"
+                % " ".join(positionals),
+                None, None)
+    if len(positionals) > 1:
+        return (2,
+                "--emit-markdown takes at most one path: %s"
+                % " ".join(positionals),
+                None, None)
+
     if baseline:
-        return 0, None, "baseline"
+        return 0, None, "baseline", None
     if emit:
-        return 0, None, "emit"
-    return 0, None, "default"
+        return 0, None, "emit", positionals[0] if positionals else None
+    return 0, None, "default", None
 
 
-def result_digest(rows, counts, undefined, failures):
+def write_atomically(path, text):
+    """Write text to path atomically: temp file in the same dir, then replace.
+
+    The documented regeneration command used to be a shell redirect, which
+    truncates the official table the instant the shell opens it -- so a crash
+    or a rejected argv left a zero-length or half-written artifact in the
+    Change Record. os.replace() is atomic on POSIX and Windows alike, so the
+    old table survives untouched unless a complete new one is ready.
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    handle, temp_path = tempfile.mkstemp(dir=directory, prefix=".carrier_sweep-",
+                                         suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(text)
+        os.replace(temp_path, path)
+    except BaseException:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+
+
+def result_digest(rows, counts, undefined, mismatches, failures):
     """SHA-256 over sorted result lines.
 
     The payload binds the input bytes AND the actual recorded carrier, so a
@@ -481,6 +607,7 @@ def result_digest(rows, counts, undefined, failures):
                   actual_branch, actual_carrier, ok) in rows]
     lines += ["fuzz\t%s\t%d" % (branch, counts[branch]) for branch in BRANCHES]
     lines += ["fuzz\tundefined\t%d" % undefined,
+              "fuzz\tvalue_mismatches\t%d" % mismatches,
               "directed\tfailures\t%d" % failures]
     payload = "\n".join(sorted(lines)) + "\n"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -495,7 +622,7 @@ GROUP_TITLES = {
 }
 
 
-def emit_markdown(rows, failures, digest):
+def emit_markdown(rows, failures, digest, selftest_summary, mismatches):
     """Emit boundary-cases.md on stdout. Values are shown in full, untruncated."""
     out = []
     out.append("# Boundary case table -- gate evidence carrier rule")
@@ -507,6 +634,13 @@ def emit_markdown(rows, failures, digest):
     out.append("A case passes only if BOTH its branch and its carrier value match the")
     out.append("independently constructed expectation, byte for byte. Inputs and")
     out.append("carriers are shown in full and are never truncated.")
+    out.append("")
+    out.append("Self-test attestation for the run that produced this table:")
+    out.append("comparator self-test %d/%d passed, argv self-test %d/%d passed,"
+               % selftest_summary)
+    out.append("fuzz value mismatches: %d." % mismatches)
+    out.append("A corrupted comparator changes these counts, so this artifact")
+    out.append("carries the evidence of its own validity rather than asserting it.")
     out.append("")
     out.append("Result digest: `%s`" % digest)
     for key in "ABCDE":
@@ -569,12 +703,26 @@ def _print_directed(rows, label):
     print("(a case passes only if BOTH branch and carrier value match)")
 
 
+def selftest_summary():
+    comparator_checks = selftest_comparator()
+    argv_checks = selftest_argv()
+    failures = ([name for name, ok in comparator_checks if not ok]
+                + [name for name, ok in argv_checks if not ok])
+    summary = (sum(1 for _, ok in comparator_checks if ok), len(comparator_checks),
+               sum(1 for _, ok in argv_checks if ok), len(argv_checks))
+    return comparator_checks, argv_checks, summary, failures
+
+
 def main(argv):
-    code, error, mode = parse_args(argv)
+    code, error, mode, path = parse_args(argv)
     if error is not None:
         sys.stderr.write("carrier_sweep.py: %s\n" % error)
         sys.stderr.write(USAGE)
         return code
+
+    if mode == "help":
+        sys.stdout.write(USAGE)
+        return 0
 
     predicate = carrier_baseline if mode == "baseline" else carrier
     rows, failures = run_directed(predicate)
@@ -583,9 +731,15 @@ def main(argv):
     # the run itself completed. --baseline is EXPECTED to show failures, so a
     # non-zero exit there would mean the opposite of what a reader assumes.
     if mode == "emit":
-        counts, undefined = run_fuzz()
-        digest = result_digest(rows, counts, undefined, failures)
-        sys.stdout.write(emit_markdown(rows, failures, digest))
+        counts, undefined, mismatches = run_fuzz()
+        _, _, summary, _ = selftest_summary()
+        digest = result_digest(rows, counts, undefined, mismatches, failures)
+        text = emit_markdown(rows, failures, digest, summary, mismatches)
+        if path is None:
+            sys.stdout.write(text)
+        else:
+            write_atomically(path, text)
+            sys.stderr.write("wrote %s\n" % path)
         return 0
 
     if mode == "baseline":
@@ -603,10 +757,7 @@ def main(argv):
     # Default mode. This is the only mode whose exit code is a verdict.
     _print_directed(rows, "CURRENT RULE")
 
-    comparator_checks = selftest_comparator()
-    argv_checks = selftest_argv()
-    selftest_failures = ([name for name, ok in comparator_checks if not ok]
-                         + [name for name, ok in argv_checks if not ok])
+    comparator_checks, argv_checks, summary, selftest_failures = selftest_summary()
 
     print("")
     print("== COMPARATOR SELF-TEST ==")
@@ -619,7 +770,7 @@ def main(argv):
     for name, ok in argv_checks:
         print("  %-44s %s" % (name, "PASS" if ok else "FAIL"))
 
-    counts, undefined = run_fuzz()
+    counts, undefined, mismatches = run_fuzz()
     print("")
     print("== RANDOM FUZZ ==")
     print("seed=%d iterations=%d max_len=%d domain=all 256 byte values"
@@ -627,17 +778,19 @@ def main(argv):
     for branch in BRANCHES:
         print("  %-44s %d" % (branch, counts[branch]))
     print("undefined/exception cases: %d" % undefined)
-    print("note: fuzzing shows only that no input escapes the partition; the")
-    print("      directed cases and self-tests are what validate the predicate.")
+    print("value mismatches vs independent oracle: %d" % mismatches)
+    print("note: every fuzz input is scored against an independent transcription")
+    print("      of the rule, so the fuzz domain checks recorded VALUES too, not")
+    print("      only branch labels. Directed cases add byte-exact expectations.")
 
     print("")
     print("self-test failures: %d" % len(selftest_failures))
     print("result digest (sha256 of sorted result lines, inputs and actual "
           "carriers bound in): %s"
-          % result_digest(rows, counts, undefined, failures))
+          % result_digest(rows, counts, undefined, mismatches, failures))
     if selftest_failures:
         return 1
-    return 0 if failures == 0 and undefined == 0 else 1
+    return 0 if failures == 0 and undefined == 0 and mismatches == 0 else 1
 
 
 if __name__ == "__main__":
