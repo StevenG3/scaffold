@@ -47,50 +47,66 @@ Only in .harness/wiki: overview.md
 - `8c355041963d03c677940117b9c227ff02a0b8bb` — 依 PR #7 第一轮审阅 F3 的设计方裁定，修订 `rules/project.md` §2 的门禁证据载体条款（命令原文 + 命令自身的终态摘要行 + 退出码）。
 - `4651c0297fb0c72dba4eb1805279178c30c2643a` — 依 PR #7 复审 F1 的设计方裁定，将该条款闭合到门禁输出的**全部**情形：(a) 有终态摘要行者记原文、(b) 成功且零输出者逐字记 `<empty>`、(c) 一律禁止人工断言。
 - `444cc95812b760ee32a0ad836a0ec3771cd48e7d` — 依 PR #7 第三轮复审的设计方裁定，把该条款改写为**与退出码解耦的输出域三分法**（空 / 非空可解码 / 非空不可解码），互斥穷举由构造保证，并给出「终态摘要行 = 最后一个非空行」的可判定定义；取代上一条的按成功状态划分。
+- `f5c3b2a3e962f9f87fdeaa81213bf5014293f89a` — 依 PR #7 第四轮复审的设计方裁定，规定 **stdout / stderr 分流独立捕获与独立记录**（取消「合并输出」概念），并把各分支补成**全函数**：(b) 增设「无非空行 → 字节数 + SHA-256」子分支，写入「行」的字节级定义；另据内部对抗扫描补上「必记行全为控制字节 → 字节数 + SHA-256」例外。
 
-以上七个提交均不含本 Change Record 的任何审计元数据；资产 diff 即证据，未另做副本。本 Change Record 落在其后的审计提交中。
+以上八个提交均不含本 Change Record 的任何审计元数据；资产 diff 即证据，未另做副本。本 Change Record 落在其后的审计提交中。
 
 ### 7 条交付门禁
 
-按 `rules/project.md` §2 的输出域三分法记录。每条门禁独立记**命令原文**与**退出码**；输出载体按下表判定（stdout + stderr 合并后实测）：
+按 `rules/project.md` §2 的证据规则记录。每条门禁的证据 = **退出码** + **stdout 载体** + **stderr 载体**；两个流分别独立捕获、分别判定，不存在合并输出。
 
-| 门禁 | 输出字节数 | UTF-8 严格解码 | 适用分支 | 记录内容 |
-| ---: | ---: | --- | --- | --- |
-| 1 | 27 | 是 | (b) | 最后一个非空行 `Harness contract is valid.` |
-| 2 | 27 | 是 | (b) | 最后一个非空行 `Harness contract is valid.` |
-| 3 | 99 | 是 | (b) | 最后一个非空行 `adapt: ok`（附记同输出的 `[ADAPT_SKIPPED_TEMPLATE]` 行） |
-| 4 | 23862 | 是 | (b) | 最后一个非空行 `OK (skipped=2)`（附记同输出的 `Ran` 行；175 行用例明细按规则不入档） |
-| 5 | 0 | — | (a) | 逐字 `<empty>` |
-| 6 | 27 | 是 | (b) | 最后一个非空行 `Harness contract is valid.` |
-| 7 | 10 | 是 | (b) | 最后一个非空行 `adapt: ok` |
+分流实测判定表（在本审计提交的父提交上以两个独立管道捕获）：
 
-无门禁落入 (c)。下方证据块的各条记录行在规则改写后**逐条复核无需变动**：1–4、6、7 记录的摘要行经实测恰为各自输出的最后一个非空行，5 仍为 (a)。全部在仓库根执行，均 exit 0。
+| 门禁 | exit | stdout 字节 | stdout 分支 | stderr 字节 | stderr 分支 |
+| ---: | ---: | ---: | --- | ---: | --- |
+| 1 | 0 | 27 | (b) 末非空行 | 0 | (a) `<empty>` |
+| 2 | 0 | 27 | (b) 末非空行 | 0 | (a) `<empty>` |
+| 3 | 0 | 99 | (b) 末非空行 | 0 | (a) `<empty>` |
+| 4 | 0 | 0 | (a) `<empty>` | 23862 | (b) 末非空行 |
+| 5 | 0 | 0 | (a) `<empty>` | 0 | (a) `<empty>` |
+| 6 | 0 | 27 | (b) 末非空行 | 0 | (a) `<empty>` |
+| 7 | 0 | 10 | (b) 末非空行 | 0 | (a) `<empty>` |
+
+**分流暴露出的一个事实**：第 4 条 `unittest` 的全部输出在 **stderr**，stdout 为 0 字节——这是 `unittest` 的既有行为。上一版按「合并输出」记录时，该事实被合并操作掩盖，记录看不出摘要行来自哪个流。这正是分流捕获相对合并捕获的实质收益，不只是消除了拼接顺序的歧义。
+
+无门禁落入 (c)，无门禁落入 (b) 的「无非空行」或「控制字节」子分支。
+
+### 7 条门禁逐条证据
 
 ```text
 ### 1  python3 template/.harness/bin/validate.py
-Harness contract is valid.
 exit=0
+stdout: Harness contract is valid.
+stderr: <empty>
 ### 2  python3 template/.harness/bin/harness.py validate
-Harness contract is valid.
 exit=0
+stdout: Harness contract is valid.
+stderr: <empty>
 ### 3  python3 template/.harness/bin/harness.py adapt --check --root template/.harness
-[ADAPT_SKIPPED_TEMPLATE] .: origin is null; template bundles do not generate projections
-adapt: ok
 exit=0
+stdout: adapt: ok
+        （同流附记：[ADAPT_SKIPPED_TEMPLATE] .: origin is null; template bundles do not generate projections）
+stderr: <empty>
 ### 4  python3 -m unittest discover -s tests -v
-Ran 175 tests in 12.316s
-OK (skipped=2)
 exit=0
+stdout: <empty>
+stderr: OK (skipped=2)
+        （同流附记：Ran 175 tests in 12.316s）
 ### 5  git diff --check e338db8 HEAD
-<empty>
 exit=0
+stdout: <empty>
+stderr: <empty>
 ### 6  python3 .harness/bin/harness.py validate
-Harness contract is valid.
 exit=0
+stdout: Harness contract is valid.
+stderr: <empty>
 ### 7  python3 .harness/bin/harness.py adapt --check
-adapt: ok
 exit=0
+stdout: adapt: ok
+stderr: <empty>
 ```
+
+各条 (b) 分支记录的均为该流最后一个非空行的原文；括注为规则允许的同流附记原文行。第 4 条附记的 `Ran` 行含该次运行的动态耗时，第四轮复审已明确接受（规则保存的是该次运行的证据，不承诺未来复跑逐字节相同）。
 
 ### 零回灌核对
 
@@ -145,6 +161,21 @@ $ git diff main -- template/ | wc -l
 | 证据规则的全称范围自我否定 | 设计方裁定审阅方的方案 2，两个子论点均成立：其一，规则一边宣称 (a)(b) 互斥穷举、一边在同段承认可能存在两者皆不适用的门禁，文本自我否定；其二，用**成功状态**作划分维度是错的——非零退出且零输出既无摘要行也不满足「成功且零输出」，落在两支之外。整改：把划分维度换成**输出本身**，沿「空 / 非空」与非空时「可否 UTF-8 严格解码」两个构造性维度三分，穷举性由构造保证而非由声称保证；退出码升为每条门禁独立必记字段，成功与否只由它表达；并把「终态摘要行」定义为**最后一个非空行**，消除「哪一行算摘要」的人工判断。资产提交 `444cc95812b760ee32a0ad836a0ec3771cd48e7d` 先落，本审计提交随后对齐。 |
 
 **本轮的方法学观察**：这是同一根因的第三次实例，且这次的教训比前两次更深一层——前两轮的问题是「枚举不全」，本轮的问题是**划分维度选错**。按成功状态划分时，无论怎样补充分支都无法穷举，因为该维度与「输出长什么样」正交；换成输出自身的构造性维度后，穷举性不再需要声称，它由划分方式本身产生。可machine化的判据（0 字节 / 严格解码 / 最后一个非空行）同时消除了执行者的自由裁量。这条经验适用于任何「声称覆盖全域」的自然语言契约，建议纳入流程复盘。
+
+## 整改记录（PR #7 第四轮复审 0bcbbc8）
+
+审阅记录：`docs/reviews/2026-07-27-pr-7-scaffold-self-adoption-rereview-0bcbbc8.md`，结论 Request changes，绑定 HEAD `0bcbbc8c410c655998d2720c0f7861e1e696c0ae`，Standards / Spec 各 1 项 Important，六维总分 20/24。Gate 4 动态耗时经复审明确接受，不构成问题。
+
+| Finding | 裁决与整改 |
+| --- | --- |
+| (b) 分支存在「无非空行」的未定义子域（最小反例 `b"\n"`） | 接受。分类穷举不等于**记录义务闭合**：分类能选中 (b)，但该分支要求记录的对象可以不存在。整改把 (b) 内部沿「是否存在非空行」二分，无非空行者记字节数 + SHA-256，使每个分支要求记录的对象必然存在；并写入「行」的字节级定义（仅 `0x0A` 为分隔符，去除末尾一个 `0x0D`），消除对「行」的临场解释。 |
+| stdout / stderr 的「合并输出」无唯一捕获语义 | 接受审阅方案 2。两个流**分别独立捕获、分别记录**，规则中不再存在「合并输出」这一对象，拼接顺序、运行时交错、多字节序列跨流分布三类歧义因此不可能发生——不是规定了一种合并方式，而是取消了合并这一步。 |
+
+资产提交 `f5c3b2a3e962f9f87fdeaa81213bf5014293f89a` 先落，本审计提交随后对齐。
+
+**本轮的方法学观察**：前三轮的教训依次是「枚举不全」→「划分维度选错」→ 本轮的**两个新层次**。其一，*分类穷举 ≠ 记录义务闭合*：一个全函数不仅要求每个输入落入某分支，还要求该分支的输出确实存在；只检查前者会漏掉后者。其二，*规则的输入本身必须先被唯一确定*：在输入字节串未定义之前，任何关于它的判定规则都不可能是良定义的——三分法再完美，喂给它的东西不唯一，结论就不唯一。取消合并（而非规定合并顺序）是更强的修法：它消灭了不确定性的来源，而不是给不确定性挑一个约定。
+
+**内部对抗扫描**（本轮起作为交付前纪律，见下）另发现并关闭第三个缝隙：必记行可以整行由控制字节构成（`b"\r\r\n"` 的最后一个非空行是单个 `0x0D`），无法在 Markdown 记录中无损呈现，强求「记录原文」会逼出规则自身禁止的临场转义记法；该子域已并入字节数 + SHA-256 载体。
 
 ## Decision
 
