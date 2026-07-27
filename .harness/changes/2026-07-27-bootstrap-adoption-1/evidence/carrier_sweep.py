@@ -21,9 +21,16 @@ It contains a mechanical implementation of the carrier rule as written in
 Deterministic: standard library only, fixed seed, no clock or environment
 input. Re-running on any Python 3.9+ reproduces the same result digest.
 
-Usage:  python3 carrier_sweep.py
-Exit:   0 if every directed case matches its expected branch and no input
-        escapes the partition; 1 otherwise.
+Usage:  python3 carrier_sweep.py [--baseline | --emit-markdown]
+
+Exit codes are per mode:
+  default          0 if every directed case matches its expected branch and no
+                   input escapes the partition; 1 otherwise. This is the only
+                   mode whose exit code is a verdict.
+  --baseline       always 0 unless the run itself errors. It is a reporting
+                   mode and is EXPECTED to show failures.
+  --emit-markdown  always 0 unless the run itself errors. Reporting mode.
+  unknown argument 2, with a usage line on stderr.
 
 Note on source encoding: unrenderable code points appear in this file only as
 escape sequences (for example "\\u0085"), never as literal characters, so the
@@ -315,32 +322,60 @@ def emit_markdown(rows, failures, digest):
     return "\n".join(out) + "\n"
 
 
+USAGE = (
+    "usage: carrier_sweep.py [--baseline | --emit-markdown]\n"
+    "  (no flag)        run directed + fuzz sweep; exit 1 on any failure or escape\n"
+    "  --baseline       report the pre-fix predicate's results (reporting mode)\n"
+    "  --emit-markdown  write boundary-cases.md on stdout (reporting mode)\n"
+)
+KNOWN_FLAGS = ("--baseline", "--emit-markdown")
+
+
 def main(argv):
+    unknown = [arg for arg in argv if arg not in KNOWN_FLAGS]
+    if unknown:
+        sys.stderr.write("carrier_sweep.py: unknown argument(s): %s\n"
+                         % " ".join(unknown))
+        sys.stderr.write(USAGE)
+        return 2
+
     baseline = "--baseline" in argv
     predicate = carrier_baseline if baseline else carrier
     rows, failures = run_directed(predicate)
 
+    # Reporting modes. Their exit code carries no verdict: it reports only that
+    # the run itself completed. --baseline is EXPECTED to show failures, so a
+    # non-zero exit there would mean the opposite of what a reader assumes.
     if "--emit-markdown" in argv:
         counts, undefined = run_fuzz()
         digest = result_digest(rows, counts, undefined, failures)
         sys.stdout.write(emit_markdown(rows, failures, digest))
-        return 0 if failures == 0 and undefined == 0 else 1
+        return 0
 
-    label = "BASELINE (pre-fix predicate)" if baseline else "CURRENT RULE"
-    print("== DIRECTED CASES -- %s ==" % label)
+    if baseline:
+        print("== DIRECTED CASES -- BASELINE (pre-fix predicate) ==")
+        print("%-52s %-44s %-44s %s" % ("case", "expected", "actual", "status"))
+        for name, raw, expected, branch, recorded, ok in rows:
+            print("%-52s %-44s %-44s %s"
+                  % (name, expected, branch, "PASS" if ok else "FAIL"))
+        print("")
+        print("directed cases: %d, failures: %d" % (len(rows), failures))
+        print("")
+        print("Reporting mode: this exit code carries no verdict. The baseline is")
+        print("EXPECTED to be red. Cases the pre-fix predicate got wrong:")
+        for name, raw, expected, branch, recorded, ok in rows:
+            if not ok:
+                print("  %-52s expected %-44s got %s" % (name, expected, branch))
+        return 0
+
+    # Default mode. This is the only mode whose exit code is a verdict.
+    print("== DIRECTED CASES -- CURRENT RULE ==")
     print("%-52s %-44s %-44s %s" % ("case", "expected", "actual", "status"))
     for name, raw, expected, branch, recorded, ok in rows:
         print("%-52s %-44s %-44s %s"
               % (name, expected, branch, "PASS" if ok else "FAIL"))
     print("")
     print("directed cases: %d, failures: %d" % (len(rows), failures))
-    if baseline:
-        print("")
-        print("Baseline is EXPECTED to be red. Cases that the pre-fix predicate got wrong:")
-        for name, raw, expected, branch, recorded, ok in rows:
-            if not ok:
-                print("  %-52s expected %-44s got %s" % (name, expected, branch))
-        return 0
 
     counts, undefined = run_fuzz()
     print("")
