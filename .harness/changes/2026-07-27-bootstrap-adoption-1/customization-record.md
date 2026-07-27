@@ -12,9 +12,9 @@
 | `manifest.json` (`project-rules`) | `added` | 注册 `rules/project.md`，使校验器与三个平台投影都能看到它。 | `project` |
 | `wiki/overview.md` | `added` | 侦察查明了生产者/消费者双身份的目录职责、技术栈与 v0–v3 路线，需要一个入口页承载。 | `project` |
 | `wiki/conventions.md` | `added` | 侦察查明强制流程、角色分工、审阅记录抬头契约与回灌禁令，并记录本次实测出的 v3 `upgrade` 需求证据。 | `project` |
-| `CLAUDE.md`（投影，非 bundle 内） | `modified` | 注册 `project-rules` 后由 `harness.py adapt` 重生成受管块，使组件清单包含项目规则。 | `generic` |
-| `AGENTS.md`（投影，非 bundle 内） | `modified` | 同上，Codex 平台入口。 | `generic` |
-| `.cursor/rules/harness.mdc`（投影，非 bundle 内） | `replaced` | 该文件按 v1 设计为工具整文件拥有，每次投影整体重建，原有内容不留存。 | `generic` |
+| `CLAUDE.md`（投影，非 bundle 内） | `modified` | 注册 `project-rules` 后由 `harness.py adapt` 重生成受管块，使组件清单包含本项目的项目规则。 | `project` |
+| `AGENTS.md`（投影，非 bundle 内） | `modified` | 同上，Codex 平台入口；变更内容同样是本项目的 `project-rules` 注册。 | `project` |
+| `.cursor/rules/harness.mdc`（投影，非 bundle 内） | `modified` | 变更内容是本项目的 `project-rules` 注册。该文件按 v1 设计为工具整文件拥有、每次投影整体重建；但整文件所有权是写入机制，不等于内容谱系——本次实际保留了全部 26 行原有内容并新增 1 行。 | `project` |
 
 ## 契约留白上报（流程 §3「契约留白上报」）
 
@@ -26,4 +26,8 @@ Skill 规定 Asset 列写「bundle-relative path」，但上表后三行的三�
 
 标记 `stack` 或 `generic` 的行是上游模板分层的候选证据，将来向上游共享本记录时应逐字保留。
 
-补充观察（供 v2 §2 反馈使用）：本次没有产生任何 `stack` 行。但 `wiki/overview.md` §3「技术栈」的内容（Python 3.9+、仅标准库、stdlib `unittest`、无 linter）实质上是**栈级**材料，只是当前被写在项目层页面里——这正是 v2 分层要解决的现象：栈级知识没有归属层，只能塞进项目层。若将来抽取为 Python 栈层资产，须先去除全部项目上下文并译为英文（回灌禁令见 `rules/project.md` §6）。
+补充观察（供 v2 §2 反馈使用）：按 PR #7 审阅 F1 的裁定改判后，7 行**全部**为 `project`，没有任何 `stack` 或 `generic` 行——因为每一行的实际变更内容都是本项目特有的 `project-rules` 注册或本项目的项目层资产，而不是投影机制本身的通用性。
+
+这一改判本身就是层边界的证据：**资产的复用性要按本次变更的内容判定，不能按写入它的机制判定**。三个投影文件的生成机制对任何项目都通用，但它们本次被写进去的内容只对本项目成立。
+
+同时，`wiki/overview.md` §3「技术栈」的内容（Python 3.9+、仅标准库、stdlib `unittest`、无 linter）实质上是**栈级**材料，只是当前被写在项目层页面里——这正是 v2 分层要解决的现象：栈级知识没有归属层，只能塞进项目层。它没有单独成行，是因为它不是独立资产，而是某个 `project` 资产内部的一节；这说明按文件粒度的复用性标注无法表达「一个文件内混有多层内容」，是 v2 分层设计需要处理的粒度问题。若将来抽取为 Python 栈层资产，须先去除全部项目上下文并译为英文（回灌禁令见 `rules/project.md` §6）。

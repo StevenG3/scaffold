@@ -26,5 +26,14 @@
 - [x] 跑完 7 条门禁并留存真实输出。
 - [x] 核对 `git diff main -- template/` 为空（零回灌）。
 - [x] 写本 Change Record（`spec.md` / `tasks.md` / `summary.md` / `customization-record.md`），作为审计提交落在全部资产提交之后。
-- [ ] 推送分支、开 Draft PR、记录 CI 结论。
-- [ ] 独立审阅（由审阅方执行；实现方不自评、不合并）。
+- [x] 推送分支、开 Draft PR（#7）、记录 CI 结论（run `30210002988`，success）。
+- [x] 第一轮独立审阅（Request changes，3 项 Important）。
+
+## R1 整改（PR #7 第一轮）
+
+- [x] F3：资产提交先行——修订 `rules/project.md` §2 证据载体条款（`8c355041963d03c677940117b9c227ff02a0b8bb`）。
+- [x] F1：定制记录三行投影 Reusability 改 `project`，Cursor 行 Action 改 `modified`。
+- [x] F2：`summary.md` 与 PR #7 正文把「唯一差异为 origin 印章」限定到 init 时点，并列出最终状态的真实差异。
+- [x] `summary.md` 资产提交清单扩充新的规则修订 SHA（逐个列出，不用范围表示）。
+- [x] 整改后重跑 7 条门禁、零回灌核对、推送并确认新 HEAD 的远端 CI。
+- [ ] 第二轮独立复审（由审阅方执行；实现方不自评、不合并）。
