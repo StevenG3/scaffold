@@ -30,7 +30,7 @@
 6. `python3 .harness/bin/harness.py validate`
 7. `python3 .harness/bin/harness.py adapt --check`
 
-门禁输出须原样记入 Change Record 的 `summary.md`，不得以「已检查」之类的断言代替真实输出。
+门禁证据须记入 Change Record 的 `summary.md`：**每条门禁记录命令原文、命令自身的终态摘要行（如 `unittest` 的 `Ran` / `OK` 行、`validate` 的结论行）与退出码；不要求全量 verbose 输出。** 摘要行必须是命令自身产出的真实文本，不得以「已检查」「均通过」之类的断言代替。
 
 ## 3. 变更审批约定
 
