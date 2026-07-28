@@ -43,22 +43,21 @@
 
 - 运行时间：2026-07-28
 - 绑定：**本记录随其所在提交生效**（提交后以 PR 正文指针的精确 SHA 为准）
-- 上一 HEAD（第 1 步锁定对象）：`30f95e639a3e696d25d5737ddd3c11049ce93251`
+- 前驱 HEAD（第 1 步锁定对象）：`c008666759b4da98e30764558b27102bde4edd09`
 - 角色：实现方自跑（外部第 10 轮 I3(b) 要求）
 
-观察值见下方「本轮观察值」小节；该小节在提交前最后一次重跑后写入。
+> **本节曾自身犯过它要防的病**：上一版的当前条目逐字沿用了前一提交（`bfbd546`）的数值——
+> 脚本 SHA、摘要、定向数全是旧的。会话 C 把它记为本轮首要 Important。
+> 现在的纪律：**当前条目必须在所有内容编辑完成之后、提交之前重跑并粘贴当次实测值**，
+> 继承任何一个数字都视为失效。
 
-### 本轮观察值（提交前最后一次重跑）
+### 本轮观察值（最终内容态重跑）
 
 | 步骤 | 观察值 |
 | --- | --- |
-| 第 1 步 远端锁定 | `state=OPEN` `draft=true` `base=e338db89` `head=30f95e63` `mergeable=MERGEABLE` `mergeState=CLEAN`（锁定的是**上一** HEAD；本次改动尚未提交） |
-| 第 2 步 增量与边界 | 相对 `30f95e63` 的工作树增量：5 个文件 `+101/-48`；`git rev-list --count 30f95e63..HEAD` = **0**（尚未提交，符合「记录先于提交」的约定）；`git diff main -- template/` 输出 **0 行** |
-| 第 5 步 绿灯电池 | `default 0` / `--baseline 0` / `--help 0` / `--emit-markdown PATH 0`；生成物与入库表 `cmp` 逐字节一致；脚本 SHA-256 `3d3c46bf930854b3bc30b13f0e28db173565b39b9be19384773160643984b590`；非 ASCII 字节 **0**；定向 **72/0**；结果摘要 `ada0846f97f145284969731f1f87f5a0fed2bf9c8c11f3b45e5fbad35d915633` |
-| 第 6 步 变异探针 | 穷举投毒（emit）`rc=1`、`does NOT certify` 在场、横幅首行；`--emit-markdown PATH` `rc=1` 且**正式文件逐字节未变**；未抽中输入探针 `digest_changed=False`（**与收窄后的检测范围声明一致**，非缺陷） |
+| 第 1 步 远端锁定 | `state=OPEN` `draft=true` `base=e338db89` `head=c0086667` `mergeable=MERGEABLE` `mergeState=CLEAN`（锁定的是**前驱** HEAD；本次改动尚未提交） |
+| 第 2 步 增量与边界 | 相对 `c008666` 的工作树增量：**4 个文件 `+42/-8`**；`git rev-list --count c008666..HEAD` = **0**（尚未提交，符合「记录先于提交」的约定）；`git diff main -- template/` 输出 **0 行** |
+| 第 5 步 绿灯电池 | `default 0` / `--baseline 0` / `--help 0` / `--emit-markdown PATH 0`；生成物与入库表 `cmp` 逐字节一致；脚本 SHA-256 `5252b103c31cc0bae7a8b8009c472f6fb52634ee02479f9b67ebe6dca2f74cb2`；非 ASCII 字节 **0**；定向 **74/0**；结果摘要 `866f00cd9d56dba1b3bdf9c93760f03e7580e76e83e78ad20776ef7c34ca427f`；红基线 `directed cases: 74, failures: 30` |
+| 第 6 步 变异探针 | 穷举投毒：`--emit-markdown` `rc=1`、`--emit-markdown PATH` `rc=1` 且**正式文件逐字节未变**、横幅为首行；未抽中输入探针 `digest_changed=False`（**与收窄后的检测范围声明一致**，非缺陷） |
 | 第 7 步 七条门禁 | 7/7 exit 0，分流字节数 `27/0, 27/0, 99/0, 0/23862, 0/0, 27/0, 10/0`（第 4 条 stderr 字节数随 `unittest` 动态耗时变化，属该次运行事实） |
-| 第 8 步 复锁 | 见下方「提交后复核」 |
-
-### 提交后复核
-
-推送后由 PR 正文指针给出本记录所在提交的精确 SHA；CI 结论一并记入 `summary.md`。
+| 第 8 步 复锁 | 按约定不入本文件：提交后由 PR 正文给出本记录所在提交的精确 SHA、`git rev-list --count` 与 CI 运行号 |

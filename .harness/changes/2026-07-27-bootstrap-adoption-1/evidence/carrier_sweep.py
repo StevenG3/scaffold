@@ -471,7 +471,8 @@ DIRECTED = [(name, raw, branch, resolve_expectation(raw, spec))
 # independent transcriptions that disagree on ANY fuzz input turn the run red,
 # so the fuzz domain now checks recorded VALUES, not just branch labels --
 # without it, an implementation that recorded garbage for inputs outside the
-# 69 directed cases reproduced the recorded digest exactly and stayed green.
+# directed cases (69 of them at the time; 74 now) reproduced the recorded digest
+# exactly and stayed green.
 # ---------------------------------------------------------------------------
 
 def oracle_carrier(raw):
