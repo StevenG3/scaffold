@@ -776,13 +776,22 @@ def argv_path_checks():
     meaning inverts if it happens to exist. That put ambient filesystem state
     inside a certified verdict layer.
 
-    These cases now build their own directory with mkdtemp(), construct all
-    three shapes inside it, and remove it. target_path_problem() is unchanged --
+    These cases build their own directory with mkdtemp(), construct all three
+    shapes inside it, and remove it. target_path_problem() is unchanged --
     production behaviour was correct; only the self-tests had to stop reading
     shared environment state.
+
+    The construction itself can still fail for reasons outside this process's
+    control -- a restrictive umask makes mkdir() produce an unusable directory,
+    which a later review reproduced as a raw traceback exiting 1, i.e. an
+    environment problem wearing the exit code reserved for a failed verdict.
+    Any OSError here is therefore reported as a NAMED FAILING CHECK inside the
+    argv layer: the certification block still renders, the run is honestly
+    uncertified, and the reason is legible.
     """
-    base = tempfile.mkdtemp(prefix="carrier_sweep-argv-")
+    base = None
     try:
+        base = tempfile.mkdtemp(prefix="carrier_sweep-argv-")
         missing_parent = os.path.join(base, "absent-parent", "out.md")
         directory_target = os.path.join(base, "a-directory")
         os.mkdir(directory_target)
@@ -797,8 +806,12 @@ def argv_path_checks():
             ("writable path accepted",
              parse_args(["--emit-markdown", writable])[2] == "emit"),
         ]
+    except OSError as exc:
+        return [("argv path fixture could not be built (%s: %s)"
+                 % (type(exc).__name__, exc), False)]
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        if base is not None:
+            shutil.rmtree(base, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -806,7 +819,8 @@ def argv_path_checks():
 # ---------------------------------------------------------------------------
 
 USAGE = (
-    "usage: carrier_sweep.py [--baseline | --emit-markdown [PATH]] | [-h|--help]\n"
+    "usage: carrier_sweep.py [--baseline | --emit-markdown [PATH] | -h | --help]\n"\
+    "       PATH is an optional operand of --emit-markdown only.\n"
     "\n"
     "  (no flag)        run every verdict layer and report the certification\n"
     "                   state. Layers: directed cases; comparator, common-cause,\n"
@@ -1588,12 +1602,18 @@ def selftest_certification():
         marker_line, marker_line + "\n" + CERT_VIEW_END, 1)
     checks.append(("premature end sentinel refused",
                    bool(artifact_guard_violations(premature))))
-    late_begin = text_bad.replace(CERT_VIEW_BEGIN, "", 1).replace(
-        marker_line, CERT_VIEW_BEGIN + "\n" + marker_line.replace(
-            marker_line, marker_line), 1)
+    # Late begin: the begin sentinel is MOVED to sit after the layer table, so
+    # the view opens too late and loses the rows it must contain. Feeding a
+    # begin-removed document instead would exercise a different shape.
+    without_begin = text_bad.replace(CERT_VIEW_BEGIN + "\n", "", 1)
+    attestation_anchor = "Self-test attestation for the run that produced this table:"
+    late_begin = without_begin.replace(
+        attestation_anchor, CERT_VIEW_BEGIN + "\n" + attestation_anchor, 1)
     checks.append(("late begin sentinel refused",
-                   bool(artifact_guard_violations(
-                       text_bad.replace(CERT_VIEW_BEGIN + "\n", "", 1)))))
+                   late_begin != without_begin
+                   and bool(artifact_guard_violations(late_begin))))
+    checks.append(("removed begin sentinel refused",
+                   bool(artifact_guard_violations(without_begin))))
     empty_view = text_bad.replace(CERT_VIEW_BEGIN, CERT_VIEW_BEGIN + "\n" + CERT_VIEW_END, 1)
     checks.append(("empty view refused", bool(artifact_guard_violations(empty_view))))
     marker_only = "\n".join([CERT_VIEW_BEGIN, marker_line, CERT_VIEW_END])

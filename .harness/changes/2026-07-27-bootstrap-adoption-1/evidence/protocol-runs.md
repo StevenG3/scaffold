@@ -63,7 +63,7 @@
 > **本节两次犯过它要防的病**：先是逐字沿用前一提交的数值，再是记录了一份
 > 与 Git 不符的差异统计（记 4 文件 `+42/-8`，真实 5 文件 `+60/-27`）。
 > 根因不是粗心，而是**把可导出的统计量抄进记录**——记录与它所在的提交互相追逐，
-> 永远差一步。**去镜像**之后这一类缺陷在结构上不再可能：记录里没有这些数字了。
+> 永远差一步。**去镜像**之后这一类缺陷在结构上**不再可能**：记录里没有这些数字了——第 11 轮删除的是 **Git 可导出**的一类，本轮补上 **脚本可导出**的一类，两者合起来，**当前态数字只存在于机器生成产物中**。
 
 ### 复核者应执行的命令（本记录不抄录其输出）
 
@@ -82,8 +82,8 @@ gh pr view 7 --repo StevenG3/scaffold \
 | --- | --- |
 | 第 1 步 远端锁定 | 锁定前驱 HEAD：`state=OPEN` `draft=true` `mergeable=MERGEABLE` `mergeState=CLEAN`（当次实测） |
 | 第 2 步 增量与边界 | **按去镜像约定不抄录统计量**；`git diff main -- template/` 实测为空（零回灌） |
-| 第 5 步 绿灯电池 | `default 0` / `--baseline 0` / `--help 0` / `--emit-markdown PATH 0`；生成物与入库表 `cmp` 逐字节一致；非 ASCII 字节 **0**；定向 **75/0**；红基线 `directed cases: 75, failures: 30` |
-| 第 5 步 产物不变量 | 脚本 SHA-256 `f4ffcb94994488bedd312e3099d9be81a479cf353a736bcde325cbb02e8bf24b`；结果摘要 `20ad0f5005822570f955e0542e7446b21f962b187c630b08d75d5f1d7f4a6b6d` |
+| 第 5 步 绿灯电池 | `default 0` / `--baseline 0` / `--help 0` / `--emit-markdown PATH 0`；生成物与入库表 `cmp` 逐字节一致；非 ASCII 字节 **0**。**定向数、失败数、红基线数字按去镜像约定不抄录**——运行上述命令，或读机器生成的 `boundary-cases.md` |
+| 第 5 步 产物不变量 | 脚本 SHA-256 `67ffcc8e9aa3eecf1e16cbe37f8c922ecc60469ea200758f6e0a2e1e7518ecbe`；结果摘要 `20ad0f5005822570f955e0542e7446b21f962b187c630b08d75d5f1d7f4a6b6d` |
 | 第 6 步 变异探针 | 穷举投毒：`--emit-markdown` `rc=1`；`--emit-markdown PATH` `rc=1` 且**正式文件逐字节未变**；横幅为首行。未抽中输入探针 `digest_changed=False`（与收窄后的检测范围声明一致，非缺陷） |
 | 第 6 步 结构攻击（本轮新增） | 审阅方反例（end 哨兵前移至 marker 之后、FAIL 行之前）**被拒**；premature end / late begin / 空视图 / 仅 marker / 缺 layer / 缺 attestation 六种形状全部**被拒**；真实非零层在**两个出口**仍 fail closed |
 | 第 7 步 七条门禁 | 7/7 exit 0（分流字节数按去镜像约定不抄录；复核请用 `capture_gate` 包装器实测） |
@@ -91,10 +91,14 @@ gh pr view 7 --repo StevenG3/scaffold \
 
 ### 落地核对清单（本提交声称的每一处修复）
 
-| 声称的修复 | 核对命令（对已提交树） | 期望 |
+命令可直接运行（路径为仓库根相对路径）；期望值写的是**真实期望**，不是「越少越好」。
+
+| 声称的修复 | 核对命令 | 期望 |
 | --- | --- | --- |
-| I1 视图结构完整性校验 | `git show HEAD:<evidence>/carrier_sweep.py \| grep -c "_layer_rows\|_attested_classes"` | ≥ 1 |
-| I1 六种结构攻击回归 | `python3 <evidence>/carrier_sweep.py \| grep -c "refused *PASS"` | 6 |
-| I2 去镜像（记录内无差异统计） | `grep -c "文件 \`+" <evidence>/protocol-runs.md` | 0（仅在说明病灶处以历史口吻出现） |
-| I3 终检与清单入库 | 本节存在于 `protocol-runs.md` | 存在 |
-| Minor 起始哨兵定向用例 | `python3 <evidence>/carrier_sweep.py \| grep -c "begin sentinel literal"` | 1 |
+| 视图结构完整性校验存在 | `grep -c "_layer_rows\|_attested_classes" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py` | ≥ 2 |
+| 结构攻击回归全绿 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| grep -cE "(premature end\|late begin\|removed begin\|empty view\|marker-only\|missing layer row\|missing attestation).*PASS"` | 7 |
+| 去镜像：结果节无当前态脚本数字 | `sed -n '/^## 结果/,/^### 红基线/p' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/run-manifest.md \| grep -cE "定向用例数 \|分支 \(a\) 命中"` | 0 |
+| 去镜像：Git 统计量仅在病灶引述中出现 | `grep -n "+42/-8\|+60/-27" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/protocol-runs.md \| grep -v '^[0-9]*:|'` | 恰 **2** 行：第 14 行（第 11 轮 I2 的病灶描述）与第 64 行（当前条目的引述）。`grep -v '^[0-9]*:|'` 排除本清单自身那一行——**核对命令若把自己算进去，就是又一个自指**。 |
+| umask 韧性 | `( umask 177; python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py >/dev/null 2>&1; echo $? )` 与 `grep -c Traceback` | exit 1 且 traceback 计数 0 |
+| 起始哨兵定向用例 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| grep -c "begin sentinel literal"` | 1 |
+| 无非预期未完成任务 | `grep -c "^- \[ \]" .harness/changes/2026-07-27-bootstrap-adoption-1/tasks.md` | 1（仅剩预期中的后续项） |

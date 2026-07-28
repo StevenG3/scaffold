@@ -12,7 +12,7 @@ Certification state: **CERTIFIED**.
 | comparator self-test | 0 failures, 5 checks executed | PASS |
 | common-cause self-test | 0 failures, 8 checks executed | PASS |
 | argv self-test | 0 failures, 27 checks executed | PASS |
-| certification self-test | 0 failures, 33 checks executed | PASS |
+| certification self-test | 0 failures, 34 checks executed | PASS |
 | exhaustive length 0-2 | 0 mismatches | PASS |
 | sampled length 0-6 | 0 value mismatches, 0 undefined | PASS |
 | unregistered self-test failures | 0 unrecognised failure label(s) | PASS |
@@ -21,7 +21,7 @@ Self-test attestation for the run that produced this table:
 - comparator self-test 5/5 passed.
 - common-cause self-test 8/8 passed.
 - argv self-test 27/27 passed.
-- certification self-test 33/33 passed.
+- certification self-test 34/34 passed.
 <!--CARRIER-SWEEP-CERTIFICATION-VIEW-END-->
 
 Directed cases: **75**, failures: **0**.
