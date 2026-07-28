@@ -181,6 +181,24 @@ def prose_lines(path, lines):
         if quotes % 2 == 1:
             yield number, line
             in_doc = True
+            continue
+        opens_docstring = (
+            stripped.startswith('\"\"\"')
+            or stripped.startswith("'''")
+            or stripped.startswith('r\"\"\"')
+            or stripped.startswith("r'''")
+        )
+        if quotes >= 2 and opens_docstring:
+            # A single-line docstring: """text""" opens and closes on one line,
+            # so the odd-count test never saw it and the line was skipped
+            # entirely. The axis table claimed docstrings were covered, so this
+            # is a gap inside a stated construction guarantee, not an
+            # expansion of the detector. The line must OPEN with the
+            # quotes: a code line that merely contains a triple-quoted
+            # literal -- this file's own self-test variants, say --
+            # stays code, which is the '.py code strings' axis the
+            # carrier table marks open.
+            yield number, line
 
 
 def _strip_exempt(line):
@@ -236,6 +254,8 @@ SELF_TEST_VARIANTS = (
     "参见历史提交 fd8032ca，实测认证自检 9999 项",
     # English prose, for the .py comment domain.
     "# directed cases (69 of them at the time; 9999 now)",
+    # Single-line docstring, the shape C2 showed was never scanned.
+    '    """当前定向用例为 9999"""',
 )
 
 
@@ -257,7 +277,9 @@ def self_test():
     for path in files:
         rel = os.path.relpath(path, RECORD_DIR)
         for variant in SELF_TEST_VARIANTS:
-            injected = variant if not path.endswith(".py") else "# " + variant
+            already_python = variant.lstrip().startswith(("#", '"""'))
+            injected = variant if (not path.endswith(".py") or already_python) \
+                else "# " + variant
             dirty = scan(injections={path: [injected]})
             caught = len(dirty) > len(baseline)
             print("  %-26s variant=%-30s caught=%s" % (rel, variant[:30], caught))

@@ -106,6 +106,32 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 `grep -rn`，拿到全部命中，逐一处置；行号仅用于定位第一处。**
 落地自核清单必须给出每个原违规字符串的**全目录终态**（0 命中，或全部转为历史绑定行）。
 
+### 内容寻址扫描记录（**每轮必填**，空表即视为未执行）
+
+内容寻址纪律写在文档里两轮之后仍被违反——**第九次复发与第六次完全同形**：
+删了两行清单行，却没有对**这两行的断言字符串**做全库 `grep`，于是它们的原文
+继续活在叙事段里，而同一份记录在另一处已把其中一句定性为缺陷。
+
+结论：**纪律必须变成清单里的格子，否则不会被执行。** 本节自 R17 起为固定小节，
+每轮列出：finding 涉及的字符串/模式 × 全库命中数 × 逐处处置终态。
+
+| 字符串 / 模式 | 全库命中 | 逐处处置终态 |
+| --- | --- | --- |
+| `每个被扫文件各注入一次` | 记录正文已清零；仅剩本小节自身的两处引用（本表一行 + 下方核查命令一行） | 叙事段原句改写为历史绑定表述（`历史@c399394`），并注明已被后续轮次两次取代。**核查命令因此排除本文件**——把自己的引用算进命中，就是又一个自指 |
+| `三种记法` | 剩余命中全部带 `历史@` 绑定 | `summary.md` 与 `tasks.md` 各一处，均绑定 `历史@c399394` 并指向现状载体 |
+| `整个 Change Record 目录全部 .md 全文` | 剩余命中全部带 `历史@` 绑定 | 域自 R15 起含 `.py` 注释与 docstring；原句改为当轮历史 + 指向轴表 |
+| 无界句「…只存在于机器生成产物中」（PR 正文复活） | PR 正文一处 | 改为缩面表述：机器保证仅及轴表覆盖域，其余为命令 / 白名单 / 历史绑定 |
+| 单行 docstring 未被扫描（C2） | 实现缺陷，无字符串命中 | 见下方清单行「单行 docstring 覆盖」——已修复并加自检变体 |
+
+核查命令（可复跑）：
+
+```sh
+D=.harness/changes/2026-07-27-bootstrap-adoption-1
+grep -rn "每个被扫文件各注入一次" $D | grep -v protocol-runs.md | wc -l   # 期望 0
+grep -rn "三种记法" $D | grep -v "历史@" | grep -v protocol-runs.md | wc -l   # 期望 0
+grep -rn "整个 Change Record 目录全部" $D | grep -v "历史@" | grep -v protocol-runs.md | wc -l   # 期望 0
+```
+
 ### 落地核对清单（本提交声称的每一处修复）
 
 命令可直接运行（路径为仓库根相对路径）；期望值写的是**真实期望**，不是「越少越好」。
@@ -119,12 +145,11 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 | umask 韧性 | `( umask 177; python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py >/dev/null 2>&1; echo $? )` 与 `grep -c Traceback` | exit 1 且 traceback 计数 0 |
 | 起始哨兵定向用例 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| grep -c "begin sentinel literal"` | 1 |
 | 核查的参数域 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --bogus` | exit 2 |
-| 现刻数字断言：全域终态 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py` | exit 0，并打印扫描到的文件数——域为 Change Record 内**全部 `.md` 与 `.py`**（生成表除外），`.py` 只扫注释与 docstring 行 |
-| 变异验证：真叉积 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test` | **每个文件 × 每个变体**全部 `caught=True`，打印句与实现一致；六个变体含裸数字、逗号格式、反引号包裹、**两条历史豁免逃逸样本**、英文注释形态 |
 | 历史豁免形态 | `grep -c "历史@" .harness/changes/2026-07-27-bootstrap-adoption-1/summary.md` | 非零——历史行已迁移到**显式绑定记号** `历史@<hex>`；旧式「散落 hex + 历史」不再豁免 |
 | 旧式豁免逃逸 | 上条自检中的两个逃逸样本 | 均 `caught=True`（终验给出的原文：引用 commit id 走私现刻数字） |
 | 生成表可字节再生 | `g=$(mktemp); python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py --emit-markdown "$g"; cmp "$g" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/boundary-cases.md` | `cmp` 无输出且 exit 0——入库表与当场再生的字节完全一致 |
 | 现刻数字断言：覆盖域终态 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py` | exit 0，并打印扫描到的文件数与域说明；**声称仅限载体自由度表标记为覆盖的轴**，开放轴见该表 |
 | 变异验证：文件 × 记法叉积 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test` | 每个文件 × 每个变体全部 `caught=True`，打印句与实现一致；变体含裸数字、逗号格式、反引号包裹、两条历史豁免逃逸样本、英文注释形态 |
+| 单行 docstring 覆盖（C2） | `grep -A 14 "^SELF_TEST_VARIANTS" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py \| grep -c '"""'` | 非零——变体集合含单行 docstring 形态。轴表声称「`.py` 注释与 docstring = 覆盖」，而此前该形态从未被扫（三引号同行成对，旧解析只认奇数个），属**已声称覆盖域内的实现缺陷**，已补齐 |
 | 核查器的源码编码 | `python3 -c "import pathlib;print(sum(1 for b in pathlib.Path('.harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py').read_bytes() if b>0x7e))"` | **非零**——该文件不是纯 ASCII，因为它要在定义处逐字列出被禁的中文标记词；纯 ASCII 纪律只约束被哈希存证的 `carrier_sweep.py`，已在其 docstring 中明示 |
 | 无非预期未完成任务 | `grep -c "^- \[ \]" .harness/changes/2026-07-27-bootstrap-adoption-1/tasks.md` | 1（仅剩预期中的后续项） |
