@@ -53,7 +53,7 @@
 
 ---
 
-## 当前条目：R22 最终内容态的机械终检（实现方自跑，C 式）
+## 当前条目：R23 最终内容态的机械终检（实现方自跑，C 式）
 
 > **重跑惯例（R19 起，R22 起有红命令背书）**：本节**每轮必须整体重跑并重写**，
 > 不得沿用上一轮的观察值。节标题带轮次、条目内绑定**当轮**前驱 HEAD。
@@ -68,7 +68,7 @@
 
 - 运行时间：2026-07-29
 - 角色：实现方在最终内容态自跑 C 式机械终检（外部第 11 轮 I3 要求落库）
-- 前驱 HEAD（第 1 步锁定对象）：`4b48fb27`
+- 前驱 HEAD（第 1 步锁定对象）：`c7aa54c1`
 - 绑定：**本记录随其所在提交生效**；该提交的 SHA、`rev-list` 计数与 CI run id 见 PR 正文指针
 
 > **本节两次犯过它要防的病**：先是逐字沿用前一提交的数值，再是记录了一份
@@ -80,8 +80,8 @@
 
 ```sh
 git show --stat HEAD
-git diff --name-status 4b48fb27..HEAD
-git rev-list --count 4b48fb27..HEAD        # 在交付 HEAD 上应为 1
+git diff --name-status c7aa54c1..HEAD
+git rev-list --count c7aa54c1..HEAD        # 在交付 HEAD 上应为一
 git diff --exit-code e338db8936a07b2f102df6fbd0bfa900577545b7...HEAD -- template/
 gh pr view 7 --repo StevenG3/scaffold \
   --json state,isDraft,baseRefOid,headRefOid,mergeable,mergeStateStatus,statusCheckRollup
@@ -93,11 +93,11 @@ gh pr view 7 --repo StevenG3/scaffold \
 | --- | --- |
 | 第 1 步 远端锁定 | 锁定前驱 HEAD：`state=OPEN` `draft=true` `mergeable=MERGEABLE` `mergeState=CLEAN`（当次实测） |
 | 第 2 步 增量与边界 | **按去镜像约定不抄录统计量**；`git diff main -- template/` 实测为空（零回灌） |
-| 第 5 步 绿灯电池 | `default 0` / `--baseline 0` / `--help 0` / `--emit-markdown PATH 0`；生成物与入库表 `cmp` 逐字节一致；源码**无**非 ASCII 字节（`grep -c '[^ -~]'` 输出为空）。**定向数、失败数、红基线数字按去镜像约定不抄录**——运行上述命令，或读机器生成的 `boundary-cases.md` |
-| 第 5 步 产物不变量 | 脚本 SHA-256 与结果摘要**见 `run-manifest.md` 的「本节保留的唯一两个不变量」小节**（R20 起全库唯一抄本，此处不复制）；本轮未触碰该脚本，两值与上一轮一致，由清单的两条守护行当场核对 |
+| 第 5 步 绿灯电池 | `default 0` / `--baseline 0` / `--help 0` / `--emit-markdown PATH 0`；生成物与入库表 `cmp` 逐字节一致；源码**无**非 ASCII 字节（`grep -c '[^ -~]'` 输出为零，与落地清单对应行同口径）。**定向数、失败数、红基线数字按去镜像约定不抄录**——运行上述命令，或读机器生成的 `boundary-cases.md` |
+| 第 5 步 产物不变量 | 脚本 SHA-256 与结果摘要**见 `run-manifest.md` 的「本节保留的唯一两个不变量」小节**（R20 起全库唯一抄本，此处不复制）；R22、R23 两轮均未触碰该脚本，两值不变，由清单的两条守护行当场核对 |
 | 第 6 步 变异探针 | 穷举投毒：`--emit-markdown` `rc=1`；`--emit-markdown PATH` `rc=1` 且**正式文件逐字节未变**；横幅为首行。未抽中输入探针 `digest_changed=False`（与收窄后的检测范围声明一致，非缺陷） |
 | 第 6 步 结构攻击（R14 新增，此后每轮复跑） | 审阅方反例（end 哨兵前移至 marker 之后、FAIL 行之前）**被拒**；premature end / late begin / 空视图 / 仅 marker / 缺 layer / 缺 attestation 六种形状全部**被拒**；真实非零层在**两个出口**仍 fail closed |
-| 第 6 步 过滤器变异（R22 新增） | `dehist.awk` 锚定修正后，对 `protocol-runs.md` 不再致盲（旧写法会把当前条目与落地清单整段抹掉却仍打印零）；`cells.awk` 改以分隔行定基准后，**坏表头行**这一场景由静默放行变为报错。两者的红态均为当场构造样本实测 |
+| 第 6 步 过滤器变异（R22 新增，R23 按实测改写并入库为可复跑样本） | `dehist.awk` 锚定修正后，对 `protocol-runs.md` 不再致盲（旧写法会把该节与落地清单整段抹掉却仍打印零——新旧两版对跑实测）。`cells.awk` 改以分隔行定基准后，三个构造样本的新旧对照为：**缺分隔行**由**零报告**变为报错（这是旧版真正的静默洞）；**坏表头**旧版报错但**归因错行**（以坏表头为基准，反判分隔行与正文行），新版定位到表头行本身；**坏正文行**两版一致 |
 | 第 7 步 七条门禁 | **全部**门禁 exit 0（门禁条目见 `rules/project.md` §2；分流字节数与条目数按去镜像约定不抄录，复核请用 `capture_gate` 包装器实测） |
 | 第 8 步 复锁 | 提交并推送后由 PR 正文指针给出 exact-head 的 SHA 与 CI run id |
 
@@ -141,6 +141,7 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 | `6507a986`（陈旧前驱 HEAD，排除 `历史@` 绑定） | 0 | 该节已重跑，前驱改绑 R22；叙述该缺陷的一处已用 `历史@` 显式绑定 |
 | `R19 最终内容态`（陈旧节标题） | 0 | 该节标题已改为 R22 |
 | `pure ASCII`（英文，排除 `.py` 源码自述） | 0 | 两处源码自述属实现层，其余仅存于历史节内 |
+| `静默放行`（R22 的假机理措辞） | 0 | 三处已按新旧对照改写；仅存于 R23 历史节内，且是「旧版**并非**静默放行」的否定式表述 |
 
 **结构性核查（同一 shell 块，与上表一并复跑）**：
 
@@ -150,6 +151,9 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 | `dehist.awk` 用于 `protocol-runs.md` 后该节仍在 | 恰一处（F4 致盲反例） |
 | `dehist.awk` 用于 `protocol-runs.md` 后「落地核对清单」仍在 | 恰一处（同上） |
 | `cells.awk` 全库表格行格数 | `anomalous rows: 0` |
+| `cells.awk` 三个构造样本 | 坏表头报**表头行本身**；缺分隔行报 `table has no separator row`；坏正文行报正文行 |
+| 前驱守护 `guard.sh` | 在**交付 HEAD** 上 `guard exit=0`；提交前跑必红（前驱要到提交存在后才成立） |
+| 叙事节作用域声明无遗漏 | `grep '^live'` 只剩结构节（`Status` / `Result` / `Verification evidence` / `Exceptions` / `Decision` / `Phase A` / `Phase B` 三节） |
 
 > **域的定义（R21 起，R22 如实化）**：
 > 字面串扫描的域 = 全语料 − 下列排除项：
@@ -252,10 +256,13 @@ scan_corpus "第 13 轮" | wc -l
 scan_corpus "6507a986" | grep -v '历史@' | wc -l   # 显式绑定的引用按既有惯例豁免
 scan_corpus "R19 最终内容态" | wc -l
 scan_corpus "pure ASCII" | grep -v '\.py:' | wc -l
+scan_corpus "静默放行" | wc -l
 
 # 4) 表格行格数一致性。基准列数**从分隔行**（`| --- | --- |`）推导——
 #    它不可能含代码段里的竖线；R21 用块首行定基准，于是表头行自己坏掉时
-#    整张表静默放行。转义过的 `\|` 不计入列数。
+#    整张表以坏表头为基准，反把分隔行和正文行判成异常（归因错行）；
+#    而**缺分隔行**的表在旧写法下零报告——那才是真正的静默洞。
+#    转义过的 `\|` 不计入列数。
 cat > /tmp/cells.awk <<'AWK'
 function cells(s,   k,m) { k=gsub(/\\\|/,"&",s); m=gsub(/\|/,"&",s); return m-k-1 }
 function flush(   i,e) {
@@ -272,6 +279,31 @@ FNR==1  { flush() }
 END     { flush(); print "anomalous rows: " b+0 }
 AWK
 awk -f /tmp/cells.awk $(find $D -name '*.md' | sort)   # 期望 anomalous rows: 0
+
+# 4b) 检测器自身的变异验证：三个构造样本，证明它能红、且归因正确。
+printf '| a | b | c |\n| --- | --- |\n| x | y |\n'  > /tmp/m_header.md   # 坏表头
+printf '| a | b |\n| x | y | z |\n'                  > /tmp/m_nosep.md    # 缺分隔行
+printf '| a | b |\n| --- | --- |\n| x | y | z |\n'  > /tmp/m_body.md     # 坏正文行
+awk -f /tmp/cells.awk /tmp/m_header.md   # 期望：报第一行（表头行本身）
+awk -f /tmp/cells.awk /tmp/m_nosep.md    # 期望：报 table has no separator row
+awk -f /tmp/cells.awk /tmp/m_body.md     # 期望：报第三行
+
+# 末段：前驱守护。本文件「当前条目」一节记录的前驱，必须等于交付提交的父提交。
+#    在**交付 HEAD** 上执行；提交前跑必红，因为前驱要到提交存在后才成立。
+#    命令住在栅栏块而非表格单元格——单元格的转义往返会改坏它（R21 的教训）。
+cat > /tmp/guard.sh <<'SH'
+D=.harness/changes/2026-07-27-bootstrap-adoption-1
+# 锚到带标签的那一行，而不是「前驱 HEAD」这个词——该词在同节的惯例说明里也出现，
+# 只是恰好不含十六进制串。靠「恰好」成立的提取，等于没有锚。
+rec=$(sed -n '/^## 当前条目/,/^### /p' "$D/evidence/protocol-runs.md" \
+      | grep '前驱 HEAD（第 1 步锁定对象）' | grep -oE '[0-9a-f]{8}')
+par=$(git rev-parse --short=8 HEAD^)
+# 两侧都必须非空：根提交无父，空=空 会假绿。理论上不可达（本记录不可能位于根提交），
+# 但守护行的正确性不该依赖「不可达」这种论证。
+test -n "$rec" && test -n "$par" && test "$rec" = "$par"
+echo "guard exit=$?  recorded=$rec  parent=$par"
+SH
+sh /tmp/guard.sh          # 期望 guard exit=0
 ```
 
 
@@ -295,9 +327,10 @@ awk -f /tmp/cells.awk $(find $D -name '*.md' | sort)   # 期望 anomalous rows: 
 | 变异验证：文件 × 记法叉积 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test` | 每个文件 × 每个变体全部 `caught=True`（**变体集合与自检形态见 SSOT 节**），打印句与实现一致；变体含裸数字、逗号格式、反引号包裹、两条历史豁免逃逸样本、英文注释形态 |
 | 单行 docstring 覆盖（C2） | `grep -A 14 "^SELF_TEST_VARIANTS" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py \| grep -c '"""'` | 非零——变体集合含单行 docstring 形态（**覆盖声称见 SSOT 节**）。轴表声称「`.py` 注释与 docstring = 覆盖」，而此前该形态从未被扫（三引号同行成对，旧解析只认奇数个），属**已声称覆盖域内的实现缺陷**，已补齐 |
 | **表格行格数一致（R21 起有命令背书）** | 见本文件「内容寻址扫描记录」小节 shell 块末尾的 `cells.awk`（连同其调用一并入库，可整段复制执行） | **anomalous rows: 0**。表头行的格数即该表期望，随后每行必须相等；未转义的竖线多切一格，本行立即变红。R20 曾声称「全表格行改用 cell-count 核对」而只转义了一处、且**无任何已提交命令背书**——外审用独立解析器一跑就找出三行（`run-manifest.md:261`、`summary.md:508`、`summary.md:597`），均已转义。**命令放在栅栏块而不是表格单元格里**：R21 先把它写进单元格，转义往返把 awk 正则改坏，逐字取出后误报十余行——**能被格式转义改写的命令，不算已交付的命令。** |
-| **当前条目的前驱绑定（R22 起，本轮类修复）** | `test "$(sed -n '/^## 当前条目/,/^### /p' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/protocol-runs.md \| grep '前驱 HEAD' \| grep -oE '[0-9a-f]{8}')" = "$(git rev-parse --short=8 HEAD^)"; echo $?` | **0**（在**交付 HEAD** 上运行；提交前跑必红，因为前驱要到提交存在后才成立）。本节记录的前驱必须等于交付提交的父提交——这一行一红，就说明「当前条目」没跟着这轮重跑。R20、R21 两轮漏跑正是因为该惯例只是**散文义务**：标题停在 R19、前驱停在 历史@6507a986，外审跑 `rev-list` 得到的是三不是一。轮次标签与前驱同处一节，重写本节时必然一起更新，故这一个等式同时守住轮次标签的新鲜度。**「纪律必须变成清单格子」在写下它的那一节上第二次应验。** |
+| **当前条目的前驱绑定（R22 起，R23 移入栅栏块）** | 见本文件「内容寻址扫描记录」小节 shell 块末尾的 `guard.sh`（整段复制即可执行） | **0**（在**交付 HEAD** 上运行；提交前跑必红，因为前驱要到提交存在后才成立）。本节记录的前驱必须等于交付提交的父提交——这一行一红，就说明「当前条目」没跟着这轮重跑。R20、R21 两轮漏跑正是因为该惯例只是**散文义务**：标题停在 R19、前驱停在 历史@6507a986，外审跑 `rev-list` 得到的是三不是一。轮次标签与前驱同处一节，重写本节时必然一起更新，故这一个等式同时守住轮次标签的新鲜度。**「纪律必须变成清单格子」在写下它的那一节上第二次应验。** |
 | **历史节过滤器的锚定（F4 反例）** | `awk -f /tmp/dehist.awk .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/protocol-runs.md \| grep -c '^## 当前条目'`（`/tmp/dehist.awk` 由扫描小节 shell 块生成） | **恰一处**。过滤器只认「`^## ` 节头后紧邻首个非空行」的历史声明；按任意行匹配的旧写法用在本文件上，会把当前条目与落地清单整段抹掉而八个格子照样打印零——**一个会致盲自己的过滤器，比没有过滤器更危险**。 |
 | **外审轮次口径** | `ls docs/reviews/ \| grep -c pr-7` | **11**（= R1–R11，故下一轮外审为**第 12 轮**）。**口径限定**：`docs/reviews/` 是**审阅方所有物**，有意**不纳入版本控制**；因此该命令只在审阅方落盘的工作区里有意义，**fresh clone 上得 0 属预期**，不构成本行变红。此处记录的是口径而非可移植计数。 |
+| **叙事节的作用域声明无遗漏（R23 起）** | `awk '/^## /{h=$0; want=1; next} want && NF {print (($0 ~ /^> \\*\\*本节为该轮历史/) ? "HIST" : "live"), h; want=0}' .harness/changes/2026-07-27-bootstrap-adoption-1/summary.md .harness/changes/2026-07-27-bootstrap-adoption-1/tasks.md \| grep '^live'` | 只应剩**结构节**（`Status` / `Result` / `Verification evidence` / `Exceptions` / `Decision` / `Phase A` / `Phase B` 三节）；**任何叙事节落进这份输出即为违规**。R1 两节此前正是漏了声明，使「历史节内引用构造良性」这句全称对它们不真——**失败方向是假红，安全，但全称句只要有一个反例就不成立**，补声明比缩声称更一致。 |
 | **被存证脚本的纯 ASCII 不变式** | `grep -c '[^ -~]' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py` | **0**。该构造保证在记录中被声称十一轮，却从未有清单守护——第十一次复发正是它被打破（历史标签把非 ASCII 字节写进了被哈希存证的脚本）。**声称了却没有清单行的不变式，等于没有守护。** |
 | **手抄不变量：脚本 SHA 与实际字节一致** | `test "$(shasum -a 256 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| cut -d' ' -f1)" = "$(grep '脚本 SHA-256' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/run-manifest.md \| grep -oE '[0-9a-f]{64}')"; echo $?` | **0**。不变量节记录的 SHA 与当场计算的字节哈希必须相等；脚本一改而抄本未同步，本行立即变红。 |
 | **手抄不变量：SHA 抄本数** | `grep -rn --exclude-dir=__pycache__ "$(shasum -a 256 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| cut -d' ' -f1)" .harness/changes/2026-07-27-bootstrap-adoption-1 \| wc -l` | **恰 1**——即 `run-manifest.md` 的「本节保留的唯一两个不变量」小节。R19 的 Critical 正是同一个值散落三处而只同步了一处；把「有几处抄本」写成可执行期望值，是手抄值唯一可行的守护。 |
