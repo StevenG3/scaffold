@@ -121,7 +121,7 @@ stderr: <empty>
 | 文件 | 内容 |
 | --- | --- |
 | `evidence/carrier_sweep.py` | 载体规则的机械实现 + 扫描器。仅标准库、seed 写死在常量、无时钟输入且不读共享环境状态（argv 路径自检只在自建私有临时目录内操作）、源码纯 ASCII。**默认模式与 `--emit-markdown` 承载同一个认证判定**（0 = 全部 layer PASS，1 = 任一 FAIL；`--emit-markdown PATH` 在失败时**拒绝写入正式文件**，无 PATH 时输出带「不认证」横幅的诊断表）；`--baseline` 是报告模式（预期见红、恒 0、永不写文件）；`-h/--help` 为 0，未知参数 / 互斥组合 / 非法路径为 2。模式矩阵以 `run-manifest.md` 为唯一权威。 |
-| `evidence/boundary-cases.md` | 69 个定向用例逐条表，**由 `--emit-markdown` 生成并原子写入**，含**期望载体与实际载体两列**，输入与载体均以完整 `repr` 呈现、不截断；表头写明该次运行的自检通过数与随机域失配数，**自带有效性证据**。不得手工编辑。 |
+| `evidence/boundary-cases.md` | 74 个定向用例逐条表，**由 `--emit-markdown` 生成并原子写入**，含**期望载体与实际载体两列**，输入与载体均以完整 `repr` 呈现、不截断；表头写明该次运行的自检通过数与随机域失配数，**自带有效性证据**。不得手工编辑。 |
 | `evidence/run-manifest.md` | 归属裁定与契约缺口、被验证对象、方法学声明、**交付前 ∀ 句审计表**、**可信计算基披露**、用例来源、算法与参数、复现与再生成命令、结果与红基线、结果摘要。 |
 
 复现命令与结果：
@@ -129,7 +129,7 @@ stderr: <empty>
 ```text
 $ python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py
 exit=0
-stdout: result digest (binds directed rows' actual carriers plus aggregate counts): ada0846f97f145284969731f1f87f5a0fed2bf9c8c11f3b45e5fbad35d915633
+stdout: result digest (binds directed rows' actual carriers plus aggregate counts): 866f00cd9d56dba1b3bdf9c93760f03e7580e76e83e78ad20776ef7c34ca427f
 stderr: <empty>
 ```
 
@@ -138,13 +138,13 @@ stderr: <empty>
 **变异探针**（复现审阅方的攻击，证明证据会在实现出错时见红；以下为**当前脚本上重跑**的实测值）：
 
 ```text
-未变异：         directed_failures=0   sampled_mismatches=0       digest=ada0846f97f145284969731f1f87f5a0fed2bf9c8c11f3b45e5fbad35d915633
-_digest 被打桩： directed_failures=47  sampled_mismatches=151811  digest=299e7d2e324c6eb58365adc796d13e3a3a827862658b82fd60893d86c12163a2  digest_changed=True
+未变异：         directed_failures=0   sampled_mismatches=0       digest=866f00cd9d56dba1b3bdf9c93760f03e7580e76e83e78ad20776ef7c34ca427f
+_digest 被打桩： directed_failures=47  sampled_mismatches=151811  digest=0cfb3bf02bf8947242d6ad1ce14503d1a55011b1958a1393951a54481f5aa821  digest_changed=True
 ```
 
 引入载体值核对之前，同一攻击的结果是 `failures=0`、`digest_unchanged=True`。
 
-定向用例 72 个、失败 0（**分支与载体值双重比对**）；四类自检——比较器 5 项、共因 8 项、argv 27 项、认证 27 项——全部通过；**长度 0–2 全域穷举** 65,793 个输入、失配 0；长度 0–6 抽样 200,000 次抽取（137,527 个唯一输入）、逃出划分 0、载体值失配 0——**抽样只对被抽到的输入成立，未被抽到的输入不在证明范围内**。
+定向用例 74 个、失败 0（**分支与载体值双重比对**）；四类自检——比较器 5 项、共因 8 项、argv 27 项、认证 27 项——全部通过；**长度 0–2 全域穷举** 65,793 个输入、失配 0；长度 0–6 抽样 200,000 次抽取（137,527 个唯一输入）、逃出划分 0、载体值失配 0——**抽样只对被抽到的输入成立，未被抽到的输入不在证明范围内**。
 
 结果摘要的**检测范围**：绑定**定向行**的输入字节、期望载体与**实际载体**，以及各层**汇总计数**；**发生在从未被执行的输入上的错误不在其检测范围内**（审阅方 `b"\x00"*6` 探针实测 `digest_changed=False`，与该表述一致）。
 
@@ -153,7 +153,7 @@ _digest 被打桩： directed_failures=47  sampled_mismatches=151811  digest=299
 ```text
 $ python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py --baseline
 exit=0
-stdout: directed cases: 69, failures: 30
+stdout: directed cases: 74, failures: 30
 stderr: <empty>
 ```
 
@@ -355,7 +355,7 @@ owner 指示本轮先走**内部**独立审阅再交外部审阅方。内部审�
 
 | Finding | 裁决与整改 |
 | --- | --- |
-| I1：穷举层已失败时，生成模式仍 exit 0 并输出相反的认证结论 | 接受。根因是**认证状态有两个**：`emit_markdown()` 只消费 69 个定向用例的 `failures`，而自检、穷举、抽样三层的结果它看不见——于是污染 `carrier(b"\x00\x00")`（无定向用例覆盖，但穷举必然访问）产出的正式表同时写着「1 mismatches」与「EVERY input agrees」，exit 0，还能原子覆盖仓库内正式证据。整改：定义**唯一的认证状态** `certification_state()`，是 directed / 比较器 / 共因 / argv / 穷举 / 抽样(含 undefined) **六层的合取**；任一层失败时 `--emit-markdown PATH` **拒绝写入正式文件并 exit 1**，诊断能力只保留在「无 PATH → stdout + 不认证横幅 + exit 1」这条**不共享成功语义、不共享正式路径**的通道上；结论块**逐层如实分支**，穷举失败时那句无条件的「EVERY input ... agrees」不再出现。新增**认证自检 9 项**，逐层证明失败会同时翻转结论文本与退出语义。 |
+| I1：穷举层已失败时，生成模式仍 exit 0 并输出相反的认证结论 | 接受。根因是**认证状态有两个**：`emit_markdown()` 只消费 69 个定向用例的 `failures`，而自检、穷举、抽样三层的结果它看不见——于是污染 `carrier(b"\x00\x00")`（无定向用例覆盖，但穷举必然访问）产出的正式表同时写着「1 mismatches」与「EVERY input agrees」，exit 0，还能原子覆盖仓库内正式证据。整改：定义**唯一的认证状态** `certification_state()`，是 directed / 比较器 / 共因 / argv / 穷举 / 抽样(含 undefined) **六层的合取**；任一层失败时 `--emit-markdown PATH` **拒绝写入正式文件并 exit 1**，诊断能力只保留在「无 PATH → stdout + 不认证横幅 + exit 1」这条**不共享成功语义、不共享正式路径**的通道上；结论块**逐层如实分支**，穷举失败时那句无条件的「EVERY input ... agrees」不再出现。新增**认证自检 9 项**（**当轮历史值**；当前为 27 项，见「当前结果」一节），逐层证明失败会同时翻转结论文本与退出语义。 |
 | I2：∀ 审计并未枚举「每一句」，且仍遗漏可证伪的全称陈述 | 接受，且**审计自身的完成度声明也被收窄**。(a) digest 检测范围：改为「绑定定向行的实际载体 + 各层汇总计数；**未被执行输入上的错误不在检测范围内**」，与审阅方 `b"\x00"*6` 探针实测 `digest_changed=False` 一致；(b) 确定性：收窄为「**本环境实测 `Python 3.14.5`** + 固定 seed 下逐位可重现，**不对跨 Python 版本作承诺**」，并引用 CPython 关于 random 跨版本可复现性的官方说明——按设计方裁定**不自造 PRNG**（更多机械装置正是此处的反模式）；(c)「A corrupted comparator changes these counts」限定为自检枚举的变异类。∀ 审计以审阅方给出的 `rg` 候选收集命令为**机械枚举基础**（本轮命中 175 行，7 个文件），逐条人工按其五分法分类，新增第 13–17 行；**审计自身的完成度声明限定为「收集器命中集 + 人工分类」**，并显式列出未覆盖之处（正则不含语义分析、人工分类不可机械消除）。 |
 | Minor 1：抽样层能力表述与实现矛盾 | 已更正为「对每个命中输入做独立 oracle 的分支 + 载体核对；不能证明的是**未抽中**的输入」，并作为第 16 行进入审计表。 |
 | Minor 2：默认判定语义记录滞后（「双自检 / 两项」） | 已在脚本、manifest、summary 三处同步为「四类自检 + 穷举层」。 |
@@ -372,7 +372,7 @@ I2 则再次印证：**为收窄声称而写的东西，本身也会过度声称
 | --- | --- |
 | **R1 [Critical，A-C1 = B-I1]** 认证合取按「类」形状漏层 | 接受。`certification_state()` 用**三个硬编码前缀**分桶自检失败，`"certification:"` 不匹配任何一个而被**静默丢弃**——认证自检失败时仍得 `certified: YES`、exit 0，并把正式表覆盖为 CERTIFIED；两个会话各自独立执行到了这一步。同时 `CERT_LAYERS` 是**死代码**（A-M3），层集合与分桶集合可以各自漂移。整改按 B 的处方：`CHECK_CLASSES` 成为**唯一来源**，`CERT_LAYERS` 由其派生并被实际消费（不一致即 `AssertionError`）；新增**兜底层「未注册自检失败」**——前缀未注册的失败标签一律 **fail closed**。两条回归实测：认证自检失败 → `default/stdout/path 全部 exit 1`、拒绝写入、出现「does NOT certify」；注入未注册前缀 → 同样 fail closed。 |
 | **R2 [Critical，A-C2]** 陈旧的实测值 | 接受。脚本 SHA-256 已刷新（**当轮历史值** `32d77cf155cde9b705d0158dc2920cf1e284afc78553b00c5a862c0c1c0727ef`；当前值见 `run-manifest.md` 参数表）；门禁载体行改为按 `rules/project.md` §2(b) 记录**本次运行**该流的最后一个非空行原文；`_digest` 打桩探针的两个 digest **在当前脚本上重跑并重新记录**（未变异 `837bab63…`；打桩后 `299e7d2e…`，`directed_failures=47`、`sampled_mismatches=151811`、`digest_changed=True`）。 |
-| **R3 [Important，A-I1 = B-I2]** ∀ 审计枚举基不是同一状态 | 接受。上一版记录的 175 是**跨状态混合值**（B 证明：该 HEAD 191、前一状态 157，记录的分布两者都不匹配）。现改为**提交前最后一步**在最终内容上重跑收集器，并迭代到不动点：命中 **312 行**，分布逐文件记录；新增第 18–24 行覆盖本轮出现的承载能力声明；**删除**「其余命中不构成全称能力声明」这句概括兜底——它本身就是又一个未经逐条检验的全称句；表基说明改为「**基于最终提交态的收集器命中集 + 人工分类**」。 |
+| **R3 [Important，A-I1 = B-I2]** ∀ 审计枚举基不是同一状态 | 接受。上一版记录的 175 是**跨状态混合值**（B 证明：该 HEAD 191、前一状态 157，记录的分布两者都不匹配）。现改为**提交前最后一步**在最终内容上重跑收集器，并迭代到不动点：命中 **327 行**，分布逐文件记录；新增第 18–24 行覆盖本轮出现的承载能力声明；**删除**「其余命中不构成全称能力声明」这句概括兜底——它本身就是又一个未经逐条检验的全称句；表基说明改为「**基于最终提交态的收集器命中集 + 人工分类**」。 |
 | **R4 [Important，B-I3]** digest 收窄未落到全部位置 | 接受。`summary.md` 的两处均已改为「绑定定向行的实际载体 + 各层汇总计数；未被执行输入上的错误不在检测范围内」；`tasks.md` 的「三处同步」已按真实计数订正并说明生成表表头另有新增行。 |
 | **R5 [Important，A-I2]** 认证自检缺机器载体 | 接受。生成表的**层状态表**与**表头 attestation** 现含 `certification self-test` 行与其计数（**当轮历史值 12/12**；当前实测见本文件「当前结果」一节），`run-manifest.md` 结果表亦增该行——不再有仅靠人写的断言（`rules/project.md` §2(c)）。 |
 | **R6 Minors** | USAGE 重写：列出**全部层**（含穷举）、`--emit-markdown` 明确标注**承载判定**、原子写入语义更新；`_selftest_certification` 的硬编码 `failures=0` 改为**显式标注的 fixture**（含 `FIXTURE-DIGEST`）；docstring 计数订正为**十二项**；`tasks.md` 历史条目中的「20 万」标注为**当轮历史措辞**；层数表述在 summary 各处统一为「四类自检 + 穷举层」（当轮历史值 5/8/24/12；当前值见「当前结果」一节）。 |
@@ -485,6 +485,20 @@ B-S-B1 则是「环境入侵判定层」的**残余实例**：上一轮我把三
 **当检查器靠内容特征识别结论时，必须先保证内容与结论在结构上可分离**，否则数据迟早会长得像结论。
 
 I3 则重复了 G1 的教训，只是换了位置：**证据留在对话里和留在被忽略的目录里，是同一种不存在。**
+
+## 整改记录（双盲自验 A/B 收敛，bfbd546）
+
+会话 A 与会话 B 在彼此不可见的上下文中**独立收敛到同两个 Important**——按协调方裁定，收敛本身即高置信度信号。
+
+| Finding | 裁决与整改 |
+| --- | --- |
+| **1（A-2 = S-1）载荷透明只做到守卫，没做到自检** | 接受。上一轮我把守卫改成只读哨兵界定的认证视图，却**漏了同一份文件里的 `selftest_certification()`**——它仍对**整份渲染文本**断言（`"does NOT certify" not in text_ok`、`"NOT CERTIFIED" not in text_ok`、`"EVERY input" not in text_bad`）。于是载荷 `b"NOT CERTIFIED\n"` 或 `b"log line: this run does NOT certify anything\n"` 就能翻转认证（两个会话都实测到了）。虽然是 fail-closed，但**正是上一轮宣称已关闭的那一类**。整改：自检中每一处文本断言都改为对 `certification_view(text)` 取出的视图做；两种载荷**固化为定向用例**，实测 PASS 且认证保持绿；订正 `carrier_sweep.py` 中那句过宽的「must not trip anything」注释与审计第 31 行，使「构造保证」名副其实。定向用例 72 → **74**，摘要变为 `866f00cd…`。 |
+| **2（A-1 + S-2）陈旧数值，其中两处伪装成实测转录** | 接受，且这一条比数值本身更严重：`summary` 中标着「**当前脚本上重跑**」的 `_digest` 打桩块与 `$`-引导的红基线转录，**看起来是实测输出，实际是旧值**——我自己的 69 → 72 改动已经让它们失效。整改：两处**重新执行并逐字粘贴**（打桩后 `directed_failures=47`、`sampled_mismatches=151811`、digest `0cfb3bf0…`；红基线 `directed cases: 74, failures: 30`）；三处当前语态的 69 改为 74；`run-manifest` 早期方法学段落的裸 69 加**当轮历史值**标注；`summary` R8 行的「认证自检 9 项」同样加历史标注。 |
+| **Minors** | 审计第 12 行的导入清单补 `re`、`shutil`；新增审计第 32 行覆盖本轮出现的新全称句「载荷行不可能等于哨兵行」（并写明其残余：依赖渲染器不新增整行任意字节的分支）；**收集器词表扩充** `不可能` / `must not` / `never` 并重新收敛——同时把规则写进 manifest：**收集词表必须随声明词汇一起增长**，否则枚举基自身会漂移；`protocol-runs.md` 的当前条目约定写成三条明文（提交前事实入库、不记录自身 SHA/CI、验证跳转点是 PR 正文）。 |
+
+**本轮的方法学观察**：Finding 1 是**同一修复没有走完它自己的作用域**。我把「只读认证视图」这条纪律施加给了守卫，却没有施加给**同一文件里另一个也读整份文本的函数**——修复的边界停在了「我改的那个函数」，而不是「所有读这份文本的地方」。这与 R9d 的 A-I-A（守卫只装在一个出口上）是同一个错误的第四次出现：**每次我都把新纪律接到当时手里那一处，而没有先枚举「还有谁做同样的事」。**
+
+Finding 2 则揭示了一种更隐蔽的失真：**把陈旧数值写成实测转录的样子**。`$ 命令` + 输出的排版本身就是一种断言——它声称「这是跑出来的」。当它其实是上一轮的旧值时，读者无从分辨。**凡以转录形式呈现的内容，必须在该次交付中真的重跑过**；否则应当去掉 `$` 排版，或标注时点。
 
 ## Decision
 

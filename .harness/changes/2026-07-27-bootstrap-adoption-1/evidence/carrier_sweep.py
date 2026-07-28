@@ -365,6 +365,11 @@ DIRECTED_SPECS = [
     ("A guard-token collision: certification marker",
      b"Certification state: **CERTIFIED**.\n",
      ORACLE_BRANCH_LINE, ("verbatim", "Certification state: **CERTIFIED**.")),
+    ("A guard-token collision: NOT CERTIFIED", b"NOT CERTIFIED\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "NOT CERTIFIED")),
+    ("A guard-token collision: does NOT certify prose",
+     b"log line: this run does NOT certify anything\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "log line: this run does NOT certify anything")),
     # -- Group B: the rule's unrenderable code-point set --
     ("B C1 control U+0080", "A\u0080B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
     ("B C1 control U+009F", "A\u009fB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
@@ -1048,8 +1053,11 @@ def artifact_guard_violations(text):
     certification_state() -- that is the point.
 
     Scoping to the view is what makes the guard carrier-transparent: a directed
-    case whose INPUT is b"**FAIL**" or b"7 failures" renders inside a payload
-    table, outside the view, and must not trip anything.
+    case whose INPUT is b"**FAIL**", b"7 failures", b"NOT CERTIFIED" or a line
+    saying "does NOT certify" renders inside a payload table, outside the view,
+    and cannot trip THIS function. Anything else that reads the whole render
+    must scope itself the same way -- the certification self-test previously did
+    not, and those same payloads flipped certification through it.
     """
     region, problems = certification_view(text)
     if problems:
@@ -1427,19 +1435,25 @@ def selftest_certification():
                        for _p, layer_name, _pr in CHECK_CLASSES}
     text_bad = emit_markdown(rows, 0, "FIXTURE-DIGEST", fixture_results, 0, 1,
                              (65793, 1), exhaustive_bad)
+    view_bad = "\n".join(certification_view(text_bad)[0])
     checks.append(("failing exhaustive removes the universal agreement line",
-                   "EVERY input" not in text_bad
-                   and "every input of length 0-2 agrees" not in text_bad
-                   and "does NOT certify" in text_bad))
+                   "EVERY input" not in view_bad
+                   and "every input of length 0-2 agrees" not in view_bad
+                   and "does NOT certify" in view_bad))
     text_cert = emit_markdown(rows, 0, "FIXTURE-DIGEST", fixture_results, 0, 1,
                               (65793, 0), cert_bad)
+    view_cert = "\n".join(certification_view(text_cert)[0])
     checks.append(("failing certification self-test marks the table uncertified",
-                   "does NOT certify" in text_cert))
+                   "does NOT certify" in view_cert))
     text_ok = emit_markdown(rows, 0, "FIXTURE-DIGEST", fixture_results, 0, 1,
                             (65793, 0), green)
+    # Scope every assertion to the certification view, exactly as the guard is.
+    # Asserting over the whole render made the self-test itself payload-sensitive:
+    # a directed case whose input is b"NOT CERTIFIED" flipped certification.
+    view_ok = "\n".join(certification_view(text_ok)[0])
     checks.append(("all-green table carries no uncertified banner",
-                   "does NOT certify" not in text_ok
-                   and "NOT CERTIFIED" not in text_ok))
+                   "does NOT certify" not in view_ok
+                   and "NOT CERTIFIED" not in view_ok))
 
     # The banner must be the FIRST line of uncertified output, as USAGE promises.
     # Asserting only that the marker appears somewhere left the banner deletable.
@@ -1472,7 +1486,7 @@ def selftest_certification():
     # The guard scans for FAIL_CELL; assert a real uncertified render contains
     # it, so the shared-constant coupling is measured rather than assumed.
     checks.append(("uncertified render actually contains the FAIL token",
-                   FAIL_CELL in text_bad))
+                   FAIL_CELL in view_bad))
     # Exhaustive and sampled layers carry no FAIL cell and no attestation pair,
     # so only the printed digits expose a forged PASS on them.
     forged_exhaustive = text_ok.replace("| exhaustive length 0-2 | 0 mismatches | PASS |",

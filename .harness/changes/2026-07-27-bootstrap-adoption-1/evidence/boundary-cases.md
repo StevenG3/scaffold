@@ -24,7 +24,7 @@ Self-test attestation for the run that produced this table:
 - certification self-test 27/27 passed.
 <!--CARRIER-SWEEP-CERTIFICATION-VIEW-END-->
 
-Directed cases: **72**, failures: **0**.
+Directed cases: **74**, failures: **0**.
 A case passes only if BOTH its branch and its carrier value match the
 independently constructed expectation, byte for byte. Inputs and
 carriers are shown in full and are never truncated.
@@ -36,7 +36,7 @@ enumerate (wrong SHA, wrong byte count, wrong verbatim line, wrong
 branch, wrong empty carrier, one-sided set or label edits); no claim
 is made about mutation classes outside that enumeration.
 
-Result digest: `ada0846f97f145284969731f1f87f5a0fed2bf9c8c11f3b45e5fbad35d915633`
+Result digest: `866f00cd9d56dba1b3bdf9c93760f03e7580e76e83e78ad20776ef7c34ca427f`
 
 ## A group -- declared adversarial byte domain (process section 2.3)
 
@@ -61,6 +61,8 @@ Result digest: `ada0846f97f145284969731f1f87f5a0fed2bf9c8c11f3b45e5fbad35d915633
 | guard-token collision: defect count | `b'7 failures\n'` | `(b) last-non-empty-line verbatim` | `'7 failures'` | `(b) last-non-empty-line verbatim` | `'7 failures'` | PASS |
 | guard-token collision: FAIL cell | `b'**FAIL**\n'` | `(b) last-non-empty-line verbatim` | `'**FAIL**'` | `(b) last-non-empty-line verbatim` | `'**FAIL**'` | PASS |
 | guard-token collision: certification marker | `b'Certification state: **CERTIFIED**.\n'` | `(b) last-non-empty-line verbatim` | `'Certification state: **CERTIFIED**.'` | `(b) last-non-empty-line verbatim` | `'Certification state: **CERTIFIED**.'` | PASS |
+| guard-token collision: NOT CERTIFIED | `b'NOT CERTIFIED\n'` | `(b) last-non-empty-line verbatim` | `'NOT CERTIFIED'` | `(b) last-non-empty-line verbatim` | `'NOT CERTIFIED'` | PASS |
+| guard-token collision: does NOT certify prose | `b'log line: this run does NOT certify anything\n'` | `(b) last-non-empty-line verbatim` | `'log line: this run does NOT certify anything'` | `(b) last-non-empty-line verbatim` | `'log line: this run does NOT certify anything'` | PASS |
 
 ## B group -- the rule's unrenderable code-point set, plus visible neighbours
 
@@ -137,7 +139,7 @@ Result digest: `ada0846f97f145284969731f1f87f5a0fed2bf9c8c11f3b45e5fbad35d915633
 
 ## Conclusion
 
-- Directed: all 72 cases match BOTH their expected branch and
+- Directed: all 74 cases match BOTH their expected branch and
   their expected carrier value.
 - Exhaustive: every input of length 0-2 (65793 of them) agrees with
   the oracle. This universal claim is made over that subdomain only.
