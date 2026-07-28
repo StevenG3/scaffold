@@ -16,16 +16,17 @@ Certification state: **CERTIFIED**.
 | sampled length 0-6 | 0 value mismatches, 0 undefined | PASS |
 | unregistered self-test failures | 0 unrecognised failure label(s) | PASS |
 
-Directed cases: **69**, failures: **0**.
-A case passes only if BOTH its branch and its carrier value match the
-independently constructed expectation, byte for byte. Inputs and
-carriers are shown in full and are never truncated.
-
 Self-test attestation for the run that produced this table:
 - comparator self-test 5/5 passed.
 - common-cause self-test 8/8 passed.
 - argv self-test 27/27 passed.
 - certification self-test 27/27 passed.
+
+Directed cases: **69**, failures: **0**.
+A case passes only if BOTH its branch and its carrier value match the
+independently constructed expectation, byte for byte. Inputs and
+carriers are shown in full and are never truncated.
+
 Exhaustive sweep of all 65793 inputs of length 0-2: 0 mismatches.
 Sampled sweep: 200000 draws over lengths 0-6, 137527 unique inputs, 0 value mismatches.
 These counts change under the mutation classes the self-tests
