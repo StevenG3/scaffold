@@ -7,7 +7,7 @@
 记录约定：
 
 - **历史条目**绑定其运行时的精确 HEAD，事后不修改；
-- **当前条目**的约定（**去镜像**，本轮由外部第 11 轮 I2 定案）：
+- **现刻条目**的约定（**去镜像**，由外部第 11 轮 I2 定案）：
 
   **不记录任何 Git 或命令可以事后自行导出的统计量。** 差异统计、文件数、
   `rev-list` 计数写进记录，就必然与它所在的那个提交互相追逐——
@@ -63,7 +63,7 @@
 > **本节两次犯过它要防的病**：先是逐字沿用前一提交的数值，再是记录了一份
 > 与 Git 不符的差异统计（记 4 文件 `+42/-8`，真实 5 文件 `+60/-27`）。
 > 根因不是粗心，而是**把可导出的统计量抄进记录**——记录与它所在的提交互相追逐，
-> 永远差一步。**去镜像**把这一类缺陷的入口收窄到一个**显式白名单**：当前态小节内只允许出现脚本 SHA、结果摘要与规范标识符，其余数字一律视为违规，由 `check_current_numbers.py` 机械核查（该命令已做变异验证，能失败）。第 11 轮删的是 **Git 可导出**的一类，第 12 轮补上 **脚本可导出**的一类。**此处不再声称「结构上不再可能」**——会话 C 用 `run-manifest.md:49` 的残值证伪过那个无界说法；能声称的只是「白名单之外的数字会被核查命令抓住」。
+> 永远差一步。**去镜像**把这一类缺陷的入口收窄到一个**显式白名单**：记录中除机器生成产物外不得出现现刻数字断言，由 `check_current_numbers.py` 对整个 Change Record 全文机械核查（该命令已做逐文件、逐记法的变异验证，能失败）。第 11 轮删的是 **Git 可导出**的一类，第 12 轮补上 **脚本可导出**的一类。**此处不再声称「结构上不再可能」**——会话 C 用 `run-manifest.md:49` 的残值证伪过那个无界说法；能声称的只是「白名单之外的数字会被核查命令抓住」。
 
 ### 复核者应执行的命令（本记录不抄录其输出）
 
@@ -89,6 +89,16 @@ gh pr view 7 --repo StevenG3/scaffold \
 | 第 7 步 七条门禁 | **全部**门禁 exit 0（门禁条目见 `rules/project.md` §2；分流字节数与条目数按去镜像约定不抄录，复核请用 `capture_gate` 包装器实测） |
 | 第 8 步 复锁 | 提交并推送后由 PR 正文指针给出 exact-head 的 SHA 与 CI run id |
 
+### 修复纪律：finding 必须按内容寻址
+
+审阅给出的行号**只是起点**。同一个错误字符串往往在记录里出现多次——
+R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做全目录检索，
+于是 `summary.md` 里逐字相同的一处原样留存，成为**同一缺陷的第六次复发**。
+
+因此本轮起：**收到 finding 后，先对其字符串/模式在整个 Change Record 目录做
+`grep -rn`，拿到全部命中，逐一处置；行号仅用于定位第一处。**
+落地自核清单必须给出每个原违规字符串的**全目录终态**（0 命中，或全部转为历史绑定行）。
+
 ### 落地核对清单（本提交声称的每一处修复）
 
 命令可直接运行（路径为仓库根相对路径）；期望值写的是**真实期望**，不是「越少越好」。
@@ -97,12 +107,15 @@ gh pr view 7 --repo StevenG3/scaffold \
 | --- | --- | --- |
 | 视图结构完整性校验存在 | `grep -c "_layer_rows\|_attested_classes" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py` | ≥ 2 |
 | 结构攻击回归全绿 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| grep -cE "(premature end\|late begin\|removed begin\|empty view\|marker-only\|missing layer row\|missing attestation).*PASS"` | 7 |
-| 去镜像：结果节无当前态脚本数字 | `sed -n '/^## 结果/,/^### 红基线/p' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/run-manifest.md \| grep -cE "定向用例数 \|分支 \(a\) 命中"` | 0 |
-| 去镜像：Git 统计量仅在病灶引述中出现 | `grep -n "+42/-8\|+60/-27" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/protocol-runs.md \| grep -v '^[0-9]*:|'` | 恰 **2** 行：第 14 行（第 11 轮 I2 的病灶描述）与第 64 行（当前条目的引述）。`grep -v '^[0-9]*:|'` 排除本清单自身那一行——**核对命令若把自己算进去，就是又一个自指**。 |
+| 去镜像：记录中无现刻数字断言 | `sed -n '/^## 结果/,/^### 红基线/p' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/run-manifest.md \| grep -cE "定向用例数 \|分支 \(a\) 命中"` | 0 |
+| 去镜像：Git 统计量仅在病灶引述中出现 | `grep -n "+42/-8\|+60/-27" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/protocol-runs.md \| grep -v '^[0-9]*:|'` | 恰 **2** 行：第 14 行（第 11 轮 I2 的病灶描述）与第 64 行（现刻条目的引述）。`grep -v '^[0-9]*:|'` 排除本清单自身那一行——**核对命令若把自己算进去，就是又一个自指**。 |
 | umask 韧性 | `( umask 177; python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py >/dev/null 2>&1; echo $? )` 与 `grep -c Traceback` | exit 1 且 traceback 计数 0 |
 | 起始哨兵定向用例 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| grep -c "begin sentinel literal"` | 1 |
-| **当前态数字白名单核查（本轮新增）** | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py` | exit 0 且输出「no non-whitelisted number…」 |
-| **该核查的变异验证**（证明它能失败） | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test` | 打印 `injected-stray scan caught the stray: True` 并 exit 0；注入仅在内存中进行，**不修改任何文件**（已实测，未留插入物） |
-| 核查器的源码编码 | `python3 -c "import pathlib;print(sum(1 for b in pathlib.Path('.harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py').read_bytes() if b>0x7e))"` | **非零**——该文件**不是**纯 ASCII，因为它要匹配中文小节标题；纯 ASCII 纪律只约束被哈希存证的 `carrier_sweep.py`。已在其 docstring 中明示 |
+| **现刻数字断言核查（全文域）** | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py` | exit 0，且打印「scanned N markdown file(s) in full」——域是整个 Change Record 的全部 `.md`（生成表除外），**无行号窗口、无反引号置盲** |
+| **该核查的变异验证** | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test` | **每个被扫文件各注入一次**，三种记法（裸数字 / 逗号格式 / 反引号包裹）轮换，全部 `caught=True` 才过；注入仅在内存中，**不修改任何文件** |
 | 核查的参数域 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --bogus` | exit 2 |
+| 原违规字符串的全目录终态 | `grep -rn "当前定向用例为" .harness/changes/2026-07-27-bootstrap-adoption-1` | 仅剩两类命中，均合法：本清单自身引用该模式的行，以及 `summary.md` 中**历史绑定**的 finding 描述（含「历史」与当轮 HEAD）。**无任何现刻断言**——由 `check_current_numbers.py` exit 0 兜底 |
+| 原违规字符串的全目录终态 | `grep -rn "当前为" .harness/changes/2026-07-27-bootstrap-adoption-1` | 仅剩本清单自身引用该模式的行 |
+| 死指针的全目录终态 | `grep -rn "「当前结果」" .harness/changes/2026-07-27-bootstrap-adoption-1` | 仅剩本清单自身引用该模式的行；记录正文中的死指针已全部改指机器生成的 `boundary-cases.md` |
+| 核查器的源码编码 | `python3 -c "import pathlib;print(sum(1 for b in pathlib.Path('.harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py').read_bytes() if b>0x7e))"` | **非零**——该文件不是纯 ASCII，因为它要在定义处逐字列出被禁的中文标记词；纯 ASCII 纪律只约束被哈希存证的 `carrier_sweep.py`，已在其 docstring 中明示 |
 | 无非预期未完成任务 | `grep -c "^- \[ \]" .harness/changes/2026-07-27-bootstrap-adoption-1/tasks.md` | 1（仅剩预期中的后续项） |

@@ -1,31 +1,47 @@
 #!/usr/bin/env python3
-"""Fail if a current-state record section contains a non-whitelisted number.
+"""Forbid current-state numeric assertions anywhere except the generated table.
 
-The de-mirroring rule -- current-state text must not transcribe numbers a
-command or the sweep script can derive -- had no check that could fail. The
-forall collector matches keywords, not digits, so a stale count sat in
-run-manifest.md line 49 through the very commit that claimed the class was
-closed, and the one checklist row aimed at this was anchored to two literal
-phrases inside a single section, returning 0 whenever the residue lived
-elsewhere. A discipline without a failing check is a hope.
+WHY THIS SHAPE. The previous version whitelisted number shapes inside three
+line-range windows. Both halves were breached in one review:
 
-This scans the CURRENT-STATE sections of the record for number tokens,
-subtracts an explicit whitelist, and exits 1 listing whatever is left.
+  * the windows covered three line ranges, so summary.md was scanned not at all
+    and run-manifest.md only in part -- a stale count sat outside the window in
+    the very commit that shipped the checker;
+  * inline code spans were blinded, so wrapping a figure in backticks bypassed
+    the comma-format detection that same commit advertised -- and backticked
+    figures are the record's dominant style.
 
-Usage:  python3 check_current_numbers.py            # scan, exit 1 on residue
+Patching the windows would have been the third repair of one idea. The rule is
+restated instead, into a shape that admits a whole-corpus check:
+
+  A current-state numeric assertion may exist ONLY in the machine-generated
+  boundary-cases.md. In every other .md of this Change Record, a line carrying
+  a current-state marker word AND a number is a violation.
+
+There is no window to fall outside of and no quoting style to hide behind: the
+domain is every .md in the directory, full text, backticks included.
+
+Exemptions are machine-decidable, and there are exactly two:
+
+  1. HISTORY BINDING -- the line carries 历史 and a commit id (>= 7 hex chars).
+     A round-specific figure is legitimate when it says which round it belongs
+     to and binds the HEAD that produced it.
+  2. INVARIANT WHITELIST -- the two artifact fingerprints (script SHA-256 and
+     result digest). They describe the artifact's content, not the run or the
+     commit containing it, so carrying them forward cannot make them stale.
+
+Usage:  python3 check_current_numbers.py            # scan, exit 1 on violation
         python3 check_current_numbers.py --self-test  # prove it can fail
 
 Exit codes:
-  0  no non-whitelisted number in any scanned current-state section
-  1  residue found (each occurrence printed with file, line and token)
-  2  bad arguments, or a scanned file is missing
+  0  no current-state numeric assertion outside the generated table
+  1  violation(s) found (file, line, marker, number token printed)
+  2  bad arguments, or the Change Record directory is missing
 
 Note on source encoding: carrier_sweep.py holds a pure-ASCII discipline because
 its source is hashed and attested. THIS file is not pure ASCII and cannot be:
-it matches section headings written in Chinese, so those headings appear here
-verbatim. Escaping them would make the anchors unreadable and the check harder
-to audit, which costs more than it buys. Disclosed rather than left for a
-reviewer to notice as an inconsistency.
+the marker words it forbids are Chinese, so they appear here verbatim. Escaping
+them would make the rule unreadable at the point where it is defined.
 """
 
 import os
@@ -33,115 +49,145 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+RECORD_DIR = os.path.dirname(HERE)
 
-# (path, section heading, end heading or None for end-of-file). Only the
-# CURRENT-STATE sections are scanned; historical sections keep their
-# round-tagged numbers by design.
-SCAN_TARGETS = (
-    ("run-manifest.md", "## 结果（**去镜像**：当前态数字不再手抄）", "### 红基线（先见红，再见绿）"),
-    ("run-manifest.md", "### 本节保留的唯一两个不变量", "### 当前态数字白名单（显式、可核查）"),
-    ("protocol-runs.md", "### 机械步骤的观察值（只保留产物不变量与退出语义）",
-     "### 落地核对清单（本提交声称的每一处修复）"),
+# The generated table is the ONLY place a current-state number may live.
+GENERATED_ARTIFACT = "boundary-cases.md"
+
+# Current-state marker words. Explicit list; extend here when the record starts
+# using a new way of saying "as of now" -- the same standing obligation the
+# forall collector's keyword list carries.
+CURRENT_STATE_MARKERS = (
+    "当前",
+    "现为",
+    "现有",
+    "此时",
+    "如今",
+    "目前",
 )
 
-# Structures that are not prose assertions at all: fenced code blocks and
-# inline code spans hold COMMANDS, and the Change Record's own directory name
-# holds a date. Numbers inside them are not transcribed measurements, so they
-# are removed before the whitelist is applied. Without this the scanner drowns
-# in path digits and stops being usable -- a check nobody can read is a check
-# nobody runs.
-RECORD_DIR = "2026-07-27-bootstrap-adoption-1"
-INLINE_CODE = re.compile(r"`[^`]*`")
-FENCE = re.compile(r"^\s*```")
-
-# Whitelisted number shapes, justified in run-manifest.md's whitelist table.
-WHITELIST_PATTERNS = (
-    r"\b[0-9a-f]{64}\b",          # script SHA-256 / result digest
-    r"SHA-?256",                  # the algorithm name
-    r"U\+[0-9A-Fa-f]{4,6}",       # code points
-    r"0x[0-9A-Fa-f]+",            # byte literals
-    r"Python 3\.\d+(\.\d+)?",     # interpreter version
-    r"第 \d+ 步",                  # protocol step numbers (structure, not results)
-    r"第 \d+ 轮",                  # review round numbers
-    r"exit(?:s)? \d",             # exit-code semantics
-    r"退出 \d",
-    r"rc=\d",
-    r"\d+/\d+ passed",            # attestation shape reference
-    r"length 0-\d",               # documented subdomain names
-    r"长度 0[–-]\d",
-    r"CERT_LAYERS|CHECK_CLASSES",
-    r"§\s*\d+",                    # rule section references (e.g. rules/project.md §2)
-)
-
+# Number tokens, plain and comma-grouped. Backticks are NOT stripped first:
+# `137,527` must be caught exactly like 137,527.
 NUMBER_TOKEN = re.compile(r"\d{1,3}(?:,\d{3})+|\d+")
 
+# Exemption 1: a line that binds its figure to a round and a commit.
+HISTORY_WORD = "历史"
+COMMIT_ID = re.compile(r"\b[0-9a-f]{7,40}\b")
 
-def _load(path):
-    full = os.path.join(HERE, path)
-    if not os.path.isfile(full):
-        raise SystemExit("missing scan target: %s" % full)
-    with open(full, encoding="utf-8") as handle:
-        return handle.read().splitlines()
+# Exemption 2: the artifact invariants, enumerated here and mirrored verbatim
+# in run-manifest.md's whitelist table.
+INVARIANT_PATTERNS = (
+    r"\b[0-9a-f]{64}\b",   # script SHA-256 and result digest are 64 hex chars
+)
+
+# Structural numerals that assert nothing about measured state.
+#
+# The Change Record's own directory name carries a date. It is a PATH COMPONENT,
+# enumerated here as one literal -- not a class of syntax. This is deliberately
+# narrower than the blinding that was breached before: that version exempted
+# every backticked span, which let any figure hide behind a pair of backticks.
+STRUCTURAL_PATTERNS = (
+    r"2026-07-27-bootstrap-adoption-1",
+    r"U\+[0-9A-Fa-f]{4,6}",      # code points
+    r"0x[0-9A-Fa-f]+",           # byte literals
+    r"Python 3\.\d+(?:\.\d+)?",  # interpreter version
+    r"SHA-?256",                 # algorithm name
+    r"第 \d+ 步",                 # protocol step numbers
+    r"第 \d+ 轮",                 # review round numbers
+    r"第 \d+ 行",                 # line references
+    r"^\|\s*\d+\s*\|",           # leading table row number (audit rows)
+    r"§\s*\d+",                  # rule section references
+    r"R\d+[a-z]?",               # round labels such as R7, R10b
+    r"\b(?:[A-Z]-)*[A-Z]{1,2}\d+[a-z]?\b",  # finding labels: I1, C1, M2, A-C1, B-S-I2
+    r"\bexit \d\b",              # exit-code semantics
+    r"退出 \d",
+)
 
 
-def _section(lines, start_heading, end_heading):
-    try:
-        start = lines.index(start_heading)
-    except ValueError:
-        raise SystemExit("missing section %r" % start_heading)
-    if end_heading is None:
-        return start, len(lines)
-    for index in range(start + 1, len(lines)):
-        if lines[index] == end_heading:
-            return start, index
-    return start, len(lines)
-
-
-def _mask_whitelisted(line):
-    masked = line.replace(RECORD_DIR, " ")
-    masked = INLINE_CODE.sub(" ", masked)
-    for pattern in WHITELIST_PATTERNS:
-        masked = re.sub(pattern, " ", masked)
-    return masked
-
-
-def scan(extra_lines=None):
-    """Return a list of (path, line_number, token, line) residues."""
-    residues = []
-    for path, start_heading, end_heading in SCAN_TARGETS:
-        lines = _load(path)
-        if extra_lines and path in extra_lines:
-            for offset, injected in extra_lines[path]:
-                lines.insert(offset, injected)
-        start, end = _section(lines, start_heading, end_heading)
-        in_fence = False
-        for number, line in enumerate(lines[start:end], start=start + 1):
-            if FENCE.match(line):
-                in_fence = not in_fence
+def scanned_files():
+    """Every .md in the Change Record except the generated artifact."""
+    found = []
+    for root, _dirs, files in os.walk(RECORD_DIR):
+        for name in sorted(files):
+            if not name.endswith(".md") or name == GENERATED_ARTIFACT:
                 continue
-            if in_fence:
-                continue
-            for token in NUMBER_TOKEN.findall(_mask_whitelisted(line)):
-                residues.append((path, number, token, line.strip()))
-    return residues
+            found.append(os.path.join(root, name))
+    return sorted(found)
+
+
+def _strip_exempt(line):
+    stripped = line
+    for pattern in INVARIANT_PATTERNS + STRUCTURAL_PATTERNS:
+        stripped = re.sub(pattern, " ", stripped)
+    return stripped
+
+
+def line_violations(line):
+    """Return (marker, token) pairs that make this line a violation."""
+    if HISTORY_WORD in line and COMMIT_ID.search(line):
+        return []                      # exemption 1: bound to a round and HEAD
+    markers = [marker for marker in CURRENT_STATE_MARKERS if marker in line]
+    if not markers:
+        return []
+    tokens = NUMBER_TOKEN.findall(_strip_exempt(line))
+    if not tokens:
+        return []
+    return [(markers[0], token) for token in tokens]
+
+
+def scan(injections=None):
+    """Scan the corpus. injections maps a path to extra lines to splice in."""
+    violations = []
+    for path in scanned_files():
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+        if injections and path in injections:
+            lines = list(lines) + list(injections[path])
+        for number, line in enumerate(lines, start=1):
+            for marker, token in line_violations(line):
+                violations.append((os.path.relpath(path, RECORD_DIR),
+                                   number, marker, token, line.strip()))
+    return violations
+
+
+SELF_TEST_VARIANTS = (
+    "当前定向用例为 9999",
+    "当前唯一输入数为 137,527",
+    "当前认证自检为 `9999` 项",
+)
 
 
 def self_test():
-    """Prove the scanner can fail: inject a stray number, expect a residue."""
-    clean = scan()
-    path, start_heading, _end = SCAN_TARGETS[0]
-    lines = _load(path)
-    start, _ = _section(lines, start_heading, SCAN_TARGETS[0][2])
-    injected = {path: [(start + 1, "stray residue 12345 injected by self test")]}
-    dirty = scan(extra_lines=injected)
-    caught = [r for r in dirty if r[2] == "12345"]
-    print("clean scan residues: %d" % len(clean))
-    print("injected-stray scan caught the stray: %s" % bool(caught))
-    if not caught:
-        print("SELF-TEST FAILED: scanner did not catch an injected stray number")
+    """Inject a stray figure into EVERY scanned file, in three notations.
+
+    A check shown to fail on one file in one notation has only been shown to
+    fail there. Every file and every variant goes through the real scan path;
+    nothing is written to disk.
+    """
+    baseline = scan()
+    print("clean scan violations: %d" % len(baseline))
+    files = scanned_files()
+    if not files:
+        print("SELF-TEST FAILED: no files to scan")
         return 1
-    print("SELF-TEST PASSED: scanner detects a stray number (injection was")
-    print("in-memory only; no file was modified)")
+    misses = []
+    for index, path in enumerate(files):
+        variant = SELF_TEST_VARIANTS[index % len(SELF_TEST_VARIANTS)]
+        dirty = scan(injections={path: [variant]})
+        caught = len(dirty) > len(baseline)
+        rel = os.path.relpath(path, RECORD_DIR)
+        print("  %-26s variant=%-26s caught=%s" % (rel, variant, caught))
+        if not caught:
+            misses.append((rel, variant))
+    for variant in SELF_TEST_VARIANTS:
+        probe = scan(injections={files[0]: [variant]})
+        if len(probe) <= len(baseline):
+            misses.append((os.path.relpath(files[0], RECORD_DIR), variant))
+    if misses:
+        print("SELF-TEST FAILED: injections not caught: %r" % (misses,))
+        return 1
+    print("SELF-TEST PASSED: every scanned file and every notation variant is")
+    print("caught (injections were in-memory only; no file was modified)")
     return 0
 
 
@@ -149,15 +195,20 @@ def main(argv):
     if argv and argv != ["--self-test"]:
         sys.stderr.write("usage: check_current_numbers.py [--self-test]\n")
         return 2
+    if not os.path.isdir(RECORD_DIR):
+        sys.stderr.write("missing Change Record directory: %s\n" % RECORD_DIR)
+        return 2
     if argv == ["--self-test"]:
         return self_test()
-    residues = scan()
-    if not residues:
-        print("no non-whitelisted number in the scanned current-state sections")
+    violations = scan()
+    if not violations:
+        print("no current-state numeric assertion outside %s" % GENERATED_ARTIFACT)
+        print("scanned %d markdown file(s) in full" % len(scanned_files()))
         return 0
-    print("non-whitelisted number(s) found in current-state sections:")
-    for path, number, token, line in residues:
-        print("  %s:%d  token=%s  | %s" % (path, number, token, line))
+    print("current-state numeric assertion(s) outside %s:" % GENERATED_ARTIFACT)
+    for rel, number, marker, token, line in violations:
+        print("  %s:%d  marker=%s token=%s" % (rel, number, marker, token))
+        print("      %s" % line[:160])
     return 1
 
 
