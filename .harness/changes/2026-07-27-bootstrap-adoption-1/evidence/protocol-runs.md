@@ -53,7 +53,7 @@
 
 ---
 
-## 当前条目：R25 最终内容态的机械终检（实现方自跑，C 式）
+## 当前条目：R26 最终内容态的机械终检（实现方自跑，C 式）
 
 > **重跑惯例（R19 起，R22 起有红命令背书）**：本节**每轮必须整体重跑并重写**，
 > 不得沿用上一轮的观察值。节标题带轮次、条目内绑定**当轮**前驱 HEAD。
@@ -68,7 +68,7 @@
 
 - 运行时间：2026-07-29
 - 角色：实现方在最终内容态自跑 C 式机械终检（外部第 11 轮 I3 要求落库）
-- 前驱 HEAD（第 1 步锁定对象）：`cd9a1765`
+- 前驱 HEAD（第 1 步锁定对象）：`8429798c`
 - 绑定：**本记录随其所在提交生效**；该提交的 SHA、`rev-list` 计数与 CI run id 见 PR 正文指针
 
 > **本节两次犯过它要防的病**：先是逐字沿用前一提交的数值，再是记录了一份
@@ -80,8 +80,8 @@
 
 ```sh
 git show --stat HEAD
-git diff --name-status cd9a1765..HEAD
-git rev-list --count cd9a1765..HEAD        # 在交付 HEAD 上应为一
+git diff --name-status 8429798c..HEAD
+git rev-list --count 8429798c..HEAD        # 在交付 HEAD 上应为一
 git diff --exit-code e338db8936a07b2f102df6fbd0bfa900577545b7...HEAD -- template/
 gh pr view 7 --repo StevenG3/scaffold \
   --json state,isDraft,baseRefOid,headRefOid,mergeable,mergeStateStatus,statusCheckRollup
@@ -143,7 +143,7 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 | `pure ASCII`（英文，排除 `.py` 源码自述） | 0 | 两处源码自述属实现层，其余仅存于历史节内 |
 | `静默放行`（R22 的假机理措辞） | 0 | 三处已按新旧对照改写；仅存于 R23 历史节内，且是「旧版**并非**静默放行」的否定式表述 |
 | `八个格子`（漂移的计数措辞） | 0 | 四处活体已去数字化为「每一个字面串格」；表行数与命令数改由两条计数命令给出 |
-| `八格`（同上，缩写形态） | 0 | 同上；正文与记录均不再写死会漂的计数 |
+| `八格`（同上，缩写形态） | 0 | 记录半句由本表与 4bb 段计数命令背书；**PR 正文不在 `scan_corpus` 域内**，其数量断言由入口彩排的人工对照义务覆盖（见落地清单对应行） |
 
 **结构性核查（同一 shell 块，与上表一并复跑）**：
 
@@ -316,13 +316,35 @@ done
 # 4bb) 表行数与扫描命令数必须一一对应——两者都可数，故记录里不写死数字。
 grep -c '^scan_corpus "' $PR                      # 扫描命令条数
 awk '/^\| 字符串 \/ 模式/{f=1; next} f && /^\| `/{n++} f && /^$/{print n; exit}' $PR
-# 逐字期望：两条命令输出**同一个数**（表中每一行都有一条命令，反之亦然）。
+# 逐字期望：两条命令输出**同一个数**。这是**必要非充分**条件——
+# 删一条命令再加一条无关命令，计数仍相等。它挡的是「加了行忘了加命令」这类漂移，
+# 不证明逐行对应；逐行对应由填表纪律与外审对照保证。
 
 # 4bd) 去镜像：Git 统计量只允许落在描述该病灶的叙述句里。
 #      内容锚（非行号）：句中须含「差异统计」「与 Git 不符」或「第三次复发」之一。
 grep -rn "+42/-8\|+60/-27" $D | grep -v "内容寻址\|落地核对" \
   | grep -cv "差异统计\|与 Git 不符\|第三次复发"
 # 逐字期望：0
+
+# 4be) 数量断言自审：活体散文里不得出现会漂的计数。
+#      域 = 去历史节的记录散文（栅栏块内的命令与输出不算散文，故先剥掉代码栅栏）。
+#      量词邻接式：中文数字（不含「一」，它多作不定冠词）或阿拉伯数字 + 量词。
+#      LC_ALL 必须设为 UTF-8：C 区域下方括号表达式按字节匹配，会把每个汉字拆成三字节而全量误报。
+export LC_ALL=en_US.UTF-8
+QUANT='[0-9二三四五六七八九十百]+[轮条处行节格项套份]'
+STRIP='/^```/{f=1-f; next} f{next} {print FILENAME":"FNR": "$0}'
+awk "$STRIP" $D/spec.md $D/customization-record.md $D/evidence/run-manifest.md \
+             /tmp/pr-noscan.md /tmp/summary-nohist.md /tmp/tasks-nohist.md \
+  | grep -E "$QUANT" \
+  | grep -vE '前四项|实际保证的四条|四条实际保证|第二份|第三条|第三次复发|三个平台投影|七条门禁|七条交付门禁|第[三四五]轮|第 4 条|两版均报第三行|只转义了一处|散落三处而只同步了一处|三处抄本只同步了一处|7/7'
+# 逐字期望：无输出（白名单之外的数量断言为 0）。
+# 白名单逐处理由——每条都是**不会漂的固定枚举或历史事实**：
+#   前四项 / 实际保证的四条 / 四条实际保证 / 第二份 / 第三条：指向同段内的定长枚举或序数
+#     （「实际保证的四条」下方就是那四条的逐条列举，多写一条即当场自证）；
+#   七条门禁 / 七条交付门禁：门禁条目由 rules/project.md §2 固定；
+#   三个平台投影：投影文件由 manifest 固定；
+#   第三/四/五轮、第 4 条、第三次复发、两版均报第三行、只转义了一处、
+#   散落三处而只同步了一处：均为已发生的历史事实，不随后续轮次变化。
 
 # 4c) 叙事节的作用域声明无遗漏：输出须只剩结构节。
 awk '/^## /{h=$0; want=1; next}
@@ -366,7 +388,7 @@ sh /tmp/guard.sh          # 期望 guard exit=0
 | 视图结构完整性校验存在 | `grep -c "_layer_rows\|_attested_classes" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py` | ≥ 2 |
 | 结构攻击回归全绿 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| grep -cE "(premature end\|late begin\|removed begin\|empty view\|marker-only\|missing layer row\|missing attestation).*PASS"` | 7 |
 | 去镜像：记录中无现刻数字断言 | `sed -n '/^## 结果/,/^### 红基线/p' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/run-manifest.md \| grep -cE "定向用例数 \|分支 \(a\) 命中"` | 0 |
-| 去镜像：Git 统计量仅在病灶引述中出现 | 见「内容寻址扫描记录」小节 shell 块的去镜像段（逐字期望随命令入块） | **0** 条命中落在锚外。内容锚为「差异统计」「与 Git 不符」「第三次复发」三选一——此前只锚前两个，漏掉了第三个措辞下的两处命中；**期望以内容锚给出，不用行号坐标**。 |
+| 去镜像：Git 统计量仅在病灶引述中出现 | 见「内容寻址扫描记录」小节 shell 块的去镜像段（逐字期望随命令入块） | **0** 条命中落在锚外。内容锚为「差异统计」「与 Git 不符」「第三次复发」三选一——补上第三个措辞救回的是 `protocol-runs.md:14` 这**一处**（另一处本就含「差异统计」）；**期望以内容锚给出，不用行号坐标**。 |
 | umask 韧性 | `( umask 177; python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py >/dev/null 2>&1; echo $? )` 与 `grep -c Traceback` | exit 1 且 traceback 计数 0 |
 | 起始哨兵定向用例 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| grep -c "begin sentinel literal"` | 1 |
 | 核查的参数域 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --bogus` | exit 2 |
@@ -380,7 +402,8 @@ sh /tmp/guard.sh          # 期望 guard exit=0
 | **当前条目的前驱绑定（R22 起，R23 移入栅栏块）** | 见本文件「内容寻址扫描记录」小节 shell 块末尾的 `guard.sh`（整段复制即可执行） | **0**（在**交付 HEAD** 上运行；提交前跑必红，因为前驱要到提交存在后才成立）。本节记录的前驱必须等于交付提交的父提交——这一行一红，就说明「当前条目」没跟着这轮重跑。R20、R21 两轮漏跑正是因为该惯例只是**散文义务**：标题停在 R19、前驱停在 历史@6507a986，外审跑 `rev-list` 得到的是三不是一。轮次标签与前驱同处一节，重写本节时必然一起更新，故这一个等式同时守住轮次标签的新鲜度。**「纪律必须变成清单格子」在写下它的那一节上第二次应验。** |
 | **历史节过滤器的锚定（F4 反例）** | 见「内容寻址扫描记录」小节 shell 块的过滤器反例段（逐字期望随命令入块） | 两个关键小节在过滤后各存活**恰一处**。按任意行匹配的旧写法用在本文件上会把它们整段抹掉，而**每一个字面串格照样打印零**——缘由见 `summary.md` 的 R22 整改记录。 |
 | **外审轮次口径** | `git status --porcelain docs/reviews \| grep -c '^??.*pr-7'`；`git ls-files docs/reviews \| wc -l`；`git ls-files docs/reviews \| grep -c pr-7` | 依次为 **11**、**14**、**0**。故下一轮外审为**第 12 轮**。第一条依赖审阅方的落盘工作区，fresh clone 得零属预期；此前「`docs/reviews/` 有意不纳入版本控制」一句为假声称，缘由见 `summary.md` 的 R24 整改记录。 |
-| **叙事节的作用域声明无遗漏（R23 起，R24 移入栅栏块）** | 见「内容寻址扫描记录」小节 shell 块 4c 段（整段复制即可执行；逐字期望随命令入块） | 输出只剩八个结构节，**任何叙事节落进这份输出即为违规**。该命令曾写在本单元格并因转义往返失效，缘由见 `summary.md` 的 R24 整改记录。 |
+| **数量断言自审（R26 起）** | 见「内容寻址扫描记录」小节 shell 块 4be 段（白名单逐处理由随命令入块） | **无输出**。域为去历史节的记录散文；**PR 正文不在该域内**——其数量断言在每次 fresh-clone 入口彩排时**人工对照**，彩排义务：历史域外的正文数量断言为 0。 |
+| **叙事节的作用域声明无遗漏（R23 起，R24 移入栅栏块）** | 见「内容寻址扫描记录」小节 shell 块 4c 段（整段复制即可执行；逐字期望随命令入块） | 输出**只含结构节**（当场枚举见该段输出），**任何叙事节落进这份输出即为违规**。该命令曾写在本单元格并因转义往返失效，缘由见 `summary.md` 的 R24 整改记录。 |
 | **被存证脚本的纯 ASCII 不变式** | `grep -c '[^ -~]' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py` | **0**。该构造保证在记录中被声称十一轮，却从未有清单守护——第十一次复发正是它被打破（历史标签把非 ASCII 字节写进了被哈希存证的脚本）。**声称了却没有清单行的不变式，等于没有守护。** |
 | **手抄不变量：脚本 SHA 与实际字节一致** | `test "$(shasum -a 256 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| cut -d' ' -f1)" = "$(grep '脚本 SHA-256' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/run-manifest.md \| grep -oE '[0-9a-f]{64}')"; echo $?` | **0**。不变量节记录的 SHA 与当场计算的字节哈希必须相等；脚本一改而抄本未同步，本行立即变红。 |
 | **手抄不变量：SHA 抄本数** | `grep -rn --exclude-dir=__pycache__ "$(shasum -a 256 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| cut -d' ' -f1)" .harness/changes/2026-07-27-bootstrap-adoption-1 \| wc -l` | **恰 1**——即 `run-manifest.md` 的「本节保留的唯一两个不变量」小节。R19 的 Critical 正是同一个值散落三处而只同步了一处；把「有几处抄本」写成可执行期望值，是手抄值唯一可行的守护。 |
