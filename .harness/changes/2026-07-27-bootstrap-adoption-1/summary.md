@@ -129,22 +129,24 @@ stderr: <empty>
 ```text
 $ python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py
 exit=0
-stdout: result digest (sha256 of sorted result lines, inputs and actual carriers bound in): 837bab632d8da7d73c66826c96dda4035b452b0a219be3f1e59a62e83ad2ed9c
-        （同流附记：directed 69/0 / self-test failures: 0 / exhaustive 0-2: 65793 inputs, 0 mismatches / sampled: 200000 draws, 137527 unique, 0 mismatches）
+stdout: result digest (binds directed rows' actual carriers plus aggregate counts): 837bab632d8da7d73c66826c96dda4035b452b0a219be3f1e59a62e83ad2ed9c
 stderr: <empty>
 ```
 
-**变异探针**（复现审阅方的攻击，证明证据会在实现出错时见红）：
+上行 `stdout` 载体按 `rules/project.md` §2(b) 记录该流的**最后一个非空行原文**（本次运行实测）。
+
+**变异探针**（复现审阅方的攻击，证明证据会在实现出错时见红；以下为**当前脚本上重跑**的实测值）：
 
 ```text
-未变异：        failures=0   digest=179b7a01c134cf70...
-_digest 被打桩： failures=47  digest=2c88f988cda012e0...  digest_unchanged=False
+未变异：         directed_failures=0   sampled_mismatches=0       digest=837bab632d8da7d73c66826c96dda4035b452b0a219be3f1e59a62e83ad2ed9c
+_digest 被打桩： directed_failures=47  sampled_mismatches=151811  digest=299e7d2e324c6eb58365adc796d13e3a3a827862658b82fd60893d86c12163a2  digest_changed=True
 ```
 
-整改前同一攻击的结果是 `failures=0`、`digest_unchanged=True`。
+引入载体值核对之前，同一攻击的结果是 `failures=0`、`digest_unchanged=True`。
 
-定向用例 69 个、失败 0（**分支与载体值双重比对**）；比较器自检 5 项、共因自检 8 项、argv 自检 24 项、认证自检 9 项均通过；**长度 0–2 全域穷举** 65,793 个输入、失配 0；长度 0–6 抽样 20 万次（137,527 个唯一输入）、逃出划分 0、载体值失配 0——**抽样只对被抽到的输入成立，未被抽到的输入不在证明范围内**。
-结果摘要**绑定输入字节与实际载体值**。
+定向用例 69 个、失败 0（**分支与载体值双重比对**）；四类自检——比较器 5 项、共因 8 项、argv 24 项、认证 12 项——全部通过；**长度 0–2 全域穷举** 65,793 个输入、失配 0；长度 0–6 抽样 20 万次抽取（137,527 个唯一输入）、逃出划分 0、载体值失配 0——**抽样只对被抽到的输入成立，未被抽到的输入不在证明范围内**。
+
+结果摘要的**检测范围**：绑定**定向行**的输入字节、期望载体与**实际载体**，以及各层**汇总计数**；**发生在从未被执行的输入上的错误不在其检测范围内**（审阅方 `b"\x00"*6` 探针实测 `digest_changed=False`，与该表述一致）。
 
 **红基线**（先见红，再见绿）：
 
@@ -359,6 +361,28 @@ owner 指示本轮先走**内部**独立审阅再交外部审阅方。内部审�
 **本轮的方法学观察**：I1 的形状是**一个系统里存在两个「成功」定义**——退出码消费全部层，而正式产物只消费其中一层。只要两个定义不同源，产物就能在系统自认为失败时宣称通过。修法不是让产物「也检查一下别的层」，而是把认证收敛成**唯一状态**，让所有出口（退出码、结论文本、是否落盘）都从它派生。
 
 I2 则再次印证：**为收窄声称而写的东西，本身也会过度声称**。上一轮的 ∀ 审计写着「逐条列出每一句」——这句话自己就是未经检验的全称句，审阅方当场找出两条漏网。本轮起，审计的完成度声明被限定为「收集器命中集 + 人工分类」，并附「未覆盖与已知不足」。**能被诚实声明的，只有实际做过的那件事。**
+
+## 整改记录（三会话协议自验，d3290cdd）
+
+会话 A（Standards）与会话 B（Spec）在**彼此不可见**的上下文中各自执行审阅协议，**双双 request-changes**，且给出**重合的反例**。会话 C 将在本轮整改后执行完整机械协议。
+
+| Finding | 裁决与整改 |
+| --- | --- |
+| **R1 [Critical，A-C1 = B-I1]** 认证合取按「类」形状漏层 | 接受。`certification_state()` 用**三个硬编码前缀**分桶自检失败，`"certification:"` 不匹配任何一个而被**静默丢弃**——认证自检失败时仍得 `certified: YES`、exit 0，并把正式表覆盖为 CERTIFIED；两个会话各自独立执行到了这一步。同时 `CERT_LAYERS` 是**死代码**（A-M3），层集合与分桶集合可以各自漂移。整改按 B 的处方：`CHECK_CLASSES` 成为**唯一来源**，`CERT_LAYERS` 由其派生并被实际消费（不一致即 `AssertionError`）；新增**兜底层「未注册自检失败」**——前缀未注册的失败标签一律 **fail closed**。两条回归实测：认证自检失败 → `default/stdout/path 全部 exit 1`、拒绝写入、出现「does NOT certify」；注入未注册前缀 → 同样 fail closed。 |
+| **R2 [Critical，A-C2]** 陈旧的实测值 | 接受。脚本 SHA-256 已刷新为 `32d77cf155cde9b705d0158dc2920cf1e284afc78553b00c5a862c0c1c0727ef`；门禁载体行改为按 `rules/project.md` §2(b) 记录**本次运行**该流的最后一个非空行原文；`_digest` 打桩探针的两个 digest **在当前脚本上重跑并重新记录**（未变异 `837bab63…`；打桩后 `299e7d2e…`，`directed_failures=47`、`sampled_mismatches=151811`、`digest_changed=True`）。 |
+| **R3 [Important，A-I1 = B-I2]** ∀ 审计枚举基不是同一状态 | 接受。上一版记录的 175 是**跨状态混合值**（B 证明：该 HEAD 191、前一状态 157，记录的分布两者都不匹配）。现改为**提交前最后一步**在最终内容上重跑收集器，并迭代到不动点：命中 **204 行**，分布逐文件记录；新增第 18–24 行覆盖本轮出现的承载能力声明；**删除**「其余命中不构成全称能力声明」这句概括兜底——它本身就是又一个未经逐条检验的全称句；表基说明改为「**基于最终提交态的收集器命中集 + 人工分类**」。 |
+| **R4 [Important，B-I3]** digest 收窄未落到全部位置 | 接受。`summary.md` 的两处均已改为「绑定定向行的实际载体 + 各层汇总计数；未被执行输入上的错误不在检测范围内」；`tasks.md` 的「三处同步」已按真实计数订正并说明生成表表头另有新增行。 |
+| **R5 [Important，A-I2]** 认证自检缺机器载体 | 接受。生成表的**层状态表**与**表头 attestation** 现含 `certification self-test` 行与 `12/12` 计数，`run-manifest.md` 结果表亦增该行——不再有仅靠人写的断言（`rules/project.md` §2(c)）。 |
+| **R6 Minors** | USAGE 重写：列出**全部层**（含穷举）、`--emit-markdown` 明确标注**承载判定**、原子写入语义更新；`_selftest_certification` 的硬编码 `failures=0` 改为**显式标注的 fixture**（含 `FIXTURE-DIGEST`）；docstring 计数订正为**十二项**；`tasks.md` 历史条目中的「20 万」标注为**当轮历史措辞**；层数表述在 summary 各处统一为「四类自检（5/8/24/12）+ 穷举层」。 |
+
+**本轮的方法学观察**：R1 是**形状层面**的漏洞，不是数值层面的。合取覆盖了「我记得的那些类」，
+而不是「系统里存在的那些类」——于是新增一类检查时，它的失败落进了没有人接收的缝隙里。
+把层集合改为**从注册表派生**并加**兜底层**之后，遗漏的后果从「静默通过」变成「fail closed」。
+**当一个合取的项是手写枚举时，它保护的是作者的记忆，不是系统的状态。**
+
+R3 则暴露了一个更朴素的错误：我在**编辑中途**运行收集器，随后又改了文本，于是记录的数字
+不对应任何一个真实状态。证据必须在**它所描述的那个状态上**采集——这与「结论只绑定精确 HEAD」
+是同一条纪律，只是尺度更小。
 
 ## Decision
 

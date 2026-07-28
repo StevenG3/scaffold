@@ -20,7 +20,9 @@ It contains a mechanical implementation of the carrier rule as written in
      wrong byte count, wrong verbatim line, wrong branch) and asserts the
      comparator rejects each one, plus a control that must still be accepted.
      Without this, a comparator that always passed would look identical to a
-     correct one.
+     correct one. A CERTIFICATION SELF-TEST (twelve checks) proves that every
+     verdict layer, and any unregistered failure label, blocks certification
+     and changes the emitted conclusion text.
   3. An ARGV SELF-TEST asserting that unknown flags and mutually exclusive
      mode combinations are rejected rather than silently reinterpreted.
   4. An EXHAUSTIVE sweep of every input of length 0-2 (65793 inputs) against
@@ -742,15 +744,28 @@ def selftest_argv():
 # ---------------------------------------------------------------------------
 
 USAGE = (
-    "usage: carrier_sweep.py [--baseline | --emit-markdown]\n"
-    "  (no flag)        run directed + self-tests + fuzz; exit 1 on any failure\n"
-    "  --baseline       report the pre-fix predicate's results (reporting mode)\n"
+    "usage: carrier_sweep.py [--baseline | --emit-markdown [PATH]] | [-h|--help]\n"
+    "\n"
+    "  (no flag)        run every verdict layer and report the certification\n"
+    "                   state. Layers: directed cases; comparator, common-cause,\n"
+    "                   argv and certification self-tests; exhaustive sweep of\n"
+    "                   lengths 0-2; sampled sweep of lengths 0-6. Exit 0 only\n"
+    "                   if ALL layers pass, 1 otherwise.\n"
     "  --emit-markdown [PATH]\n"
-    "                   emit the boundary-case table (reporting mode). With no\n"
-    "                   PATH it streams to stdout; with PATH it is written\n"
-    "                   atomically, so a failed run cannot truncate the table.\n"
-    "  -h, --help       print this usage on stdout and exit 0\n"
-    "The two mode flags are mutually exclusive.\n"
+    "                   emit the boundary-case table. VERDICT-BEARING: exit 0\n"
+    "                   only when certification holds. On failure it refuses to\n"
+    "                   write PATH and exits 1; with no PATH it prints the\n"
+    "                   uncertified table on stdout, banner first, and exits 1.\n"
+    "                   With PATH and certification holding, the table is written\n"
+    "                   atomically (temp file plus os.replace), so an interrupted\n"
+    "                   run cannot leave a truncated official table behind.\n"
+    "  --baseline       report the pre-fix predicate's results. Reporting mode:\n"
+    "                   EXPECTED to be red, never writes a file, always exits 0\n"
+    "                   unless the run itself errors.\n"
+    "  -h, --help       print this usage on stdout and exit 0. Must be the only\n"
+    "                   argument.\n"
+    "\n"
+    "--baseline and --emit-markdown are mutually exclusive.\n"
 )
 KNOWN_FLAGS = ("--baseline", "--emit-markdown")
 HELP_FLAGS = ("-h", "--help")
@@ -866,46 +881,89 @@ def result_digest(rows, counts, undefined, mismatches, unique, exhaustive, failu
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-CERT_LAYERS = (
-    "directed",
-    "comparator self-test",
-    "common-cause self-test",
-    "argv self-test",
-    "exhaustive length 0-2",
-    "sampled length 0-6",
+# ---------------------------------------------------------------------------
+# Check-class registry. ONE source for both the self-test failure prefixes and
+# the certification layer names.
+#
+# The previous version hardcoded three prefixes inside certification_state() and
+# built its layer list separately. A "certification:" failure matched none of
+# them and was silently dropped: a broken certification self-test still yielded
+# certified YES, exit 0, and an official CERTIFIED table. Both self-verification
+# sessions reproduced it independently. Deriving the buckets from this registry
+# means adding a class cannot leave its failures unconsumed, and any failure
+# whose prefix is NOT registered fails closed rather than disappearing.
+# ---------------------------------------------------------------------------
+CHECK_CLASSES = (
+    ("comparator", "comparator self-test"),
+    ("common-cause", "common-cause self-test"),
+    ("argv", "argv self-test"),
+    ("certification", "certification self-test"),
 )
+CHECK_CLASS_PREFIXES = tuple(prefix for prefix, _ in CHECK_CLASSES)
+
+LAYER_DIRECTED = "directed"
+LAYER_EXHAUSTIVE = "exhaustive length 0-2"
+LAYER_SAMPLED = "sampled length 0-6"
+LAYER_UNREGISTERED = "unregistered self-test failures"
+
+# Derived, not hand-maintained: every registered class contributes a layer.
+CERT_LAYERS = (
+    (LAYER_DIRECTED,)
+    + tuple(name for _, name in CHECK_CLASSES)
+    + (LAYER_EXHAUSTIVE, LAYER_SAMPLED, LAYER_UNREGISTERED)
+)
+
+
+def classify_selftest_failures(selftest_failures):
+    """Bucket failure labels by registered prefix. Returns (buckets, residual).
+
+    residual holds every label whose prefix is not in the registry. It is never
+    discarded: an unrecognised failure is treated as a certification failure,
+    because a label the registry does not know about is exactly the case where
+    silently dropping it would hide a real defect.
+    """
+    buckets = {prefix: [] for prefix in CHECK_CLASS_PREFIXES}
+    residual = []
+    for label in selftest_failures:
+        for prefix in CHECK_CLASS_PREFIXES:
+            if label.startswith(prefix + ":"):
+                buckets[prefix].append(label)
+                break
+        else:
+            residual.append(label)
+    return buckets, residual
 
 
 def certification_state(directed_failures, selftest_failures, exhaustive_mismatches,
                         sampled_mismatches, undefined):
-    """The ONE certification state, a conjunction over every verdict layer.
+    """The ONE certification state: a conjunction over every verdict layer.
 
-    An external review showed the cost of having more than one: emit_markdown()
-    consumed only the directed layer, so poisoning carrier(b"\x00\x00") -- an
-    input no directed case covers but the exhaustive sweep necessarily visits --
-    produced an official table that recorded "1 mismatches" and "EVERY input
-    agrees" at the same time, exit 0, and could atomically overwrite the
-    committed evidence.
-
-    Returns (certified, layers) where layers is a list of (name, ok, detail).
+    Returns (certified, layers) where layers is a list of (name, ok, detail)
+    covering exactly CERT_LAYERS, in that order.
     """
-    comparator_failed = [n for n in selftest_failures if n.startswith("comparator:")]
-    common_failed = [n for n in selftest_failures if n.startswith("common-cause:")]
-    argv_failed = [n for n in selftest_failures if n.startswith("argv:")]
-    layers = [
-        ("directed", directed_failures == 0,
-         "%d failures" % directed_failures),
-        ("comparator self-test", not comparator_failed,
-         "%d failures" % len(comparator_failed)),
-        ("common-cause self-test", not common_failed,
-         "%d failures" % len(common_failed)),
-        ("argv self-test", not argv_failed,
-         "%d failures" % len(argv_failed)),
-        ("exhaustive length 0-2", exhaustive_mismatches == 0,
-         "%d mismatches" % exhaustive_mismatches),
-        ("sampled length 0-6", sampled_mismatches == 0 and undefined == 0,
-         "%d value mismatches, %d undefined" % (sampled_mismatches, undefined)),
-    ]
+    buckets, residual = classify_selftest_failures(selftest_failures)
+    layers = [(LAYER_DIRECTED, directed_failures == 0,
+               "%d failures" % directed_failures)]
+    for prefix, layer_name in CHECK_CLASSES:
+        failed = buckets[prefix]
+        layers.append((layer_name, not failed, "%d failures" % len(failed)))
+    layers.append((LAYER_EXHAUSTIVE, exhaustive_mismatches == 0,
+                   "%d mismatches" % exhaustive_mismatches))
+    layers.append((LAYER_SAMPLED, sampled_mismatches == 0 and undefined == 0,
+                   "%d value mismatches, %d undefined"
+                   % (sampled_mismatches, undefined)))
+    layers.append((LAYER_UNREGISTERED, not residual,
+                   "%d unrecognised failure label(s)%s"
+                   % (len(residual),
+                      (": " + ", ".join(residual)) if residual else "")))
+
+    # The layer list must cover the registry exactly, or a class could be added
+    # without ever reaching the conjunction.
+    if tuple(name for name, _, _ in layers) != CERT_LAYERS:
+        raise AssertionError(
+            "certification layers %r do not match the registry %r"
+            % (tuple(name for name, _, _ in layers), CERT_LAYERS))
+
     return all(ok for _, ok, _ in layers), layers
 
 
@@ -955,7 +1013,9 @@ def emit_markdown(rows, failures, digest, summary, mismatches, unique, exhaustiv
     out.append("carriers are shown in full and are never truncated.")
     out.append("")
     out.append("Self-test attestation for the run that produced this table:")
-    out.append("comparator %d/%d, common-cause %d/%d, argv %d/%d passed." % summary)
+    out.append("comparator %d/%d, common-cause %d/%d, argv %d/%d, certification %d/%d"
+               % summary)
+    out.append("passed.")
     out.append("Exhaustive sweep of all %d inputs of length 0-2: %d mismatches."
                % exhaustive)
     out.append("Sampled sweep: %d draws over lengths 0-6, %d unique inputs, %d "
@@ -1052,31 +1112,48 @@ def selftest_summary():
     failures = (["comparator: " + name for name, ok in comparator_checks if not ok]
                 + ["common-cause: " + name for name, ok in common_cause_checks if not ok]
                 + ["argv: " + name for name, ok in argv_checks if not ok])
+    cert_checks = _selftest_certification()
+    failures = failures + ["certification: " + name
+                           for name, ok in cert_checks if not ok]
     summary = (sum(1 for _, ok in comparator_checks if ok), len(comparator_checks),
                sum(1 for _, ok in common_cause_checks if ok), len(common_cause_checks),
-               sum(1 for _, ok in argv_checks if ok), len(argv_checks))
-    return comparator_checks, common_cause_checks, argv_checks, summary, failures
+               sum(1 for _, ok in argv_checks if ok), len(argv_checks),
+               sum(1 for _, ok in cert_checks if ok), len(cert_checks))
+    return (comparator_checks, common_cause_checks, argv_checks, cert_checks,
+            summary, failures)
 
 
 def _selftest_certification():
-    """Prove the certification state actually flips when a layer fails.
+    """Prove the certification state flips when ANY layer fails.
 
-    Three regressions the external review demanded, plus the all-green control.
-    Each asserts BOTH that certification goes false and that the emitted
-    conclusion text stops asserting agreement for the failing layer.
+    Twelve checks. Each fixture below is a hand-built layer-result tuple, not a
+    measurement of this run: the numbers are chosen to exercise one failing
+    layer at a time, and are labelled as fixtures so nobody reads them as
+    observed values. The digest and self-test counts handed to emit_markdown()
+    here are likewise fixtures ("FIXTURE-DIGEST", zeroed counts).
     """
     checks = []
+    # Fixture: all layers clean.
     green = certification_state(0, [], 0, 0, 0)
     checks.append(("control: all layers green certifies", green[0]))
 
+    # Fixtures: exactly one failing layer each.
     exhaustive_bad = certification_state(0, [], 1, 0, 0)
     checks.append(("exhaustive failure blocks certification", not exhaustive_bad[0]))
 
     sampled_bad = certification_state(0, [], 0, 3, 0)
     checks.append(("sampled failure blocks certification", not sampled_bad[0]))
 
-    selftest_bad = certification_state(0, ["comparator: x"], 0, 0, 0)
-    checks.append(("self-test failure blocks certification", not selftest_bad[0]))
+    selftest_bad = certification_state(0, ["comparator: fixture"], 0, 0, 0)
+    checks.append(("comparator self-test failure blocks certification",
+                   not selftest_bad[0]))
+
+    cert_bad = certification_state(0, ["certification: fixture"], 0, 0, 0)
+    checks.append(("certification self-test failure blocks certification",
+                   not cert_bad[0]))
+
+    unknown_bad = certification_state(0, ["unregistered-class: fixture"], 0, 0, 0)
+    checks.append(("unknown failure prefix fails closed", not unknown_bad[0]))
 
     undefined_bad = certification_state(0, [], 0, 0, 2)
     checks.append(("undefined input blocks certification", not undefined_bad[0]))
@@ -1084,21 +1161,29 @@ def _selftest_certification():
     directed_bad = certification_state(1, [], 0, 0, 0)
     checks.append(("directed failure blocks certification", not directed_bad[0]))
 
-    # Conclusion text must follow the state, not just the exit code.
+    # Every registered class must own a layer; a class whose failures reach no
+    # layer would be dropped exactly as "certification:" once was.
+    covered = set(name for _, name in CHECK_CLASSES)
+    layer_names = set(name for name, _, _ in green[1])
+    checks.append(("every registered check class owns a layer",
+                   covered.issubset(layer_names)
+                   and LAYER_UNREGISTERED in layer_names))
+
+    # Conclusion text must follow the state, not merely the exit code. The
+    # directed rows are real; the counts passed alongside them are fixtures.
     rows, _ = run_directed()
-    summary = (5, 5, 8, 8, 24, 24)
-    text_bad = emit_markdown(rows, 0, "d", summary, 0, 1, (65793, 1),
+    summary = (0, 0, 0, 0, 0, 0, 0, 0)  # fixture counts, not measurements
+    text_bad = emit_markdown(rows, 0, "FIXTURE-DIGEST", summary, 0, 1, (65793, 1),
                              exhaustive_bad[0], exhaustive_bad[1])
     checks.append(("failing exhaustive removes the universal agreement line",
                    "EVERY input" not in text_bad
                    and "every input of length 0-2 agrees" not in text_bad
                    and "does NOT certify" in text_bad))
-    text_sampled = emit_markdown(rows, 0, "d", summary, 3, 1, (65793, 0),
-                                 sampled_bad[0], sampled_bad[1])
-    checks.append(("failing sampled layer is reported as failing",
-                   "does NOT certify" in text_sampled
-                   and "drawn inputs DISAGREE" in text_sampled))
-    text_ok = emit_markdown(rows, 0, "d", summary, 0, 1, (65793, 0),
+    text_cert = emit_markdown(rows, 0, "FIXTURE-DIGEST", summary, 0, 1, (65793, 0),
+                              cert_bad[0], cert_bad[1])
+    checks.append(("failing certification self-test marks the table uncertified",
+                   "does NOT certify" in text_cert))
+    text_ok = emit_markdown(rows, 0, "FIXTURE-DIGEST", summary, 0, 1, (65793, 0),
                             green[0], green[1])
     checks.append(("all-green table carries no uncertified banner",
                    "does NOT certify" not in text_ok
@@ -1135,11 +1220,8 @@ def main(argv):
                       % (name, expected_branch, actual_branch))
         return 0
 
-    (comparator_checks, common_cause_checks, argv_checks,
+    (comparator_checks, common_cause_checks, argv_checks, cert_checks,
      summary, selftest_failures) = selftest_summary()
-    cert_checks = _selftest_certification()
-    selftest_failures = selftest_failures + [
-        "certification: " + name for name, ok in cert_checks if not ok]
     exhaustive = run_exhaustive()
     counts, undefined, mismatches, unique = run_fuzz()
     certified, layers = certification_state(
