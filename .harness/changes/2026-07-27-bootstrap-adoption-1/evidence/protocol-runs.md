@@ -53,22 +53,20 @@
 
 ---
 
-## 当前条目：R26 最终内容态的机械终检（实现方自跑，C 式）
+## 当前条目：R27 最终内容态的机械终检（实现方自跑，C 式）
 
 > **重跑惯例（R19 起，R22 起有红命令背书）**：本节**每轮必须整体重跑并重写**，
 > 不得沿用上一轮的观察值。节标题带轮次、条目内绑定**当轮**前驱 HEAD。
 >
-> **这条惯例自己刚刚证明了 R19 的教训**：它写成散文义务却没有清单格子，
-> 于是 R20、R21 两轮都没重跑，标题停在 R19、前驱停在 历史@6507a986，
-> 外审按下方命令跑 `rev-list` 得到的是三，不是一——
-> **「纪律必须变成清单格子才会被执行」这句话，在写下它的那一节上第二次应验。**
+> **这条惯例自己证明过 R19 的教训**：它写成散文义务却没有清单格子，
+> 于是 R20、R21 两轮都没重跑，标题停在 R19、前驱停在 历史@6507a986。
 > 现已配落地清单的**前驱守护行**：本节记录的前驱必须等于 `git rev-parse --short=8 HEAD^`。
-> 该行一红，就说明本节没跟着这轮重跑；而轮次标签与前驱同处一节，
-> 因此重写本节时标签必然一起更新——**用一个可执行的等式，守住一整节的新鲜度。**
+> 该行一红，就说明本节没跟着这轮重跑；轮次标签与前驱同处一节，
+> 因此重写本节时标签必然一起更新。
 
 - 运行时间：2026-07-29
 - 角色：实现方在最终内容态自跑 C 式机械终检（外部第 11 轮 I3 要求落库）
-- 前驱 HEAD（第 1 步锁定对象）：`8429798c`
+- 前驱 HEAD（第 1 步锁定对象）：`8bea044a`
 - 绑定：**本记录随其所在提交生效**；该提交的 SHA、`rev-list` 计数与 CI run id 见 PR 正文指针
 
 > **本节两次犯过它要防的病**：先是逐字沿用前一提交的数值，再是记录了一份
@@ -80,9 +78,11 @@
 
 ```sh
 git show --stat HEAD
-git diff --name-status 8429798c..HEAD
-git rev-list --count 8429798c..HEAD        # 在交付 HEAD 上应为一
+git diff --name-status 8bea044a..HEAD
+git rev-list --count 8bea044a..HEAD        # 在交付 HEAD 上应为一
 git diff --exit-code e338db8936a07b2f102df6fbd0bfa900577545b7...HEAD -- template/
+git log -1 --format='%h %ad' --date=short -- \
+  .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py
 gh pr view 7 --repo StevenG3/scaffold \
   --json state,isDraft,baseRefOid,headRefOid,mergeable,mergeStateStatus,statusCheckRollup
 ```
@@ -94,10 +94,10 @@ gh pr view 7 --repo StevenG3/scaffold \
 | 第 1 步 远端锁定 | 锁定前驱 HEAD：`state=OPEN` `draft=true` `mergeable=MERGEABLE` `mergeState=CLEAN`（当次实测） |
 | 第 2 步 增量与边界 | **按去镜像约定不抄录统计量**；`git diff main -- template/` 实测为空（零回灌） |
 | 第 5 步 绿灯电池 | `default 0` / `--baseline 0` / `--help 0` / `--emit-markdown PATH 0`；生成物与入库表 `cmp` 逐字节一致；源码**无**非 ASCII 字节（`grep -c '[^ -~]'` 输出为零，与落地清单对应行同口径）。**定向数、失败数、红基线数字按去镜像约定不抄录**——运行上述命令，或读机器生成的 `boundary-cases.md` |
-| 第 5 步 产物不变量 | 脚本 SHA-256 与结果摘要**见 `run-manifest.md` 的「本节保留的唯一两个不变量」小节**（R20 起全库唯一抄本，此处不复制）；R22、R23 两轮均未触碰该脚本，两值不变，由清单的两条守护行当场核对 |
-| 第 6 步 变异探针 | 穷举投毒：`--emit-markdown` `rc=1`；`--emit-markdown PATH` `rc=1` 且**正式文件逐字节未变**；横幅为首行。未抽中输入探针 `digest_changed=False`（与收窄后的检测范围声明一致，非缺陷） |
-| 第 6 步 结构攻击（R14 新增，此后每轮复跑） | 审阅方反例（end 哨兵前移至 marker 之后、FAIL 行之前）**被拒**；premature end / late begin / 空视图 / 仅 marker / 缺 layer / 缺 attestation 六种形状全部**被拒**；真实非零层在**两个出口**仍 fail closed |
-| 第 6 步 过滤器变异（复跑命令见扫描小节 shell 块 4b / 4c 段） | `dehist.awk` 用于 `protocol-runs.md`：两个关键小节各 `1`（见块 2b 段）。`cells.awk` 新旧对跑逐字输出：`header` → R21 `:2 expected 3 got 2` `:3 expected 3 got 2` `anomalous rows: 2`，R24 `:1 expected 2 cells, got 3` `anomalous rows: 1`；`nosep`（各行一致的无分隔行表）→ R21 `anomalous rows: 0`，R24 `:1 table has no separator row` `anomalous rows: 1`；`body` → 两版均报第三行 |
+| 第 5 步 产物不变量 | 脚本 SHA-256 与结果摘要**见 `run-manifest.md` 的「本节保留的唯一两个不变量」小节**（R20 起全库唯一抄本，此处不复制），由落地清单的守护行当场核对（行数以清单为准）。**「哪一轮动过该脚本」不写死**——上方命令栏的 `git log -1 … carrier_sweep.py` 输出即真值 |
+| 第 6 步 变异探针 | 穷举投毒：`--emit-markdown` `rc=1`；`--emit-markdown PATH` `rc=1` 且**正式文件逐字节未变**；横幅为该模式输出的首行。未抽中输入探针 `digest_changed=False`（与收窄后的检测范围声明一致，非缺陷） |
+| 第 6 步 结构攻击（R14 新增，此后每轮复跑） | 审阅方反例（end 哨兵前移至 marker 之后、FAIL 行之前）**被拒**；被拒形状**逐一具名**：premature end、late begin（起始哨兵后移）、removed begin（起始哨兵删除）、空视图、仅 marker、缺 layer、缺 attestation。真实非零层在**两个出口**仍 fail closed。（此处此前写「六种」，而 `removed begin` 在 历史@a48e9b65 就已加入——同一处数字在 `run-manifest.md` 与 `summary.md` 改过、**本节的副本没跟着改**，是内容寻址纪律的又一次失效；现改为具名枚举，不再写个数） |
+| 第 6 步 过滤器变异（复跑命令见扫描小节 shell 块） | `dehist.awk` 用于 `protocol-runs.md`：两个关键小节各 `1`。`cells.awk` 新旧对跑逐字输出：`header` → R21 `:2 expected 3 got 2` `:3 expected 3 got 2` `anomalous rows: 2`，R24 `:1 expected 2 cells, got 3` `anomalous rows: 1`；`nosep`（各行一致的无分隔行表）→ R21 `anomalous rows: 0`，R24 `:1 table has no separator row` `anomalous rows: 1`；`body` → 两版均报第三行 |
 | 第 7 步 七条门禁 | **全部**门禁 exit 0（门禁条目见 `rules/project.md` §2；分流字节数与条目数按去镜像约定不抄录，复核请用 `capture_gate` 包装器实测） |
 | 第 8 步 复锁 | 提交并推送后由 PR 正文指针给出 exact-head 的 SHA 与 CI run id |
 
@@ -326,25 +326,47 @@ grep -rn "+42/-8\|+60/-27" $D | grep -v "内容寻址\|落地核对" \
   | grep -cv "差异统计\|与 Git 不符\|第三次复发"
 # 逐字期望：0
 
-# 4be) 数量断言自审：活体散文里不得出现会漂的计数。
-#      域 = 去历史节的记录散文（栅栏块内的命令与输出不算散文，故先剥掉代码栅栏）。
-#      量词邻接式：中文数字（不含「一」，它多作不定冠词）或阿拉伯数字 + 量词。
-#      LC_ALL 必须设为 UTF-8：C 区域下方括号表达式按字节匹配，会把每个汉字拆成三字节而全量误报。
+# 4be) 数量断言自审。**这不是全称**：覆盖域就是下面这条命令能表达的范围，
+#      已知盲区见 run-manifest 的载体自由度表（英文数词、跨行拆分、未列量词、
+#      以及本命令的行级豁免——白名单命中整行放行，同一行里的其他断言会被一并放过）。
+#      域 = 去历史节的记录散文；栅栏块内的命令与输出不是散文，故先剥掉代码栅栏。
+#      `protocol-runs.md` 的排除走 sed（切掉扫描记录与关键词归类两个子节）——
+#      注意「历史条目」那一节**仍在域内**：它没有历史声明行，sed 也不覆盖它。
+#      LC_ALL 必须设为 UTF-8：C 区域下方括号表达式按字节匹配，
+#      会把每个汉字拆成三字节而全量误报（首次运行即如此）。
 export LC_ALL=en_US.UTF-8
-QUANT='[0-9二三四五六七八九十百]+[轮条处行节格项套份]'
-STRIP='/^```/{f=1-f; next} f{next} {print FILENAME":"FNR": "$0}'
-awk "$STRIP" $D/spec.md $D/customization-record.md $D/evidence/run-manifest.md \
-             /tmp/pr-noscan.md /tmp/summary-nohist.md /tmp/tasks-nohist.md \
+QUANT='[0-9两二三四五六七八九十百]+[[:space:]*]*[轮条处行节格项套份种个次步类族]'
+# 清单行整行是「命令 + 期望」，不是散文；它们的命令由各自的清单行当场复跑，
+# 故按行排除（这是**行级豁免**，已在上面的盲区里披露）。
+STRIP='/^```/{f=1-f; next} f{next} /^\| .*`[a-z]/{next} {print FILENAME":"FNR": "$0}'
+
+# 结构式豁免：序数与协议步号不是数量断言。
+ORD='第 ?[0-9一二三四五六七八九十]+ ?[步轮条行项次类]'
+# 契约固定式：门禁条数由 rules/project.md §2 固定；投影文件由 manifest 固定。
+# 契约固定式：门禁条数由 rules/project.md §2 固定（生产者 5 + 消费者 2）；
+# 投影文件由 manifest 固定；两条消费者门禁即 validate / adapt --check 这两条。
+FIXED='[0-9]+ 条门禁|七条门禁|七条交付门禁|条交付门禁|消费者两条门禁|两条消费者(副本)?门禁|条消费者(副本)?门禁|三个平台投影|三个投影|与三个投影'
+# 同段定长枚举：紧邻处就是被数的那几项，多写一条即当场自证。
+# 同段定长枚举：紧邻处就是被数的那几项，多写一条即当场自证。
+ENUM='四类自检|前四项|实际保证的四条|四条实际保证|第二份|两个不变量|两类事实|两个逃逸样本'
+ENUM="$ENUM"'|三个硬编码前缀|两条\*\*开轴\*\*|残余（两类|两个独立管道|5 个必须由所有者作答'
+ENUM="$ENUM"'|六种\*\*载荷|七种\*\*形状|访谈五题|全部 26 行|这两个值|两个逃逸样本|恰 1'
+# 机制常量：由构造固定，改一处即触发脚本内的交叉断言或门禁。
+CONST='两个流|两条流|五个分支|两份不可呈现码点集|两次转写|两侧一致|三族|三种比较器|两处\*\*共同成立|豁免（三族|两个哨兵|两行|三类层失败|三种敌对环境|三个 Agent 平台|三方审批'
+# 历史事实：已发生，不随后续轮次变化。
+HIST='第三次复发|第八次复发|第六次|两版均报第三行|只转义了一处|散落三处而只同步了一处|7/7|两轮都没重跑|两轮漏跑|两次犯过|30 个用例|47 行载体全错|7 行\*\*全部\*\*为|十二个提交|即最终差异.三类|3 项 Important|第[三四五]轮|第 10 轮|第 11 轮|第 12 轮|两次不足|两条旧行|独立转写'
+
+# 域**已缩面并披露**：只覆盖**逐轮汇报面**——protocol-runs（去两子节）、
+# summary、tasks（各去历史节）。`run-manifest.md` / `spec.md` / `customization-record.md`
+# **不在域内**：它们描述机制而非轮次，其中的数量几乎都是构造常量
+# （两个流、五个分支标签、两份码点集、四个模式……），由脚本内的交叉断言守护，
+# 改一处即 `AssertionError`；把它们塞进本命令只会催生一张越来越长的无理由白名单。
+# 这条缩面写进 PR 正文的「已知残余」小节，不当作已闭合。
+awk "$STRIP" /tmp/pr-noscan.md /tmp/summary-nohist.md /tmp/tasks-nohist.md \
   | grep -E "$QUANT" \
-  | grep -vE '前四项|实际保证的四条|四条实际保证|第二份|第三条|第三次复发|三个平台投影|七条门禁|七条交付门禁|第[三四五]轮|第 4 条|两版均报第三行|只转义了一处|散落三处而只同步了一处|三处抄本只同步了一处|7/7'
-# 逐字期望：无输出（白名单之外的数量断言为 0）。
-# 白名单逐处理由——每条都是**不会漂的固定枚举或历史事实**：
-#   前四项 / 实际保证的四条 / 四条实际保证 / 第二份 / 第三条：指向同段内的定长枚举或序数
-#     （「实际保证的四条」下方就是那四条的逐条列举，多写一条即当场自证）；
-#   七条门禁 / 七条交付门禁：门禁条目由 rules/project.md §2 固定；
-#   三个平台投影：投影文件由 manifest 固定；
-#   第三/四/五轮、第 4 条、第三次复发、两版均报第三行、只转义了一处、
-#   散落三处而只同步了一处：均为已发生的历史事实，不随后续轮次变化。
+  | grep -vE "$ORD" | grep -vE "$FIXED" | grep -vE "$ENUM" | grep -vE "$CONST" | grep -vE "$HIST"
+# 逐字期望：无输出。五个豁免类各自的理由写在上面它们的定义处；
+# 任何新命中要么修文，要么进对应类并当场写下理由——**不允许无理由的豁免条目**。
 
 # 4c) 叙事节的作用域声明无遗漏：输出须只剩结构节。
 awk '/^## /{h=$0; want=1; next}
