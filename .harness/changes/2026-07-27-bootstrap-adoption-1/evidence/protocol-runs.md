@@ -122,23 +122,27 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 
 **查找必须做到「断言级」**：只搜字面串会漏掉**同一断言的转述**——第十次复发即如此（两条被废止断言的四处活体转述未被绑定，因为它们的措辞与被删行不同字）。因此除字面串外，还须对该 finding 的**机制关键词**逐词全库 `grep`，每个命中归类为：**SSOT 内** / **指针** / **节级历史域内** / **违规→处置**。
 
-| 字符串 / 模式（含英文） | 全库命中（`.md` + `.py`，节级排除本小节） | 逐处处置终态 |
+| 字符串 / 模式（含英文） | 域外命中 | 逐处处置终态 |
 | --- | --- | --- |
 | `每个被扫文件各注入一次` | 0 | R17 已改写为历史绑定表述 |
-| `三种记法` | **1**：`summary.md:764`，位于 **R17 终验节**（历史@63b853c0）的整改行内 | 良性：轮次域内的**自引用**——该行记录的正是「上一轮这格填了假值」这件事。上一版本表把它错记为 0、且错归到 R18 节，两项均已按当场执行输出改正 |
+| `三种记法` | 0 | 仅存于轮次历史节内的引用，按新域不计 |
 | `整个 Change Record 目录全部` | 0 | R17 已改写并指向 SSOT |
-| `pure ASCII`（英文） | **3**：`carrier_sweep.py:75`、`check_current_numbers.py:20`、`summary.md:793` | 前两处为源码自述编码（R19 的 ASCII 修复后**恢复为真**）；第三处在 R19 节内，是该轮扫描词表的自引用 |
-| `exactly two`（英文） | **1**：`summary.md:793` | 同上，R19 节内自引用（记录「这个英文串曾是第二事实源」）；检查器 docstring 侧已改指针式，不再自报豁免族数 |
-| `every other .md`（英文） | **1**：`summary.md:793` | 同上，R19 节内自引用；域的描述只留在 SSOT |
+| `exactly two`（英文） | 0 | 检查器 docstring 已指针化，不再自报豁免族数 |
+| `every other .md`（英文） | 0 | 域的描述只留在 SSOT |
 | `1020c231`（旧脚本 SHA 前缀） | 0 | R20 单点化：全库不再有旧抄本 |
-| `whitelist table`（英文） | **1**：`check_current_numbers.py:82` | 该处**显式声明该表已撤回**并指向 SSOT，属「命名一个已死框架以说明它已死」，非第二事实源 |
-| 非 ASCII 字节 in `carrier_sweep.py` | 0 | 历史绑定移入 `run-manifest.md`；脚本注释纯 ASCII 且不含数字 |
+| `第 13 轮`（错误轮次标签） | 0 | 已改回第 12 轮，口径与核对命令写进 `tasks.md` |
+| `pure ASCII`（英文，排除 `.py` 源码自述） | 0 | 两处源码自述属实现层，其余仅存于历史节内 |
 
-> **填表纪律（R20 收紧）**：
-> **每一格的值必须来自当场执行该行命令的输出**，不得凭印象、不得沿用上一轮。
-> **凡命中不为 0，必须写明命中所在的文件、行号与所属节**——只写「良性」而不写位置，
-> 等于要求复核者重做一遍扫描才能证伪你。R19 这张表把三个格子填成零，而当场执行给出的是非零，
-> 正是「填了表却没复跑」——与 `summary.md:764` 自己记录的 R17 教训完全同形。
+> **域的定义（R21 起）**：全语料 − 本小节 − **全部带「本节为该轮历史」声明的节**。
+> 轮次历史节内引用 finding 字符串是**构造良性**的：节头已声明历史作用域，
+> 节内的引用按定义就是历史引用。需要审计这些引用时，用不带排除的原始 `grep -rn`——那是另一件事。
+>
+> **为什么必须这样定义域**：R20 那张表所填值低于外审当场执行的输出，差额正是那次提交
+> **自己的整改叙事**——修复某个字符串，就必然要引用该字符串。旧域下这是个**不稳定不动点**：
+> 填表→写整改记录→计数又变了，每轮重踩。语义化之后期望统一为 0，**不动点消失**。
+>
+> **填表纪律**：格值 = 当场执行输出；域 = 去历史节语料；
+> **填表必须是提交前的最后一步**——填完之后若再改动任何**非历史节**文字，必须重跑全表。
 
 ### 机制关键词归类（断言级扫描，R18 起随扫描记录一并提交）
 
@@ -178,20 +182,50 @@ PR=$D/evidence/protocol-runs.md
 sed '/^### 内容寻址扫描记录/,/^### 落地核对清单/{/^### 落地核对清单/!d;}' "$PR" > /tmp/pr-noscan.md
 grep -c '^### 落地核对清单' /tmp/pr-noscan.md      # 期望 1：终止行必须保留
 
-# 2) 在全域（.md + .py）搜字面串；protocol-runs 用切掉后的视图代替
+# 2) 把**带历史作用域声明的整节**抹成空行（保留行号，不移位）。
+#    这是 R21 的类修复：轮次历史节里引用 finding 字符串是**构造良性**的
+#    ——节头已声明历史作用域，节内的引用按定义就是历史引用。
+#    不这样做，扫描就有**不动点不稳定**：修复某个字符串的整改叙事必然要
+#    引用该字符串，于是填完表、写完整改记录，计数又变了（R20 死于此）。
+cat > /tmp/dehist.awk <<'AWK'
+/^## / { if (buf != "") printf "%s", (hist ? blank : buf); buf=""; blank=""; hist=0 }
+        { buf = buf $0 "\n"; blank = blank "\n"; if ($0 ~ /本节为该轮历史/) hist=1 }
+END     { if (buf != "") printf "%s", (hist ? blank : buf) }
+AWK
+awk -f /tmp/dehist.awk $D/summary.md > /tmp/summary-nohist.md
+awk -f /tmp/dehist.awk $D/tasks.md   > /tmp/tasks-nohist.md
+
+# 3) 在**去历史节语料**（.md + .py）里搜字面串
 scan_corpus() {           # $1 = 字面串
-  grep -rn --include='*.md' --include='*.py' "$1" "$D" | grep -v '^.*protocol-runs\.md:'
-  grep -n "$1" /tmp/pr-noscan.md | sed 's|^|evidence/protocol-runs.md(noscan):|'
+  grep -rn --include='*.md' --include='*.py' "$1" "$D" \
+    | grep -Ev '(protocol-runs|summary|tasks)\.md:'
+  grep -n "$1" /tmp/pr-noscan.md      | sed 's|^|evidence/protocol-runs.md(noscan):|'
+  grep -n "$1" /tmp/summary-nohist.md | sed 's|^|summary.md(nohist):|'
+  grep -n "$1" /tmp/tasks-nohist.md   | sed 's|^|tasks.md(nohist):|'
 }
 
-scan_corpus "每个被扫文件各注入一次" | wc -l          # 期望 0
-scan_corpus "三种记法" | grep -v "历史@" | wc -l        # 期望 1（summary.md:764，R17 节内自引用）
-scan_corpus "整个 Change Record 目录全部" | grep -v "历史@" | wc -l   # 期望 0
-scan_corpus "1020c231" | wc -l                          # 期望 0（旧脚本 SHA 已单点化）
-scan_corpus "whitelist table" | wc -l                   # 期望 1（checker:82，声明其已撤回）
-scan_corpus "pure ASCII" | wc -l                        # 期望 3（两处源码自述 + 一处 R19 节内自引用）
-scan_corpus "exactly two" | wc -l                       # 期望 1（summary.md:793，R19 节内自引用）
-scan_corpus "every other .md" | wc -l                   # 期望 1（summary.md:793，同上）
+# 新域下**每一格的期望都是 0**：域外命中即违规，历史域内引用不计。
+# 需要审计历史引用时，用不带排除的原始 grep -rn 即可，那是另一件事。
+scan_corpus "每个被扫文件各注入一次" | wc -l
+scan_corpus "三种记法" | wc -l
+scan_corpus "整个 Change Record 目录全部" | wc -l
+scan_corpus "exactly two" | wc -l
+scan_corpus "every other .md" | wc -l
+scan_corpus "1020c231" | wc -l
+scan_corpus "第 13 轮" | wc -l
+scan_corpus "pure ASCII" | grep -v '\.py:' | wc -l
+
+# 4) 表格行格数一致性：表头行的格数即该表期望，其后每行必须相等。
+#    未转义的竖线会多切出一格；转义过的 `\|` 不计。
+cat > /tmp/cells.awk <<'AWK'
+FNR==1   { e="" }
+!/^\|/   { e=""; next }
+         { n=gsub(/\\\|/,"&"); m=gsub(/\|/,"&"); c=m-n-1
+           if (e=="") e=c
+           else if (c!=e) { print FILENAME":"FNR" expected "e" got "c; b++ } }
+END      { print "anomalous rows: " b+0 }
+AWK
+awk -f /tmp/cells.awk $(find $D -name '*.md' | sort)   # 期望 anomalous rows: 0
 ```
 
 ### 落地核对清单（本提交声称的每一处修复）
@@ -213,6 +247,7 @@ scan_corpus "every other .md" | wc -l                   # 期望 1（summary.md:
 | 现刻数字断言：覆盖域终态 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py` | exit 0，并打印扫描到的文件数与域说明；**声称仅限载体自由度表标记为覆盖的轴**，开放轴见该表 |
 | 变异验证：文件 × 记法叉积 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test` | 每个文件 × 每个变体全部 `caught=True`（**变体集合与自检形态见 SSOT 节**），打印句与实现一致；变体含裸数字、逗号格式、反引号包裹、两条历史豁免逃逸样本、英文注释形态 |
 | 单行 docstring 覆盖（C2） | `grep -A 14 "^SELF_TEST_VARIANTS" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py \| grep -c '"""'` | 非零——变体集合含单行 docstring 形态（**覆盖声称见 SSOT 节**）。轴表声称「`.py` 注释与 docstring = 覆盖」，而此前该形态从未被扫（三引号同行成对，旧解析只认奇数个），属**已声称覆盖域内的实现缺陷**，已补齐 |
+| **表格行格数一致（R21 起有命令背书）** | 见本文件「内容寻址扫描记录」小节 shell 块末尾的 `cells.awk`（连同其调用一并入库，可整段复制执行） | **anomalous rows: 0**。表头行的格数即该表期望，随后每行必须相等；未转义的竖线多切一格，本行立即变红。R20 曾声称「全表格行改用 cell-count 核对」而只转义了一处、且**无任何已提交命令背书**——外审用独立解析器一跑就找出三行（`run-manifest.md:261`、`summary.md:508`、`summary.md:597`），均已转义。**命令放在栅栏块而不是表格单元格里**：R21 先把它写进单元格，转义往返把 awk 正则改坏，逐字取出后误报十余行——**能被格式转义改写的命令，不算已交付的命令。** |
 | **被存证脚本的纯 ASCII 不变式** | `grep -c '[^ -~]' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py` | **0**。该构造保证在记录中被声称十一轮，却从未有清单守护——第十一次复发正是它被打破（历史标签把非 ASCII 字节写进了被哈希存证的脚本）。**声称了却没有清单行的不变式，等于没有守护。** |
 | **手抄不变量：脚本 SHA 与实际字节一致** | `test "$(shasum -a 256 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| cut -d' ' -f1)" = "$(grep '脚本 SHA-256' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/run-manifest.md \| grep -oE '[0-9a-f]{64}')"; echo $?` | **0**。不变量节记录的 SHA 与当场计算的字节哈希必须相等；脚本一改而抄本未同步，本行立即变红。 |
 | **手抄不变量：SHA 抄本数** | `grep -rn --exclude-dir=__pycache__ "$(shasum -a 256 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| cut -d' ' -f1)" .harness/changes/2026-07-27-bootstrap-adoption-1 \| wc -l` | **恰 1**——即 `run-manifest.md` 的「本节保留的唯一两个不变量」小节。R19 的 Critical 正是同一个值散落三处而只同步了一处；把「有几处抄本」写成可执行期望值，是手抄值唯一可行的守护。 |
