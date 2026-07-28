@@ -12,7 +12,7 @@ Certification state: **CERTIFIED**.
 | comparator self-test | 0 failures, 5 checks executed | PASS |
 | common-cause self-test | 0 failures, 8 checks executed | PASS |
 | argv self-test | 0 failures, 27 checks executed | PASS |
-| certification self-test | 0 failures, 27 checks executed | PASS |
+| certification self-test | 0 failures, 33 checks executed | PASS |
 | exhaustive length 0-2 | 0 mismatches | PASS |
 | sampled length 0-6 | 0 value mismatches, 0 undefined | PASS |
 | unregistered self-test failures | 0 unrecognised failure label(s) | PASS |
@@ -21,10 +21,10 @@ Self-test attestation for the run that produced this table:
 - comparator self-test 5/5 passed.
 - common-cause self-test 8/8 passed.
 - argv self-test 27/27 passed.
-- certification self-test 27/27 passed.
+- certification self-test 33/33 passed.
 <!--CARRIER-SWEEP-CERTIFICATION-VIEW-END-->
 
-Directed cases: **74**, failures: **0**.
+Directed cases: **75**, failures: **0**.
 A case passes only if BOTH its branch and its carrier value match the
 independently constructed expectation, byte for byte. Inputs and
 carriers are shown in full and are never truncated.
@@ -36,7 +36,7 @@ enumerate (wrong SHA, wrong byte count, wrong verbatim line, wrong
 branch, wrong empty carrier, one-sided set or label edits); no claim
 is made about mutation classes outside that enumeration.
 
-Result digest: `866f00cd9d56dba1b3bdf9c93760f03e7580e76e83e78ad20776ef7c34ca427f`
+Result digest: `20ad0f5005822570f955e0542e7446b21f962b187c630b08d75d5f1d7f4a6b6d`
 
 ## A group -- declared adversarial byte domain (process section 2.3)
 
@@ -63,6 +63,7 @@ Result digest: `866f00cd9d56dba1b3bdf9c93760f03e7580e76e83e78ad20776ef7c34ca427f
 | guard-token collision: certification marker | `b'Certification state: **CERTIFIED**.\n'` | `(b) last-non-empty-line verbatim` | `'Certification state: **CERTIFIED**.'` | `(b) last-non-empty-line verbatim` | `'Certification state: **CERTIFIED**.'` | PASS |
 | guard-token collision: NOT CERTIFIED | `b'NOT CERTIFIED\n'` | `(b) last-non-empty-line verbatim` | `'NOT CERTIFIED'` | `(b) last-non-empty-line verbatim` | `'NOT CERTIFIED'` | PASS |
 | guard-token collision: does NOT certify prose | `b'log line: this run does NOT certify anything\n'` | `(b) last-non-empty-line verbatim` | `'log line: this run does NOT certify anything'` | `(b) last-non-empty-line verbatim` | `'log line: this run does NOT certify anything'` | PASS |
+| guard-token collision: begin sentinel literal | `b'<!--CARRIER-SWEEP-CERTIFICATION-VIEW-BEGIN-->\n'` | `(b) last-non-empty-line verbatim` | `'<!--CARRIER-SWEEP-CERTIFICATION-VIEW-BEGIN-->'` | `(b) last-non-empty-line verbatim` | `'<!--CARRIER-SWEEP-CERTIFICATION-VIEW-BEGIN-->'` | PASS |
 
 ## B group -- the rule's unrenderable code-point set, plus visible neighbours
 
@@ -139,7 +140,7 @@ Result digest: `866f00cd9d56dba1b3bdf9c93760f03e7580e76e83e78ad20776ef7c34ca427f
 
 ## Conclusion
 
-- Directed: all 74 cases match BOTH their expected branch and
+- Directed: all 75 cases match BOTH their expected branch and
   their expected carrier value.
 - Exhaustive: every input of length 0-2 (65793 of them) agrees with
   the oracle. This universal claim is made over that subdomain only.

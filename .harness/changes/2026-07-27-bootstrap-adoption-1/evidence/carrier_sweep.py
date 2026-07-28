@@ -370,6 +370,9 @@ DIRECTED_SPECS = [
     ("A guard-token collision: does NOT certify prose",
      b"log line: this run does NOT certify anything\n",
      ORACLE_BRANCH_LINE, ("verbatim", "log line: this run does NOT certify anything")),
+    ("A guard-token collision: begin sentinel literal",
+     b"<!--CARRIER-SWEEP-CERTIFICATION-VIEW-BEGIN-->\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "<!--CARRIER-SWEEP-CERTIFICATION-VIEW-BEGIN-->")),
     # -- Group B: the rule's unrenderable code-point set --
     ("B C1 control U+0080", "A\u0080B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
     ("B C1 control U+009F", "A\u009fB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
@@ -1025,8 +1028,44 @@ def verdict(layers):
     return all(ok for _name, ok, _detail in layers)
 
 
+def _layer_rows(region):
+    """Layer names in the order the region renders them."""
+    names = set(CERT_LAYERS)
+    found = []
+    for line in region:
+        if line.startswith("| ") and line.endswith(" |"):
+            cell = line.split("|")[1].strip()
+            if cell in names:
+                found.append(cell)
+    return found
+
+
+def _attested_classes(region):
+    """Attested layer names in the order the region renders them."""
+    names = [layer for _p, layer, _pr in CHECK_CLASSES]
+    found = []
+    for line in region:
+        if not line.startswith("- "):
+            continue
+        for layer in names:
+            if line.startswith("- %s " % layer) and "passed." in line:
+                found.append(layer)
+                break
+    return found
+
+
 def certification_view(text):
-    """Return (region_lines, problems) for the delimited certification view."""
+    """Return (region_lines, problems) for the delimited certification view.
+
+    The view is validated for STRUCTURAL COMPLETENESS, not merely for its
+    boundaries. An external review moved the single end sentinel to sit just
+    after the CERTIFIED marker and before the FAIL rows: the sentinels were
+    still one each and still ordered, so a boundary-only check returned no
+    problems while the document as a whole carried CERTIFIED above FAIL. A view
+    that does not contain every layer row and every attestation, in registry
+    order, is not a certification view -- it is a fragment, and a fragment
+    cannot certify anything.
+    """
     lines = text.splitlines()
     begins = [i for i, line in enumerate(lines) if line == CERT_VIEW_BEGIN]
     ends = [i for i, line in enumerate(lines) if line == CERT_VIEW_END]
@@ -1041,7 +1080,39 @@ def certification_view(text):
         return [], problems
     if begins[0] > ends[0]:
         return [], ["certification view sentinels are out of order"]
-    return lines[begins[0] + 1:ends[0]], []
+
+    region = lines[begins[0] + 1:ends[0]]
+    if not [line for line in region if line.strip()]:
+        return [], ["certification view is empty"]
+
+    markers = [line for line in region
+               if CERTIFIED_MARKER in line or UNCERTIFIED_MARKER in line]
+    if len(markers) != 1:
+        problems.append("certification view holds %d certification markers, "
+                        "expected exactly 1" % len(markers))
+
+    layers_found = _layer_rows(region)
+    if layers_found != list(CERT_LAYERS):
+        missing = [name for name in CERT_LAYERS if name not in layers_found]
+        duplicated = sorted({name for name in layers_found
+                             if layers_found.count(name) > 1})
+        problems.append(
+            "certification view layer rows do not match the registry "
+            "(missing=%s duplicated=%s order_ok=%s)"
+            % (missing, duplicated,
+               [n for n in layers_found if n in CERT_LAYERS]
+               == [n for n in CERT_LAYERS if n in layers_found]))
+
+    expected_classes = [layer for _p, layer, _pr in CHECK_CLASSES]
+    attested = _attested_classes(region)
+    if attested != expected_classes:
+        problems.append(
+            "certification view attestations do not match the registry "
+            "(expected=%s found=%s)" % (expected_classes, attested))
+
+    if problems:
+        return [], problems
+    return region, []
 
 
 def artifact_guard_violations(text):
@@ -1508,6 +1579,34 @@ def selftest_certification():
     # attestation, or a class could be certified against while invisible.
     attested = " ".join(attestation_lines(fixture_results))
     layer_names = [n for n, _, _ in green]
+    # Structural attacks on the view. The reviewer's counterexample moved the
+    # end sentinel to just after the marker, before the FAIL rows: boundaries
+    # still valid, view no longer a certification.
+    marker_line = [ln for ln in text_bad.splitlines()
+                   if UNCERTIFIED_MARKER in ln or CERTIFIED_MARKER in ln][0]
+    premature = text_bad.replace(CERT_VIEW_END, "", 1).replace(
+        marker_line, marker_line + "\n" + CERT_VIEW_END, 1)
+    checks.append(("premature end sentinel refused",
+                   bool(artifact_guard_violations(premature))))
+    late_begin = text_bad.replace(CERT_VIEW_BEGIN, "", 1).replace(
+        marker_line, CERT_VIEW_BEGIN + "\n" + marker_line.replace(
+            marker_line, marker_line), 1)
+    checks.append(("late begin sentinel refused",
+                   bool(artifact_guard_violations(
+                       text_bad.replace(CERT_VIEW_BEGIN + "\n", "", 1)))))
+    empty_view = text_bad.replace(CERT_VIEW_BEGIN, CERT_VIEW_BEGIN + "\n" + CERT_VIEW_END, 1)
+    checks.append(("empty view refused", bool(artifact_guard_violations(empty_view))))
+    marker_only = "\n".join([CERT_VIEW_BEGIN, marker_line, CERT_VIEW_END])
+    checks.append(("marker-only view refused",
+                   bool(artifact_guard_violations(marker_only))))
+    dropped_layer = text_bad.replace("| " + LAYER_EXHAUSTIVE + " |", "| dropped |", 1)
+    checks.append(("missing layer row refused",
+                   bool(artifact_guard_violations(dropped_layer))))
+    dropped_attestation = text_bad.replace(
+        "- %s " % CHECK_CLASSES[0][1], "- dropped ", 1)
+    checks.append(("missing attestation refused",
+                   bool(artifact_guard_violations(dropped_attestation))))
+
     checks.append(("every registered class appears in layers and attestation",
                    all(layer_name in layer_names and layer_name in attested
                        for _p, layer_name, _pr in CHECK_CLASSES)))
