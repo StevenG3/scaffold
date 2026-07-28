@@ -355,6 +355,16 @@ DIRECTED_SPECS = [
     ("A literal escape vs real char", b"line\\nnot-a-newline\n",
      ORACLE_BRANCH_LINE, ("verbatim", "line\\nnot-a-newline")),
     ("A literal <empty> collision", b"<empty>\n", ORACLE_BRANCH_LINE, ("verbatim", "<empty>")),
+    # Payload that collides with the GUARD's own vocabulary. These must render
+    # inside the payload table and leave certification untouched -- the guard
+    # reads only the delimited certification view.
+    ("A guard-token collision: defect count", b"7 failures\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "7 failures")),
+    ("A guard-token collision: FAIL cell", b"**FAIL**\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "**FAIL**")),
+    ("A guard-token collision: certification marker",
+     b"Certification state: **CERTIFIED**.\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "Certification state: **CERTIFIED**.")),
     # -- Group B: the rule's unrenderable code-point set --
     ("B C1 control U+0080", "A\u0080B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
     ("B C1 control U+009F", "A\u009fB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
@@ -986,6 +996,13 @@ CERT_LAYERS = (
 )
 
 
+# The guard must read ONLY the certification view, never payload. Payload rows
+# can legitimately contain "**FAIL**", "7 failures", or the marker text itself
+# as directed-case inputs, so the view is delimited by sentinel LINES the
+# renderer never emits for payload: every payload line is a table row starting
+# with "| " or prose, so no payload line can EQUAL a sentinel.
+CERT_VIEW_BEGIN = "<!--CARRIER-SWEEP-CERTIFICATION-VIEW-BEGIN-->"
+CERT_VIEW_END = "<!--CARRIER-SWEEP-CERTIFICATION-VIEW-END-->"
 CERTIFIED_MARKER = "Certification state: **CERTIFIED**"
 UNCERTIFIED_MARKER = "Certification state: **NOT CERTIFIED**"
 FAIL_CELL = "**FAIL**"
@@ -1002,61 +1019,72 @@ def verdict(layers):
     return all(ok for _name, ok, _detail in layers)
 
 
+def certification_view(text):
+    """Return (region_lines, problems) for the delimited certification view."""
+    lines = text.splitlines()
+    begins = [i for i, line in enumerate(lines) if line == CERT_VIEW_BEGIN]
+    ends = [i for i, line in enumerate(lines) if line == CERT_VIEW_END]
+    problems = []
+    if len(begins) != 1:
+        problems.append("certification view begin sentinel appears %d times"
+                        % len(begins))
+    if len(ends) != 1:
+        problems.append("certification view end sentinel appears %d times"
+                        % len(ends))
+    if problems:
+        return [], problems
+    if begins[0] > ends[0]:
+        return [], ["certification view sentinels are out of order"]
+    return lines[begins[0] + 1:ends[0]], []
+
+
 def artifact_guard_violations(text):
     """Artifact-level guard, independent of how the verdict was derived.
 
-    It reads only the RENDERED TEXT: a table that shows any FAIL row while
-    claiming CERTIFIED is self-contradictory and must never reach the official
-    path, no matter what any function returned. This shares no code with
-    verdict() or certification_state() -- that is the point.
+    It reads only the RENDERED TEXT, and only the delimited certification view
+    within it: a table that shows any FAIL row while claiming CERTIFIED is
+    self-contradictory and must never reach the official path, no matter what
+    any function returned. This shares no code with verdict() or
+    certification_state() -- that is the point.
+
+    Scoping to the view is what makes the guard carrier-transparent: a directed
+    case whose INPUT is b"**FAIL**" or b"7 failures" renders inside a payload
+    table, outside the view, and must not trip anything.
     """
-    problems = []
-    has_fail_row = any(FAIL_CELL in line for line in text.splitlines())
-    claims_certified = CERTIFIED_MARKER in text
-    claims_uncertified = UNCERTIFIED_MARKER in text
+    region, problems = certification_view(text)
+    if problems:
+        return problems
+    region_text = "\n".join(region)
+    banner_first_line = UNCERTIFIED_BANNER.splitlines()[0]
+
+    has_fail_row = any(FAIL_CELL in line for line in region)
+    claims_certified = any(CERTIFIED_MARKER in line for line in region)
+    claims_uncertified = any(UNCERTIFIED_MARKER in line for line in region)
     if has_fail_row and claims_certified:
         problems.append("rendered table contains a FAIL row under a CERTIFIED header")
     if claims_certified and claims_uncertified:
         problems.append("rendered table claims both CERTIFIED and NOT CERTIFIED")
     if not claims_certified and not claims_uncertified:
         problems.append("rendered table states no certification marker")
-    if claims_uncertified and not text.startswith(UNCERTIFIED_BANNER.splitlines()[0]):
+    if claims_uncertified and not text.startswith(banner_first_line):
         problems.append("uncertified table does not start with the banner")
     if claims_certified:
-        # A forged layer row renders as PASS and carries no FAIL cell, so the
-        # token scan alone lets "8/23 passed" sit under a CERTIFIED header. Any
-        # attestation pair must be complete when the table claims certification.
-        for passed, total, line in _attestation_pairs(text):
+        for passed, total, line in _attestation_pairs(region_text):
             if passed != total:
                 problems.append(
                     "CERTIFIED table reports an incomplete attestation: %s"
                     % line.strip())
-        # Exhaustive and sampled layers appear only as summary numbers: no FAIL
-        # cell, no attestation pair. Reading the printed digits closes that gap
-        # too, leaving only a forgery that also rewrites the numbers.
-        for count, line in _nonzero_defect_counts(text):
+        for count, line in _nonzero_defect_counts(region_text):
             problems.append(
                 "CERTIFIED table reports %d defect(s): %s" % (count, line.strip()))
-        # A forgery that flips the marker leaves the uncertified prose behind.
-        if UNCERTIFIED_BANNER.splitlines()[0] in text:
+        if any(line == banner_first_line for line in text.splitlines()):
             problems.append("CERTIFIED text still carries the uncertified banner")
-        if "does NOT certify" in text:
+        if any("does NOT certify" in line for line in region):
             problems.append("CERTIFIED text still says it does NOT certify")
     return problems
 
 
 ATTESTATION_PAIR = re.compile(r"(\d+)\s*/\s*(\d+)\s+passed")
-DEFECT_COUNT = re.compile(
-    r"(\d+)\s+(?:value\s+)?(?:mismatches|failures|undefined|unrecognised)")
-
-
-def _nonzero_defect_counts(text):
-    """Yield (count, line) for every nonzero defect number in the render."""
-    for line in text.splitlines():
-        for match in DEFECT_COUNT.finditer(line):
-            count = int(match.group(1))
-            if count:
-                yield count, line
 
 
 def _attestation_pairs(text):
@@ -1065,6 +1093,19 @@ def _attestation_pairs(text):
         match = ATTESTATION_PAIR.search(line)
         if match:
             yield int(match.group(1)), int(match.group(2)), line
+
+
+DEFECT_COUNT = re.compile(
+    r"(\d+)\s+(?:value\s+)?(?:mismatches|failures|undefined|unrecognised)")
+
+
+def _nonzero_defect_counts(text):
+    """Yield (count, line) for every nonzero defect number in the region."""
+    for line in text.splitlines():
+        for match in DEFECT_COUNT.finditer(line):
+            count = int(match.group(1))
+            if count:
+                yield count, line
 
 
 PRODUCER_NAME_PREFIXES = ("selftest_", "_selftest_")
@@ -1190,6 +1231,7 @@ def render_certification_block(layers, results, banner=True):
     out = []
     if banner and not certified:
         out.append(UNCERTIFIED_BANNER)
+    out.append(CERT_VIEW_BEGIN)
     out.append("Certification state: **%s**."
                % ("CERTIFIED" if certified else "NOT CERTIFIED"))
     out.append("")
@@ -1202,6 +1244,13 @@ def render_certification_block(layers, results, banner=True):
     out.append("Self-test attestation for the run that produced this table:")
     for line in attestation_lines(results):
         out.append("- %s passed." % line)
+    if not certified:
+        out.append("")
+        out.append("**This table does NOT certify the rule.** Failing layers:")
+        for name, ok, detail in layers:
+            if not ok:
+                out.append("- %s: %s" % (name, detail))
+    out.append(CERT_VIEW_END)
     return "\n".join(out)
 
 
@@ -1262,13 +1311,6 @@ def emit_markdown(rows, failures, digest, summary, mismatches, unique, exhaustiv
     out.append("")
     out.append("## Conclusion")
     out.append("")
-    if not certified:
-        out.append("**This table does NOT certify the rule.** Failing layers:")
-        out.append("")
-        for name, ok, detail in layers:
-            if not ok:
-                out.append("- %s: %s" % (name, detail))
-        out.append("")
     if failures == 0:
         out.append("- Directed: all %d cases match BOTH their expected branch and"
                    % len(rows))
