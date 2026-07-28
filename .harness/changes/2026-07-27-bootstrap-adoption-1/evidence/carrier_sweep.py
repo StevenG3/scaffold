@@ -38,7 +38,11 @@ expectations pair a literal byte count with a direct hashlib.sha256() call.
 Neither `_digest()` nor `carrier()` is ever used to build an expectation.
 
 Deterministic, with a stated scope: standard library only, fixed seed, no
-clock or environment input. Re-running under the SAME interpreter version
+clock input and no reading of shared environment state. The argv path checks do
+perform real filesystem operations, but only inside a private directory they
+create with mkdtemp() and delete afterwards, so ambient files cannot change any
+result -- an internal verifier previously flipped certification by creating a
+directory at a shared $TMPDIR name the checks consulted. Re-running under the SAME interpreter version
 reproduces the same sample set and the same result digest bit for bit. NO
 cross-version promise is made: the sample is drawn with random.randint() and
 getrandbits(), and CPython documents that most random-module algorithms may
@@ -77,6 +81,7 @@ import hashlib
 import os
 import random
 import re
+import shutil
 import sys
 import tempfile
 
@@ -738,15 +743,39 @@ def selftest_argv():
         ("empty path rejected", parse_args(["--emit-markdown", ""])[0] == 2),
         ("whitespace-only path rejected",
          parse_args(["--emit-markdown", "   "])[0] == 2),
-        ("nonexistent parent directory rejected",
-         parse_args(["--emit-markdown",
-                     os.path.join(os.sep, "no-such-dir-4f2a", "out.md")])[0] == 2),
-        ("directory target rejected",
-         parse_args(["--emit-markdown", os.path.abspath(os.curdir)])[0] == 2),
-        ("writable path accepted",
-         parse_args(["--emit-markdown",
-                     os.path.join(tempfile.gettempdir(), "out.md")])[2] == "emit"),
-    ]
+    ] + argv_path_checks()
+
+
+def argv_path_checks():
+    """Path-shape checks, run inside a PRIVATE temp directory.
+
+    An internal verifier ran `mkdir "$TMPDIR/out.md"` and flipped certification
+    to FAIL on an unmodified script: the checks consulted shared names under
+    $TMPDIR, the current working directory, and a hardcoded absolute path whose
+    meaning inverts if it happens to exist. That put ambient filesystem state
+    inside a certified verdict layer.
+
+    These cases now build their own directory with mkdtemp(), construct all
+    three shapes inside it, and remove it. target_path_problem() is unchanged --
+    production behaviour was correct; only the self-tests had to stop reading
+    shared environment state.
+    """
+    base = tempfile.mkdtemp(prefix="carrier_sweep-argv-")
+    try:
+        missing_parent = os.path.join(base, "absent-parent", "out.md")
+        directory_target = os.path.join(base, "a-directory")
+        os.mkdir(directory_target)
+        writable = os.path.join(base, "out.md")
+        return [
+            ("nonexistent parent directory rejected",
+             parse_args(["--emit-markdown", missing_parent])[0] == 2),
+            ("directory target rejected",
+             parse_args(["--emit-markdown", directory_target])[0] == 2),
+            ("writable path accepted",
+             parse_args(["--emit-markdown", writable])[2] == "emit"),
+        ]
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -998,10 +1027,27 @@ def artifact_guard_violations(text):
                 problems.append(
                     "CERTIFIED table reports an incomplete attestation: %s"
                     % line.strip())
+        # Exhaustive and sampled layers appear only as summary numbers: no FAIL
+        # cell, no attestation pair. Reading the printed digits closes that gap
+        # too, leaving only a forgery that also rewrites the numbers.
+        for count, line in _nonzero_defect_counts(text):
+            problems.append(
+                "CERTIFIED table reports %d defect(s): %s" % (count, line.strip()))
     return problems
 
 
 ATTESTATION_PAIR = re.compile(r"(\d+)\s*/\s*(\d+)\s+passed")
+DEFECT_COUNT = re.compile(
+    r"(\d+)\s+(?:value\s+)?(?:mismatches|failures|undefined|unrecognised)")
+
+
+def _nonzero_defect_counts(text):
+    """Yield (count, line) for every nonzero defect number in the render."""
+    for line in text.splitlines():
+        for match in DEFECT_COUNT.finditer(line):
+            count = int(match.group(1))
+            if count:
+                yield count, line
 
 
 def _attestation_pairs(text):
@@ -1358,6 +1404,19 @@ def selftest_certification():
     # it, so the shared-constant coupling is measured rather than assumed.
     checks.append(("uncertified render actually contains the FAIL token",
                    FAIL_CELL in text_bad))
+    # Exhaustive and sampled layers carry no FAIL cell and no attestation pair,
+    # so only the printed digits expose a forged PASS on them.
+    forged_exhaustive = text_ok.replace("| exhaustive length 0-2 | 0 mismatches | PASS |",
+                                        "| exhaustive length 0-2 | 7 mismatches | PASS |")
+    checks.append(("artifact guard rejects a forged exhaustive layer",
+                   forged_exhaustive != text_ok
+                   and bool(artifact_guard_violations(forged_exhaustive))))
+    forged_sampled = text_ok.replace(
+        "| sampled length 0-6 | 0 value mismatches, 0 undefined | PASS |",
+        "| sampled length 0-6 | 11 value mismatches, 0 undefined | PASS |")
+    checks.append(("artifact guard rejects a forged sampled layer",
+                   forged_sampled != text_ok
+                   and bool(artifact_guard_violations(forged_sampled))))
     checks.append(("every registered producer is discovered and registered",
                    _discovery_ok()))
 

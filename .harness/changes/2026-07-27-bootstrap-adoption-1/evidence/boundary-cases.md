@@ -11,7 +11,7 @@ Certification state: **CERTIFIED**.
 | comparator self-test | 0 failures, 5 checks executed | PASS |
 | common-cause self-test | 0 failures, 8 checks executed | PASS |
 | argv self-test | 0 failures, 27 checks executed | PASS |
-| certification self-test | 0 failures, 25 checks executed | PASS |
+| certification self-test | 0 failures, 27 checks executed | PASS |
 | exhaustive length 0-2 | 0 mismatches | PASS |
 | sampled length 0-6 | 0 value mismatches, 0 undefined | PASS |
 | unregistered self-test failures | 0 unrecognised failure label(s) | PASS |
@@ -25,7 +25,7 @@ Self-test attestation for the run that produced this table:
 - comparator self-test 5/5 passed.
 - common-cause self-test 8/8 passed.
 - argv self-test 27/27 passed.
-- certification self-test 25/25 passed.
+- certification self-test 27/27 passed.
 Exhaustive sweep of all 65793 inputs of length 0-2: 0 mismatches.
 Sampled sweep: 200000 draws over lengths 0-6, 137527 unique inputs, 0 value mismatches.
 These counts change under the mutation classes the self-tests
