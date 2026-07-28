@@ -111,7 +111,7 @@ rg -n \
 ```
 
 本表**基于最终提交态的收集器命中集 + 人工分类**：收集器在本次提交的最终内容上重跑，
-命中 **208 行**，分布见下表。（上一版记录的 175 行是**跨状态混合值**——
+命中 **231 行**，分布见下表。（上一版记录的 175 行是**跨状态混合值**——
 自验会话 B 证明：同一命令在该 HEAD 上得 191、在其前一状态得 157，记录的分布两者都不匹配。
 根因是收集器在编辑中途运行、随后文本又被改动。现改为**提交前最后一步**重跑并记录。）
 
@@ -119,11 +119,11 @@ rg -n \
 | --- | ---: |
 | `customization-record.md` | 5 |
 | `evidence/boundary-cases.md` | 7 |
-| `evidence/carrier_sweep.py` | 87 |
+| `evidence/carrier_sweep.py` | 102 |
 | `evidence/run-manifest.md` | 42 |
 | `spec.md` | 6 |
-| `summary.md` | 49 |
-| `tasks.md` | 12 |
+| `summary.md` | 54 |
+| `tasks.md` | 15 |
 
 命中集中**每一条承载能力声明的句子**都在下表拥有自己的行；本节不再使用
 「其余命中不构成全称能力声明」这类概括性兜底句——那本身又是一个未经逐条检验的全称句。
@@ -245,7 +245,7 @@ rg -n \
 | 确定性（**已限定**） | 无时钟、无环境、无文件输入。**在下方记录的解释器版本上**，固定 seed 下逐位可重现（样本集与结果摘要均一致）。**不对跨 Python 版本作任何承诺**：样本由 `random.randint()` 与 `getrandbits()` 组合生成，CPython 文档明确大多数 random 算法可能随版本变化，其跨版本保证只覆盖兼容 seeder 下的 `random()`，不覆盖本脚本使用的调用组合。见 <https://docs.python.org/3/library/random.html#notes-on-reproducibility> |
 | 实测解释器版本 | `Python 3.14.5`（`python3 --version`，本次测量环境） |
 | 源码编码 | 纯 ASCII：不可呈现码点一律以 `\uXXXX` 转义出现，diff 可读 |
-| 脚本 SHA-256 | `32d77cf155cde9b705d0158dc2920cf1e284afc78553b00c5a862c0c1c0727ef` |
+| 脚本 SHA-256 | `284a12e4cd20707a4c9dea0c86b806709357ee7f379112b61449d2680ee40727` |
 
 ## 复现与再生成命令
 

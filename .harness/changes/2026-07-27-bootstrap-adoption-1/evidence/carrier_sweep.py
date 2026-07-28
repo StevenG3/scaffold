@@ -893,13 +893,20 @@ def result_digest(rows, counts, undefined, mismatches, unique, exhaustive, failu
 # means adding a class cannot leave its failures unconsumed, and any failure
 # whose prefix is NOT registered fails closed rather than disappearing.
 # ---------------------------------------------------------------------------
+# Each entry is (prefix, layer name, producer function name). The producer is
+# named rather than referenced so the registry can sit above the definitions.
+# A class registered WITHOUT a producer that actually runs checks used to yield
+# a fabricated "0 failures PASS" row and certified YES -- session C probed this
+# live. certification_state() now fails closed when a registered class produced
+# no executed checks, so registering a class is not enough to look green: it has
+# to actually run something.
 CHECK_CLASSES = (
-    ("comparator", "comparator self-test"),
-    ("common-cause", "common-cause self-test"),
-    ("argv", "argv self-test"),
-    ("certification", "certification self-test"),
+    ("comparator", "comparator self-test", "selftest_comparator"),
+    ("common-cause", "common-cause self-test", "selftest_common_cause"),
+    ("argv", "argv self-test", "selftest_argv"),
+    ("certification", "certification self-test", "_selftest_certification"),
 )
-CHECK_CLASS_PREFIXES = tuple(prefix for prefix, _ in CHECK_CLASSES)
+CHECK_CLASS_PREFIXES = tuple(prefix for prefix, _, _ in CHECK_CLASSES)
 
 LAYER_DIRECTED = "directed"
 LAYER_EXHAUSTIVE = "exhaustive length 0-2"
@@ -909,7 +916,7 @@ LAYER_UNREGISTERED = "unregistered self-test failures"
 # Derived, not hand-maintained: every registered class contributes a layer.
 CERT_LAYERS = (
     (LAYER_DIRECTED,)
-    + tuple(name for _, name in CHECK_CLASSES)
+    + tuple(name for _, name, _ in CHECK_CLASSES)
     + (LAYER_EXHAUSTIVE, LAYER_SAMPLED, LAYER_UNREGISTERED)
 )
 
@@ -935,18 +942,26 @@ def classify_selftest_failures(selftest_failures):
 
 
 def certification_state(directed_failures, selftest_failures, exhaustive_mismatches,
-                        sampled_mismatches, undefined):
+                        sampled_mismatches, undefined, executed_counts=None):
     """The ONE certification state: a conjunction over every verdict layer.
 
     Returns (certified, layers) where layers is a list of (name, ok, detail)
     covering exactly CERT_LAYERS, in that order.
     """
     buckets, residual = classify_selftest_failures(selftest_failures)
+    if executed_counts is None:
+        # Fixture path (self-tests): assume each registered class ran.
+        executed_counts = {prefix: 1 for prefix in CHECK_CLASS_PREFIXES}
     layers = [(LAYER_DIRECTED, directed_failures == 0,
                "%d failures" % directed_failures)]
-    for prefix, layer_name in CHECK_CLASSES:
+    for prefix, layer_name, _producer in CHECK_CLASSES:
         failed = buckets[prefix]
-        layers.append((layer_name, not failed, "%d failures" % len(failed)))
+        executed = executed_counts.get(prefix, 0)
+        ok = (not failed) and executed > 0
+        detail = "%d failures, %d checks executed" % (len(failed), executed)
+        if executed == 0:
+            detail += " (NO CHECKS RAN -- fails closed)"
+        layers.append((layer_name, ok, detail))
     layers.append((LAYER_EXHAUSTIVE, exhaustive_mismatches == 0,
                    "%d mismatches" % exhaustive_mismatches))
     layers.append((LAYER_SAMPLED, sampled_mismatches == 0 and undefined == 0,
@@ -1013,9 +1028,8 @@ def emit_markdown(rows, failures, digest, summary, mismatches, unique, exhaustiv
     out.append("carriers are shown in full and are never truncated.")
     out.append("")
     out.append("Self-test attestation for the run that produced this table:")
-    out.append("comparator %d/%d, common-cause %d/%d, argv %d/%d, certification %d/%d"
-               % summary)
-    out.append("passed.")
+    for line in attestation_lines(summary):
+        out.append("- %s passed." % line)
     out.append("Exhaustive sweep of all %d inputs of length 0-2: %d mismatches."
                % exhaustive)
     out.append("Sampled sweep: %d draws over lengths 0-6, %d unique inputs, %d "
@@ -1105,90 +1119,137 @@ def _print_directed(rows, label):
     print("(a case passes only if BOTH branch and carrier value match)")
 
 
-def selftest_summary():
-    comparator_checks = selftest_comparator()
-    common_cause_checks = selftest_common_cause()
-    argv_checks = selftest_argv()
-    failures = (["comparator: " + name for name, ok in comparator_checks if not ok]
-                + ["common-cause: " + name for name, ok in common_cause_checks if not ok]
-                + ["argv: " + name for name, ok in argv_checks if not ok])
-    cert_checks = _selftest_certification()
-    failures = failures + ["certification: " + name
-                           for name, ok in cert_checks if not ok]
-    summary = (sum(1 for _, ok in comparator_checks if ok), len(comparator_checks),
-               sum(1 for _, ok in common_cause_checks if ok), len(common_cause_checks),
-               sum(1 for _, ok in argv_checks if ok), len(argv_checks),
-               sum(1 for _, ok in cert_checks if ok), len(cert_checks))
-    return (comparator_checks, common_cause_checks, argv_checks, cert_checks,
-            summary, failures)
-
-
 def _selftest_certification():
     """Prove the certification state flips when ANY layer fails.
 
-    Twelve checks. Each fixture below is a hand-built layer-result tuple, not a
-    measurement of this run: the numbers are chosen to exercise one failing
-    layer at a time, and are labelled as fixtures so nobody reads them as
-    observed values. The digest and self-test counts handed to emit_markdown()
-    here are likewise fixtures ("FIXTURE-DIGEST", zeroed counts).
+    Fixtures below are hand-built layer-result tuples, not measurements of this
+    run: the numbers exercise one failing layer at a time and are labelled as
+    fixtures ("FIXTURE-DIGEST", zeroed counts) so nobody reads them as observed
+    values.
     """
     checks = []
-    # Fixture: all layers clean.
-    green = certification_state(0, [], 0, 0, 0)
+    all_ran = {prefix: 1 for prefix in CHECK_CLASS_PREFIXES}
+
+    green = certification_state(0, [], 0, 0, 0, all_ran)
     checks.append(("control: all layers green certifies", green[0]))
 
-    # Fixtures: exactly one failing layer each.
-    exhaustive_bad = certification_state(0, [], 1, 0, 0)
+    exhaustive_bad = certification_state(0, [], 1, 0, 0, all_ran)
     checks.append(("exhaustive failure blocks certification", not exhaustive_bad[0]))
 
-    sampled_bad = certification_state(0, [], 0, 3, 0)
+    sampled_bad = certification_state(0, [], 0, 3, 0, all_ran)
     checks.append(("sampled failure blocks certification", not sampled_bad[0]))
 
-    selftest_bad = certification_state(0, ["comparator: fixture"], 0, 0, 0)
+    comparator_bad = certification_state(0, ["comparator: fixture"], 0, 0, 0, all_ran)
     checks.append(("comparator self-test failure blocks certification",
-                   not selftest_bad[0]))
+                   not comparator_bad[0]))
 
-    cert_bad = certification_state(0, ["certification: fixture"], 0, 0, 0)
+    cert_bad = certification_state(0, ["certification: fixture"], 0, 0, 0, all_ran)
     checks.append(("certification self-test failure blocks certification",
                    not cert_bad[0]))
 
-    unknown_bad = certification_state(0, ["unregistered-class: fixture"], 0, 0, 0)
+    unknown_bad = certification_state(0, ["unregistered-class: fixture"], 0, 0, 0,
+                                      all_ran)
     checks.append(("unknown failure prefix fails closed", not unknown_bad[0]))
 
-    undefined_bad = certification_state(0, [], 0, 0, 2)
+    undefined_bad = certification_state(0, [], 0, 0, 2, all_ran)
     checks.append(("undefined input blocks certification", not undefined_bad[0]))
 
-    directed_bad = certification_state(1, [], 0, 0, 0)
+    directed_bad = certification_state(1, [], 0, 0, 0, all_ran)
     checks.append(("directed failure blocks certification", not directed_bad[0]))
 
-    # Every registered class must own a layer; a class whose failures reach no
-    # layer would be dropped exactly as "certification:" once was.
-    covered = set(name for _, name in CHECK_CLASSES)
-    layer_names = set(name for name, _, _ in green[1])
-    checks.append(("every registered check class owns a layer",
-                   covered.issubset(layer_names)
-                   and LAYER_UNREGISTERED in layer_names))
+    # A registered class whose producer runs nothing must NOT yield a fabricated
+    # "0 failures PASS" row. Session C probed this live on the previous HEAD.
+    for orphan_prefix in CHECK_CLASS_PREFIXES:
+        starved = dict(all_ran)
+        starved[orphan_prefix] = 0
+        state = certification_state(0, [], 0, 0, 0, starved)
+        checks.append(("registered class with zero executed checks fails closed: %s"
+                       % orphan_prefix, not state[0]))
 
-    # Conclusion text must follow the state, not merely the exit code. The
-    # directed rows are real; the counts passed alongside them are fixtures.
+    checks.append(("every registered check class owns a layer",
+                   set(name for _, name, _ in CHECK_CLASSES)
+                   .issubset(set(name for name, _, _ in green[1]))
+                   and LAYER_UNREGISTERED in [n for n, _, _ in green[1]]))
+
+    # Conclusion text must follow the state. Directed rows are real; the
+    # attestation results handed in here are fixtures.
     rows, _ = run_directed()
-    summary = (0, 0, 0, 0, 0, 0, 0, 0)  # fixture counts, not measurements
-    text_bad = emit_markdown(rows, 0, "FIXTURE-DIGEST", summary, 0, 1, (65793, 1),
-                             exhaustive_bad[0], exhaustive_bad[1])
+    fixture_results = {layer_name: [("fixture check", True)]
+                       for _p, layer_name, _pr in CHECK_CLASSES}
+    text_bad = emit_markdown(rows, 0, "FIXTURE-DIGEST", fixture_results, 0, 1,
+                             (65793, 1), exhaustive_bad[0], exhaustive_bad[1])
     checks.append(("failing exhaustive removes the universal agreement line",
                    "EVERY input" not in text_bad
                    and "every input of length 0-2 agrees" not in text_bad
                    and "does NOT certify" in text_bad))
-    text_cert = emit_markdown(rows, 0, "FIXTURE-DIGEST", summary, 0, 1, (65793, 0),
-                              cert_bad[0], cert_bad[1])
+    text_cert = emit_markdown(rows, 0, "FIXTURE-DIGEST", fixture_results, 0, 1,
+                              (65793, 0), cert_bad[0], cert_bad[1])
     checks.append(("failing certification self-test marks the table uncertified",
                    "does NOT certify" in text_cert))
-    text_ok = emit_markdown(rows, 0, "FIXTURE-DIGEST", summary, 0, 1, (65793, 0),
-                            green[0], green[1])
+    text_ok = emit_markdown(rows, 0, "FIXTURE-DIGEST", fixture_results, 0, 1,
+                            (65793, 0), green[0], green[1])
     checks.append(("all-green table carries no uncertified banner",
                    "does NOT certify" not in text_ok
                    and "NOT CERTIFIED" not in text_ok))
+
+    # The banner must be the FIRST line of uncertified output, as USAGE promises.
+    # Asserting only that the marker appears somewhere left the banner deletable.
+    first_line = text_bad.splitlines()[0] if text_bad.splitlines() else ""
+    banner_first = UNCERTIFIED_BANNER.splitlines()[0]
+    checks.append(("uncertified output starts with the banner",
+                   first_line == banner_first))
+    checks.append(("certified output does not start with the banner",
+                   (text_ok.splitlines()[0] if text_ok.splitlines() else "")
+                   != banner_first))
+
+    # Every registered class must appear in BOTH the layer table and the
+    # attestation, or a class could be certified against while invisible.
+    attested = " ".join(attestation_lines(fixture_results))
+    layer_names = [n for n, _, _ in green[1]]
+    checks.append(("every registered class appears in layers and attestation",
+                   all(layer_name in layer_names and layer_name in attested
+                       for _p, layer_name, _pr in CHECK_CLASSES)))
     return checks
+
+
+def run_check_classes():
+    """Run every registered check class through its registered producer.
+
+    Returns (results, executed_counts, failures) where results maps the layer
+    name to its list of (name, ok). Driven entirely by CHECK_CLASSES: a class
+    with no producer, or whose producer runs nothing, contributes an executed
+    count of 0 and therefore fails closed in certification_state().
+    """
+    results = {}
+    executed_counts = {}
+    failures = []
+    for prefix, layer_name, producer_name in CHECK_CLASSES:
+        producer = globals().get(producer_name)
+        checks = producer() if callable(producer) else []
+        results[layer_name] = checks
+        executed_counts[prefix] = len(checks)
+        failures.extend("%s: %s" % (prefix, name) for name, ok in checks if not ok)
+    return results, executed_counts, failures
+
+
+def attestation_lines(results):
+    """Build the header attestation from the registry, not from a fixed tuple.
+
+    The line used to hardcode four class names and counts, so a newly registered
+    class could reach the layer table while never appearing in the attestation.
+    """
+    parts = []
+    for _prefix, layer_name, _producer in CHECK_CLASSES:
+        checks = results.get(layer_name, [])
+        parts.append("%s %d/%d" % (layer_name,
+                                   sum(1 for _, ok in checks if ok),
+                                   len(checks)))
+    return parts
+
+
+def selftest_summary():
+    results, executed_counts, failures = run_check_classes()
+    return results, executed_counts, failures
 
 
 def main(argv):
@@ -1220,22 +1281,19 @@ def main(argv):
                       % (name, expected_branch, actual_branch))
         return 0
 
-    (comparator_checks, common_cause_checks, argv_checks, cert_checks,
-     summary, selftest_failures) = selftest_summary()
+    results, executed_counts, selftest_failures = selftest_summary()
     exhaustive = run_exhaustive()
     counts, undefined, mismatches, unique = run_fuzz()
     certified, layers = certification_state(
-        failures, selftest_failures, exhaustive[1], mismatches, undefined)
+        failures, selftest_failures, exhaustive[1], mismatches, undefined,
+        executed_counts)
     digest = result_digest(rows, counts, undefined, mismatches, unique,
                            exhaustive, failures)
 
     if mode == "emit":
-        text = emit_markdown(rows, failures, digest, summary, mismatches, unique,
+        text = emit_markdown(rows, failures, digest, results, mismatches, unique,
                              exhaustive, certified, layers)
         if not certified:
-            # Never write an uncertified table to the official path, and never
-            # exit 0 from a run whose verdict is negative. Diagnostic output
-            # goes to stdout only, carrying its own banner.
             if path is not None:
                 sys.stderr.write(
                     "carrier_sweep.py: refusing to write %s -- certification "
@@ -1259,28 +1317,11 @@ def main(argv):
     # Default mode. Its exit code is the certification verdict.
     _print_directed(rows, "CURRENT RULE")
 
-    print("")
-    print("== COMPARATOR SELF-TEST ==")
-    print("mutated expectations must be REJECTED; the control must be ACCEPTED")
-    for name, ok in comparator_checks:
-        print("  %-52s %s" % (name, "PASS" if ok else "FAIL"))
-
-    print("")
-    print("== COMMON-CAUSE SELF-TEST ==")
-    print("attacks on data shared between the code under test and the checker")
-    for name, ok in common_cause_checks:
-        print("  %-52s %s" % (name, "PASS" if ok else "FAIL"))
-
-    print("")
-    print("== ARGV SELF-TEST ==")
-    for name, ok in argv_checks:
-        print("  %-52s %s" % (name, "PASS" if ok else "FAIL"))
-
-    print("")
-    print("== CERTIFICATION SELF-TEST ==")
-    print("each verdict layer must be able to block certification")
-    for name, ok in cert_checks:
-        print("  %-52s %s" % (name, "PASS" if ok else "FAIL"))
+    for _prefix, layer_name, _producer in CHECK_CLASSES:
+        print("")
+        print("== %s ==" % layer_name.upper())
+        for name, ok in results.get(layer_name, []):
+            print("  %-52s %s" % (name, "PASS" if ok else "FAIL"))
 
     print("")
     print("== EXHAUSTIVE SWEEP, LENGTHS 0-%d ==" % EXHAUSTIVE_MAX_LEN)
@@ -1303,7 +1344,7 @@ def main(argv):
     print("")
     print("== CERTIFICATION ==")
     for name, ok, detail in layers:
-        print("  %-28s %-32s %s" % (name, detail, "PASS" if ok else "FAIL"))
+        print("  %-32s %-44s %s" % (name, detail, "PASS" if ok else "FAIL"))
     print("  certified: %s" % ("YES" if certified else "NO"))
     print("self-test failures: %d" % len(selftest_failures))
     print("result digest (binds directed rows' actual carriers plus aggregate "
