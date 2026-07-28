@@ -20,7 +20,7 @@ It contains a mechanical implementation of the carrier rule as written in
      wrong byte count, wrong verbatim line, wrong branch) and asserts the
      comparator rejects each one, plus a control that must still be accepted.
      Without this, a comparator that always passed would look identical to a
-     correct one. A CERTIFICATION SELF-TEST (twelve checks) proves that every
+     correct one. A CERTIFICATION SELF-TEST proves that every
      verdict layer, and any unregistered failure label, blocks certification
      and changes the emitted conclusion text.
   3. An ARGV SELF-TEST asserting that unknown flags and mutually exclusive
@@ -28,10 +28,9 @@ It contains a mechanical implementation of the carrier rule as written in
   4. An EXHAUSTIVE sweep of every input of length 0-2 (65793 inputs) against
      the oracle. This is the one place a universal claim is affordable, and it
      is claimed only over that subdomain.
-  5. A SAMPLED sweep over lengths 0-6. Each DRAWN input gets an independent
-     oracle check of BOTH branch and carrier value; what sampling cannot
-     establish is anything about inputs never drawn. The full 0-6 domain is
-     2.8e14 inputs.
+  5. A SAMPLED sweep over lengths 0-6: each DRAWN input gets an independent
+     oracle check of BOTH branch and carrier value; what it cannot establish is
+     anything about inputs never drawn. The full 0-6 domain is 2.8e14 inputs.
 
 Expected carriers are constructed INDEPENDENTLY of the code under test:
 verbatim expectations are literal strings written out by hand, and hash
@@ -53,17 +52,19 @@ Usage:  python3 carrier_sweep.py [--baseline | --emit-markdown]
 The two flags are mutually exclusive; passing both is rejected.
 
 Exit codes are per mode:
-  default          0 only if the single certification state holds: directed
-                   cases pass on branch AND carrier, all four self-test classes
-                   pass (comparator, common-cause, argv, certification), the
-                   exhaustive length 0-2 sweep has no mismatch, and the sampled
-                   sweep has no mismatch and no undefined input. 1 otherwise.
-                   This is the only mode whose exit code is a verdict.
+  default          0 only if every layer fact is PASS: directed cases pass on
+                   branch AND carrier, all four self-test classes pass
+                   (comparator, common-cause, argv, certification), the
+                   exhaustive length 0-2 sweep has no mismatch, the sampled
+                   sweep has no mismatch and no undefined input, and no
+                   unregistered failure label appeared. 1 otherwise.
   --baseline       always 0 unless the run itself errors. It is a reporting
                    mode, is EXPECTED to show failures, and never writes a file.
-  --emit-markdown  0 only when certification holds. On failure it refuses to
-                   write PATH and exits 1; without PATH it prints the
-                   uncertified table on stdout, with a banner, and exits 1.
+  --emit-markdown  Carries the SAME verdict as default mode. 0 only when every
+                   layer fact is PASS. On failure it refuses to write PATH and
+                   exits 1; without PATH it prints the uncertified table on
+                   stdout, banner first, and exits 1. Default and this mode are
+                   both verdict-bearing; neither is "the only one that counts".
   bad arguments    2, with a message and usage on stderr. This covers unknown
                    flags and mutually exclusive combinations alike.
 
@@ -749,10 +750,11 @@ USAGE = (
     "  (no flag)        run every verdict layer and report the certification\n"
     "                   state. Layers: directed cases; comparator, common-cause,\n"
     "                   argv and certification self-tests; exhaustive sweep of\n"
-    "                   lengths 0-2; sampled sweep of lengths 0-6. Exit 0 only\n"
-    "                   if ALL layers pass, 1 otherwise.\n"
+    "                   lengths 0-2; sampled sweep of lengths 0-6; unregistered\n"
+    "                   failure labels. Exit 0 only if ALL layers pass.\n"
     "  --emit-markdown [PATH]\n"
-    "                   emit the boundary-case table. VERDICT-BEARING: exit 0\n"
+    "                   emit the boundary-case table. VERDICT-BEARING, carrying\n"
+    "                   the SAME verdict as default mode: exit 0\n"
     "                   only when certification holds. On failure it refuses to\n"
     "                   write PATH and exits 1; with no PATH it prints the\n"
     "                   uncertified table on stdout, banner first, and exits 1.\n"
@@ -904,7 +906,7 @@ CHECK_CLASSES = (
     ("comparator", "comparator self-test", "selftest_comparator"),
     ("common-cause", "common-cause self-test", "selftest_common_cause"),
     ("argv", "argv self-test", "selftest_argv"),
-    ("certification", "certification self-test", "_selftest_certification"),
+    ("certification", "certification self-test", "selftest_certification"),
 )
 CHECK_CLASS_PREFIXES = tuple(prefix for prefix, _, _ in CHECK_CLASSES)
 
@@ -919,6 +921,62 @@ CERT_LAYERS = (
     + tuple(name for _, name, _ in CHECK_CLASSES)
     + (LAYER_EXHAUSTIVE, LAYER_SAMPLED, LAYER_UNREGISTERED)
 )
+
+
+CERTIFIED_MARKER = "Certification state: **CERTIFIED**"
+UNCERTIFIED_MARKER = "Certification state: **NOT CERTIFIED**"
+FAIL_CELL = "**FAIL**"
+
+
+def verdict(layers):
+    """Derive the verdict from layer facts. Callers derive it from THEIR rows."""
+    return all(ok for _name, ok, _detail in layers)
+
+
+def artifact_guard_violations(text):
+    """Artifact-level guard, independent of how the verdict was derived.
+
+    It reads only the RENDERED TEXT: a table that shows any FAIL row while
+    claiming CERTIFIED is self-contradictory and must never reach the official
+    path, no matter what any function returned. This shares no code with
+    verdict() or certification_state() -- that is the point.
+    """
+    problems = []
+    has_fail_row = any(FAIL_CELL in line for line in text.splitlines())
+    claims_certified = CERTIFIED_MARKER in text
+    claims_uncertified = UNCERTIFIED_MARKER in text
+    if has_fail_row and claims_certified:
+        problems.append("rendered table contains a FAIL row under a CERTIFIED header")
+    if claims_certified and claims_uncertified:
+        problems.append("rendered table claims both CERTIFIED and NOT CERTIFIED")
+    if not claims_certified and not claims_uncertified:
+        problems.append("rendered table states no certification marker")
+    if claims_uncertified and not text.startswith(UNCERTIFIED_BANNER.splitlines()[0]):
+        problems.append("uncertified table does not start with the banner")
+    return problems
+
+
+PRODUCER_NAME_PREFIXES = ("selftest_", "_selftest_")
+
+
+def assert_producers_registered(namespace):
+    """Every callable following the producer naming convention must be registered.
+
+    A producer that is written but never added to CHECK_CLASSES simply never
+    runs, so nothing reaches the residual layer to fail closed. Discovery at
+    import turns "forgot to register" into an immediate hard failure. The
+    convention is the contract: a callable named selftest_* (or _selftest_*)
+    IS a producer, and must appear in the registry.
+    """
+    registered = set(producer for _p, _l, producer in CHECK_CLASSES)
+    unregistered = sorted(
+        name for name, value in namespace.items()
+        if name.startswith(PRODUCER_NAME_PREFIXES) and callable(value)
+        and name not in registered)
+    if unregistered:
+        raise AssertionError(
+            "self-test producer(s) not registered in CHECK_CLASSES: %s"
+            % ", ".join(unregistered))
 
 
 def classify_selftest_failures(selftest_failures):
@@ -945,8 +1003,16 @@ def certification_state(directed_failures, selftest_failures, exhaustive_mismatc
                         sampled_mismatches, undefined, executed_counts=None):
     """The ONE certification state: a conjunction over every verdict layer.
 
-    Returns (certified, layers) where layers is a list of (name, ok, detail)
-    covering exactly CERT_LAYERS, in that order.
+    Returns ONLY the layer facts: a list of (name, ok, detail) covering exactly
+    CERT_LAYERS, in that order. It deliberately does NOT return a verdict.
+
+    An external review corrupted the arbiter by wrapping it to return True while
+    passing the original layer rows through; the official table was overwritten
+    with a CERTIFIED header sitting above a FAIL row, exit 0. A boolean that
+    travels alongside the facts can drift from them. Every outlet now derives
+    all(ok) from the exact rows IT renders, so a header cannot disagree with the
+    table beneath it, and a separate artifact-level guard re-checks the rendered
+    text before any official write.
     """
     buckets, residual = classify_selftest_failures(selftest_failures)
     if executed_counts is None:
@@ -979,7 +1045,7 @@ def certification_state(directed_failures, selftest_failures, exhaustive_mismatc
             "certification layers %r do not match the registry %r"
             % (tuple(name for name, _, _ in layers), CERT_LAYERS))
 
-    return all(ok for _, ok, _ in layers), layers
+    return layers
 
 
 UNCERTIFIED_BANNER = (
@@ -1000,13 +1066,16 @@ GROUP_TITLES = {
 
 
 def emit_markdown(rows, failures, digest, summary, mismatches, unique, exhaustive,
-                  certified, layers):
+                  layers):
     """Emit the boundary-case table. Values are shown in full, untruncated.
 
     Every verdict layer feeds the conclusion. No sentence asserting agreement
     survives a failure in the layer it describes.
     """
     exhaustive_total, exhaustive_mismatches = exhaustive
+    # Derived HERE, from the very rows rendered below. A header cannot disagree
+    # with its own table.
+    certified = verdict(layers)
     out = []
     if not certified:
         out.append(UNCERTIFIED_BANNER)
@@ -1119,7 +1188,15 @@ def _print_directed(rows, label):
     print("(a case passes only if BOTH branch and carrier value match)")
 
 
-def _selftest_certification():
+def _discovery_ok():
+    try:
+        assert_producers_registered(globals())
+    except AssertionError:
+        return False
+    return True
+
+
+def selftest_certification():
     """Prove the certification state flips when ANY layer fails.
 
     Fixtures below are hand-built layer-result tuples, not measurements of this
@@ -1131,45 +1208,45 @@ def _selftest_certification():
     all_ran = {prefix: 1 for prefix in CHECK_CLASS_PREFIXES}
 
     green = certification_state(0, [], 0, 0, 0, all_ran)
-    checks.append(("control: all layers green certifies", green[0]))
+    checks.append(("control: all layers green certifies", verdict(green)))
 
     exhaustive_bad = certification_state(0, [], 1, 0, 0, all_ran)
-    checks.append(("exhaustive failure blocks certification", not exhaustive_bad[0]))
+    checks.append(("exhaustive failure blocks certification", not verdict(exhaustive_bad)))
 
     sampled_bad = certification_state(0, [], 0, 3, 0, all_ran)
-    checks.append(("sampled failure blocks certification", not sampled_bad[0]))
+    checks.append(("sampled failure blocks certification", not verdict(sampled_bad)))
 
     comparator_bad = certification_state(0, ["comparator: fixture"], 0, 0, 0, all_ran)
     checks.append(("comparator self-test failure blocks certification",
-                   not comparator_bad[0]))
+                   not verdict(comparator_bad)))
 
     cert_bad = certification_state(0, ["certification: fixture"], 0, 0, 0, all_ran)
     checks.append(("certification self-test failure blocks certification",
-                   not cert_bad[0]))
+                   not verdict(cert_bad)))
 
     unknown_bad = certification_state(0, ["unregistered-class: fixture"], 0, 0, 0,
                                       all_ran)
-    checks.append(("unknown failure prefix fails closed", not unknown_bad[0]))
+    checks.append(("unknown failure prefix fails closed", not verdict(unknown_bad)))
 
     undefined_bad = certification_state(0, [], 0, 0, 2, all_ran)
-    checks.append(("undefined input blocks certification", not undefined_bad[0]))
+    checks.append(("undefined input blocks certification", not verdict(undefined_bad)))
 
     directed_bad = certification_state(1, [], 0, 0, 0, all_ran)
-    checks.append(("directed failure blocks certification", not directed_bad[0]))
+    checks.append(("directed failure blocks certification", not verdict(directed_bad)))
 
     # A registered class whose producer runs nothing must NOT yield a fabricated
     # "0 failures PASS" row. Session C probed this live on the previous HEAD.
     for orphan_prefix in CHECK_CLASS_PREFIXES:
         starved = dict(all_ran)
         starved[orphan_prefix] = 0
-        state = certification_state(0, [], 0, 0, 0, starved)
+        starved_layers = certification_state(0, [], 0, 0, 0, starved)
         checks.append(("registered class with zero executed checks fails closed: %s"
-                       % orphan_prefix, not state[0]))
+                       % orphan_prefix, not verdict(starved_layers)))
 
     checks.append(("every registered check class owns a layer",
                    set(name for _, name, _ in CHECK_CLASSES)
-                   .issubset(set(name for name, _, _ in green[1]))
-                   and LAYER_UNREGISTERED in [n for n, _, _ in green[1]]))
+                   .issubset(set(name for name, _, _ in green))
+                   and LAYER_UNREGISTERED in [n for n, _, _ in green]))
 
     # Conclusion text must follow the state. Directed rows are real; the
     # attestation results handed in here are fixtures.
@@ -1177,17 +1254,17 @@ def _selftest_certification():
     fixture_results = {layer_name: [("fixture check", True)]
                        for _p, layer_name, _pr in CHECK_CLASSES}
     text_bad = emit_markdown(rows, 0, "FIXTURE-DIGEST", fixture_results, 0, 1,
-                             (65793, 1), exhaustive_bad[0], exhaustive_bad[1])
+                             (65793, 1), exhaustive_bad)
     checks.append(("failing exhaustive removes the universal agreement line",
                    "EVERY input" not in text_bad
                    and "every input of length 0-2 agrees" not in text_bad
                    and "does NOT certify" in text_bad))
     text_cert = emit_markdown(rows, 0, "FIXTURE-DIGEST", fixture_results, 0, 1,
-                              (65793, 0), cert_bad[0], cert_bad[1])
+                              (65793, 0), cert_bad)
     checks.append(("failing certification self-test marks the table uncertified",
                    "does NOT certify" in text_cert))
     text_ok = emit_markdown(rows, 0, "FIXTURE-DIGEST", fixture_results, 0, 1,
-                            (65793, 0), green[0], green[1])
+                            (65793, 0), green)
     checks.append(("all-green table carries no uncertified banner",
                    "does NOT certify" not in text_ok
                    and "NOT CERTIFIED" not in text_ok))
@@ -1202,10 +1279,23 @@ def _selftest_certification():
                    (text_ok.splitlines()[0] if text_ok.splitlines() else "")
                    != banner_first))
 
+    # The artifact guard must reject a self-contradictory render even when the
+    # verdict handed to it says otherwise. This is the reviewer's corrupted
+    # arbiter, reduced to its observable effect on the artifact.
+    forged = text_bad.replace(UNCERTIFIED_MARKER, CERTIFIED_MARKER)
+    checks.append(("artifact guard rejects FAIL row under CERTIFIED header",
+                   bool(artifact_guard_violations(forged))))
+    checks.append(("artifact guard accepts a consistent certified render",
+                   not artifact_guard_violations(text_ok)))
+    checks.append(("artifact guard accepts a consistent uncertified render",
+                   not artifact_guard_violations(text_bad)))
+    checks.append(("every registered producer is discovered and registered",
+                   _discovery_ok()))
+
     # Every registered class must appear in BOTH the layer table and the
     # attestation, or a class could be certified against while invisible.
     attested = " ".join(attestation_lines(fixture_results))
-    layer_names = [n for n, _, _ in green[1]]
+    layer_names = [n for n, _, _ in green]
     checks.append(("every registered class appears in layers and attestation",
                    all(layer_name in layer_names and layer_name in attested
                        for _p, layer_name, _pr in CHECK_CLASSES)))
@@ -1247,7 +1337,7 @@ def attestation_lines(results):
     return parts
 
 
-def selftest_summary():
+def run_all_check_classes():
     results, executed_counts, failures = run_check_classes()
     return results, executed_counts, failures
 
@@ -1281,18 +1371,27 @@ def main(argv):
                       % (name, expected_branch, actual_branch))
         return 0
 
-    results, executed_counts, selftest_failures = selftest_summary()
+    results, executed_counts, selftest_failures = run_all_check_classes()
     exhaustive = run_exhaustive()
     counts, undefined, mismatches, unique = run_fuzz()
-    certified, layers = certification_state(
+    layers = certification_state(
         failures, selftest_failures, exhaustive[1], mismatches, undefined,
         executed_counts)
+    certified = verdict(layers)
     digest = result_digest(rows, counts, undefined, mismatches, unique,
                            exhaustive, failures)
 
     if mode == "emit":
         text = emit_markdown(rows, failures, digest, results, mismatches, unique,
-                             exhaustive, certified, layers)
+                             exhaustive, layers)
+        # Artifact-level guard: judge the RENDERED TEXT, independently of how
+        # any verdict was computed.
+        guard_problems = artifact_guard_violations(text)
+        if guard_problems:
+            sys.stderr.write("carrier_sweep.py: artifact guard REFUSED the render\n")
+            for problem in guard_problems:
+                sys.stderr.write("  %s\n" % problem)
+            return 1
         if not certified:
             if path is not None:
                 sys.stderr.write(
@@ -1350,6 +1449,12 @@ def main(argv):
     print("result digest (binds directed rows' actual carriers plus aggregate "
           "counts): %s" % digest)
     return 0 if certified else 1
+
+
+# Import-time producer discovery. Placed after every definition so the whole
+# module namespace is visible: a producer written but never registered aborts
+# the import instead of silently never running.
+assert_producers_registered(globals())
 
 
 if __name__ == "__main__":
