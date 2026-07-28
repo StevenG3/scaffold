@@ -53,16 +53,22 @@
 
 ---
 
-## 当前条目：R19 最终内容态的机械终检（实现方自跑，C 式）
+## 当前条目：R22 最终内容态的机械终检（实现方自跑，C 式）
 
-> **重跑惯例（R19 起）**：本节**每轮必须整体重跑并重写**，不得沿用上一轮的观察值。
-> 节标题带轮次、条目内绑定**当轮**前驱 HEAD——上一版正是因为标题不带轮次、
-> 前驱 HEAD 停在 历史@351c70aa 而观察值早已漂移，成为一份「看起来当前、其实陈旧」的条目。
-> 轮次与 HEAD 写进节头，是让陈旧一眼可见的最小构造。
+> **重跑惯例（R19 起，R22 起有红命令背书）**：本节**每轮必须整体重跑并重写**，
+> 不得沿用上一轮的观察值。节标题带轮次、条目内绑定**当轮**前驱 HEAD。
+>
+> **这条惯例自己刚刚证明了 R19 的教训**：它写成散文义务却没有清单格子，
+> 于是 R20、R21 两轮都没重跑，标题停在 R19、前驱停在 历史@6507a986，
+> 外审按下方命令跑 `rev-list` 得到的是三，不是一——
+> **「纪律必须变成清单格子才会被执行」这句话，在写下它的那一节上第二次应验。**
+> 现已配落地清单的**前驱守护行**：本节记录的前驱必须等于 `git rev-parse --short=8 HEAD^`。
+> 该行一红，就说明本节没跟着这轮重跑；而轮次标签与前驱同处一节，
+> 因此重写本节时标签必然一起更新——**用一个可执行的等式，守住一整节的新鲜度。**
 
-- 运行时间：2026-07-28
+- 运行时间：2026-07-29
 - 角色：实现方在最终内容态自跑 C 式机械终检（外部第 11 轮 I3 要求落库）
-- 前驱 HEAD（第 1 步锁定对象）：`6507a986` 起始的 R19 修复集
+- 前驱 HEAD（第 1 步锁定对象）：`4b48fb27`
 - 绑定：**本记录随其所在提交生效**；该提交的 SHA、`rev-list` 计数与 CI run id 见 PR 正文指针
 
 > **本节两次犯过它要防的病**：先是逐字沿用前一提交的数值，再是记录了一份
@@ -74,8 +80,8 @@
 
 ```sh
 git show --stat HEAD
-git diff --name-status 6507a986..HEAD
-git rev-list --count 6507a986..HEAD
+git diff --name-status 4b48fb27..HEAD
+git rev-list --count 4b48fb27..HEAD        # 在交付 HEAD 上应为 1
 git diff --exit-code e338db8936a07b2f102df6fbd0bfa900577545b7...HEAD -- template/
 gh pr view 7 --repo StevenG3/scaffold \
   --json state,isDraft,baseRefOid,headRefOid,mergeable,mergeStateStatus,statusCheckRollup
@@ -88,9 +94,10 @@ gh pr view 7 --repo StevenG3/scaffold \
 | 第 1 步 远端锁定 | 锁定前驱 HEAD：`state=OPEN` `draft=true` `mergeable=MERGEABLE` `mergeState=CLEAN`（当次实测） |
 | 第 2 步 增量与边界 | **按去镜像约定不抄录统计量**；`git diff main -- template/` 实测为空（零回灌） |
 | 第 5 步 绿灯电池 | `default 0` / `--baseline 0` / `--help 0` / `--emit-markdown PATH 0`；生成物与入库表 `cmp` 逐字节一致；源码**无**非 ASCII 字节（`grep -c '[^ -~]'` 输出为空）。**定向数、失败数、红基线数字按去镜像约定不抄录**——运行上述命令，或读机器生成的 `boundary-cases.md` |
-| 第 5 步 产物不变量 | 脚本 SHA-256 与结果摘要**见 `run-manifest.md` 的「本节保留的唯一两个不变量」小节**（R20 起全库唯一抄本，此处不复制）。R19 该脚本的注释恢复纯 ASCII，其 SHA 随之变化而**结果摘要未变**——摘要覆盖的是用例值而非源码字节，这正是那次修复的正确性旁证 |
+| 第 5 步 产物不变量 | 脚本 SHA-256 与结果摘要**见 `run-manifest.md` 的「本节保留的唯一两个不变量」小节**（R20 起全库唯一抄本，此处不复制）；本轮未触碰该脚本，两值与上一轮一致，由清单的两条守护行当场核对 |
 | 第 6 步 变异探针 | 穷举投毒：`--emit-markdown` `rc=1`；`--emit-markdown PATH` `rc=1` 且**正式文件逐字节未变**；横幅为首行。未抽中输入探针 `digest_changed=False`（与收窄后的检测范围声明一致，非缺陷） |
 | 第 6 步 结构攻击（R14 新增，此后每轮复跑） | 审阅方反例（end 哨兵前移至 marker 之后、FAIL 行之前）**被拒**；premature end / late begin / 空视图 / 仅 marker / 缺 layer / 缺 attestation 六种形状全部**被拒**；真实非零层在**两个出口**仍 fail closed |
+| 第 6 步 过滤器变异（R22 新增） | `dehist.awk` 锚定修正后，对 `protocol-runs.md` 不再致盲（旧写法会把当前条目与落地清单整段抹掉却仍打印零）；`cells.awk` 改以分隔行定基准后，**坏表头行**这一场景由静默放行变为报错。两者的红态均为当场构造样本实测 |
 | 第 7 步 七条门禁 | **全部**门禁 exit 0（门禁条目见 `rules/project.md` §2；分流字节数与条目数按去镜像约定不抄录，复核请用 `capture_gate` 包装器实测） |
 | 第 8 步 复锁 | 提交并推送后由 PR 正文指针给出 exact-head 的 SHA 与 CI run id |
 
@@ -125,15 +132,31 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 | 字符串 / 模式（含英文） | 域外命中 | 逐处处置终态 |
 | --- | --- | --- |
 | `每个被扫文件各注入一次` | 0 | R17 已改写为历史绑定表述 |
-| `三种记法` | 0 | 仅存于轮次历史节内的引用，按新域不计 |
+| `三种记法` | 0 | 仅存于轮次历史节内的引用，按域定义不计 |
 | `整个 Change Record 目录全部` | 0 | R17 已改写并指向 SSOT |
 | `exactly two`（英文） | 0 | 检查器 docstring 已指针化，不再自报豁免族数 |
 | `every other .md`（英文） | 0 | 域的描述只留在 SSOT |
 | `1020c231`（旧脚本 SHA 前缀） | 0 | R20 单点化：全库不再有旧抄本 |
-| `第 13 轮`（错误轮次标签） | 0 | 已改回第 12 轮，口径与核对命令写进 `tasks.md` |
+| `第 13 轮`（错误轮次标签） | 0 | 已改回第 12 轮；PR 正文轮次表补轨道列与切换说明 |
+| `6507a986`（陈旧前驱 HEAD，排除 `历史@` 绑定） | 0 | 该节已重跑，前驱改绑 R22；叙述该缺陷的一处已用 `历史@` 显式绑定 |
+| `R19 最终内容态`（陈旧节标题） | 0 | 该节标题已改为 R22 |
 | `pure ASCII`（英文，排除 `.py` 源码自述） | 0 | 两处源码自述属实现层，其余仅存于历史节内 |
 
-> **域的定义（R21 起）**：全语料 − 本小节 − **全部带「本节为该轮历史」声明的节**。
+**结构性核查（同一 shell 块，与上表一并复跑）**：
+
+| 核查 | 期望 |
+| --- | --- |
+| `sed` 排除后终止行仍在 | 恰一处 |
+| `dehist.awk` 用于 `protocol-runs.md` 后该节仍在 | 恰一处（F4 致盲反例） |
+| `dehist.awk` 用于 `protocol-runs.md` 后「落地核对清单」仍在 | 恰一处（同上） |
+| `cells.awk` 全库表格行格数 | `anomalous rows: 0` |
+
+> **域的定义（R21 起，R22 如实化）**：
+> 字面串扫描的域 = 全语料 − 下列排除项：
+> **(a)** `protocol-runs.md` 上由 `sed` 切掉的**两个子节**（本扫描记录小节 + 机制关键词归类小节）；
+> **(b)** `summary.md` 与 `tasks.md` 上由 `dehist.awk` 抹空的**历史节**——现存历史节**只在此二文件**，
+> 故过滤器也**只应用于**它们。两条排除不是同一机制，也不互相替代。
+>
 > 轮次历史节内引用 finding 字符串是**构造良性**的：节头已声明历史作用域，
 > 节内的引用按定义就是历史引用。需要审计这些引用时，用不带排除的原始 `grep -rn`——那是另一件事。
 >
@@ -141,7 +164,11 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 > **自己的整改叙事**——修复某个字符串，就必然要引用该字符串。旧域下这是个**不稳定不动点**：
 > 填表→写整改记录→计数又变了，每轮重踩。语义化之后期望统一为 0，**不动点消失**。
 >
-> **填表纪律**：格值 = 当场执行输出；域 = 去历史节语料；
+> **过滤器自身也要被验证**：R21 的锚定按**任意行**匹配，于是任何**讨论**这条纪律的散文
+> 都会把它所在的整节抹掉。上表的两条致盲反例就是为此而设——
+> **一个会致盲自己的过滤器，比没有过滤器更危险：它让八个格子照样打印零。**
+>
+> **填表纪律**：格值 = 当场执行输出；域 = 上述定义；
 > **填表必须是提交前的最后一步**——填完之后若再改动任何**非历史节**文字，必须重跑全表。
 
 ### 机制关键词归类（断言级扫描，R18 起随扫描记录一并提交）
@@ -173,27 +200,36 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 D=.harness/changes/2026-07-27-bootstrap-adoption-1
 PR=$D/evidence/protocol-runs.md
 
-# 1) 把本小节切掉，得到「记录正文」视图。
-#    注意范围内的否定：`/^### 落地核对清单/!d` 保住终止行——
-#    朴素的 `/start/,/end/d` 会连下一节的标题一起删掉，
-#    于是「落地核对清单」整节的标题从视图里消失，扫描对它半盲。
-#    （`;}` 不可省：BSD sed 不接受紧挨的 `d}`，会报 extra characters——
-#    这条命令第一次写出来时正是这样静默失败的，本行注释即其记录。
+# 1) 在 protocol-runs.md 上，用 sed 切掉**两个子节**：本扫描记录小节，
+#    以及紧随其后的「机制关键词归类」小节——终止行是「### 落地核对清单」。
+#    范围内的否定 `/^### 落地核对清单/!d` 保住终止行；朴素的 `/start/,/end/d`
+#    会连下一节标题一起删掉，扫描就对整节半盲。
+#    （`;}` 不可省：BSD sed 不接受紧挨的 `d}`，会报 extra characters。）
 sed '/^### 内容寻址扫描记录/,/^### 落地核对清单/{/^### 落地核对清单/!d;}' "$PR" > /tmp/pr-noscan.md
 grep -c '^### 落地核对清单' /tmp/pr-noscan.md      # 期望 1：终止行必须保留
 
-# 2) 把**带历史作用域声明的整节**抹成空行（保留行号，不移位）。
-#    这是 R21 的类修复：轮次历史节里引用 finding 字符串是**构造良性**的
-#    ——节头已声明历史作用域，节内的引用按定义就是历史引用。
-#    不这样做，扫描就有**不动点不稳定**：修复某个字符串的整改叙事必然要
-#    引用该字符串，于是填完表、写完整改记录，计数又变了（R20 死于此）。
+# 2) 在 summary.md 与 tasks.md 上，把**带历史作用域声明的整节**抹成空行
+#    （保留行号，不移位）。历史节目前只存在于这两个文件；protocol-runs.md
+#    的排除走上面的 sed，两者不是同一机制，也不互相替代。
+#
+#    锚定很关键：只有 `^## ` 节头之后**紧邻的首个非空行**匹配历史声明，
+#    才算该节是历史节。R21 的写法按**任意行**匹配，于是任何**讨论**这条纪律
+#    的散文都会把它所在的整节抹掉——把它用到 protocol-runs.md 上，
+#    当前条目与落地清单会被整段致盲，而八个格子照样打印零。
 cat > /tmp/dehist.awk <<'AWK'
-/^## / { if (buf != "") printf "%s", (hist ? blank : buf); buf=""; blank=""; hist=0 }
-        { buf = buf $0 "\n"; blank = blank "\n"; if ($0 ~ /本节为该轮历史/) hist=1 }
-END     { if (buf != "") printf "%s", (hist ? blank : buf) }
+/^## /            { if (buf != "") printf "%s", (hist ? blank : buf)
+                    buf=""; blank=""; hist=0; want=1 }
+want && !/^## / && NF { hist = ($0 ~ /^> \*\*本节为该轮历史/); want=0 }
+                  { buf = buf $0 "\n"; blank = blank "\n" }
+END               { if (buf != "") printf "%s", (hist ? blank : buf) }
 AWK
 awk -f /tmp/dehist.awk $D/summary.md > /tmp/summary-nohist.md
 awk -f /tmp/dehist.awk $D/tasks.md   > /tmp/tasks-nohist.md
+
+# 2b) 锚定的反例验证：把过滤器用到 protocol-runs.md 上，它必须**不**致盲。
+awk -f /tmp/dehist.awk $PR > /tmp/pr-dehist.md
+grep -c '^## 当前条目'      /tmp/pr-dehist.md   # 期望：恰一处（该节必须存活）
+grep -c '^### 落地核对清单' /tmp/pr-dehist.md   # 期望：恰一处（同上）
 
 # 3) 在**去历史节语料**（.md + .py）里搜字面串
 scan_corpus() {           # $1 = 字面串
@@ -213,20 +249,31 @@ scan_corpus "exactly two" | wc -l
 scan_corpus "every other .md" | wc -l
 scan_corpus "1020c231" | wc -l
 scan_corpus "第 13 轮" | wc -l
+scan_corpus "6507a986" | grep -v '历史@' | wc -l   # 显式绑定的引用按既有惯例豁免
+scan_corpus "R19 最终内容态" | wc -l
 scan_corpus "pure ASCII" | grep -v '\.py:' | wc -l
 
-# 4) 表格行格数一致性：表头行的格数即该表期望，其后每行必须相等。
-#    未转义的竖线会多切出一格；转义过的 `\|` 不计。
+# 4) 表格行格数一致性。基准列数**从分隔行**（`| --- | --- |`）推导——
+#    它不可能含代码段里的竖线；R21 用块首行定基准，于是表头行自己坏掉时
+#    整张表静默放行。转义过的 `\|` 不计入列数。
 cat > /tmp/cells.awk <<'AWK'
-FNR==1   { e="" }
-!/^\|/   { e=""; next }
-         { n=gsub(/\\\|/,"&"); m=gsub(/\|/,"&"); c=m-n-1
-           if (e=="") e=c
-           else if (c!=e) { print FILENAME":"FNR" expected "e" got "c; b++ } }
-END      { print "anomalous rows: " b+0 }
+function cells(s,   k,m) { k=gsub(/\\\|/,"&",s); m=gsub(/\|/,"&",s); return m-k-1 }
+function flush(   i,e) {
+  if (n==0) return
+  e=-1
+  for (i=1; i<=n; i++) if (L[i] ~ /^\|[ :|-]+\|[ \t]*$/) { e=cells(L[i]); break }
+  if (e<0) { print F[1]":"R[1]" table has no separator row"; b++ }
+  else for (i=1; i<=n; i++) if (cells(L[i]) != e) { print F[i]":"R[i]" expected "e" cells, got "cells(L[i]); b++ }
+  n=0
+}
+FNR==1  { flush() }
+!/^\|/  { flush(); next }
+        { n++; L[n]=$0; F[n]=FILENAME; R[n]=FNR }
+END     { flush(); print "anomalous rows: " b+0 }
 AWK
 awk -f /tmp/cells.awk $(find $D -name '*.md' | sort)   # 期望 anomalous rows: 0
 ```
+
 
 ### 落地核对清单（本提交声称的每一处修复）
 
@@ -248,6 +295,9 @@ awk -f /tmp/cells.awk $(find $D -name '*.md' | sort)   # 期望 anomalous rows: 
 | 变异验证：文件 × 记法叉积 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test` | 每个文件 × 每个变体全部 `caught=True`（**变体集合与自检形态见 SSOT 节**），打印句与实现一致；变体含裸数字、逗号格式、反引号包裹、两条历史豁免逃逸样本、英文注释形态 |
 | 单行 docstring 覆盖（C2） | `grep -A 14 "^SELF_TEST_VARIANTS" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py \| grep -c '"""'` | 非零——变体集合含单行 docstring 形态（**覆盖声称见 SSOT 节**）。轴表声称「`.py` 注释与 docstring = 覆盖」，而此前该形态从未被扫（三引号同行成对，旧解析只认奇数个），属**已声称覆盖域内的实现缺陷**，已补齐 |
 | **表格行格数一致（R21 起有命令背书）** | 见本文件「内容寻址扫描记录」小节 shell 块末尾的 `cells.awk`（连同其调用一并入库，可整段复制执行） | **anomalous rows: 0**。表头行的格数即该表期望，随后每行必须相等；未转义的竖线多切一格，本行立即变红。R20 曾声称「全表格行改用 cell-count 核对」而只转义了一处、且**无任何已提交命令背书**——外审用独立解析器一跑就找出三行（`run-manifest.md:261`、`summary.md:508`、`summary.md:597`），均已转义。**命令放在栅栏块而不是表格单元格里**：R21 先把它写进单元格，转义往返把 awk 正则改坏，逐字取出后误报十余行——**能被格式转义改写的命令，不算已交付的命令。** |
+| **当前条目的前驱绑定（R22 起，本轮类修复）** | `test "$(sed -n '/^## 当前条目/,/^### /p' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/protocol-runs.md \| grep '前驱 HEAD' \| grep -oE '[0-9a-f]{8}')" = "$(git rev-parse --short=8 HEAD^)"; echo $?` | **0**（在**交付 HEAD** 上运行；提交前跑必红，因为前驱要到提交存在后才成立）。本节记录的前驱必须等于交付提交的父提交——这一行一红，就说明「当前条目」没跟着这轮重跑。R20、R21 两轮漏跑正是因为该惯例只是**散文义务**：标题停在 R19、前驱停在 历史@6507a986，外审跑 `rev-list` 得到的是三不是一。轮次标签与前驱同处一节，重写本节时必然一起更新，故这一个等式同时守住轮次标签的新鲜度。**「纪律必须变成清单格子」在写下它的那一节上第二次应验。** |
+| **历史节过滤器的锚定（F4 反例）** | `awk -f /tmp/dehist.awk .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/protocol-runs.md \| grep -c '^## 当前条目'`（`/tmp/dehist.awk` 由扫描小节 shell 块生成） | **恰一处**。过滤器只认「`^## ` 节头后紧邻首个非空行」的历史声明；按任意行匹配的旧写法用在本文件上，会把当前条目与落地清单整段抹掉而八个格子照样打印零——**一个会致盲自己的过滤器，比没有过滤器更危险**。 |
+| **外审轮次口径** | `ls docs/reviews/ \| grep -c pr-7` | **11**（= R1–R11，故下一轮外审为**第 12 轮**）。**口径限定**：`docs/reviews/` 是**审阅方所有物**，有意**不纳入版本控制**；因此该命令只在审阅方落盘的工作区里有意义，**fresh clone 上得 0 属预期**，不构成本行变红。此处记录的是口径而非可移植计数。 |
 | **被存证脚本的纯 ASCII 不变式** | `grep -c '[^ -~]' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py` | **0**。该构造保证在记录中被声称十一轮，却从未有清单守护——第十一次复发正是它被打破（历史标签把非 ASCII 字节写进了被哈希存证的脚本）。**声称了却没有清单行的不变式，等于没有守护。** |
 | **手抄不变量：脚本 SHA 与实际字节一致** | `test "$(shasum -a 256 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| cut -d' ' -f1)" = "$(grep '脚本 SHA-256' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/run-manifest.md \| grep -oE '[0-9a-f]{64}')"; echo $?` | **0**。不变量节记录的 SHA 与当场计算的字节哈希必须相等；脚本一改而抄本未同步，本行立即变红。 |
 | **手抄不变量：SHA 抄本数** | `grep -rn --exclude-dir=__pycache__ "$(shasum -a 256 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| cut -d' ' -f1)" .harness/changes/2026-07-27-bootstrap-adoption-1 \| wc -l` | **恰 1**——即 `run-manifest.md` 的「本节保留的唯一两个不变量」小节。R19 的 Critical 正是同一个值散落三处而只同步了一处；把「有几处抄本」写成可执行期望值，是手抄值唯一可行的守护。 |
