@@ -78,8 +78,12 @@ NUMBER_TOKEN = re.compile(r"\d{1,3}(?:,\d{3})+|\d+")
 # one round's HEAD.
 HISTORY_BINDING = re.compile(r"历史@[0-9a-f]{7,40}")
 
-# Exemption 2: the artifact invariants, enumerated here and mirrored verbatim
-# in run-manifest.md's whitelist table.
+# Exemption 2: the artifact invariants. What they are and why they are exempt
+# is stated once, in the SSOT section of run-manifest.md; the whitelist table
+# this comment used to name was withdrawn, and naming it kept a withdrawn
+# framework alive in a second place. Note what this exemption costs: it lets
+# ANY 64-hex run pass, so a stale hand-copied invariant is invisible here by
+# construction -- it is guarded by checklist rows, not by this file.
 INVARIANT_PATTERNS = (
     r"\b[0-9a-f]{64}\b",   # script SHA-256 and result digest are 64 hex chars
 )

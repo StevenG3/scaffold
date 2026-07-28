@@ -68,7 +68,7 @@
 > **本节两次犯过它要防的病**：先是逐字沿用前一提交的数值，再是记录了一份
 > 与 Git 不符的差异统计（记 4 文件 `+42/-8`，真实 5 文件 `+60/-27`）。
 > 根因不是粗心，而是**把可导出的统计量抄进记录**——记录与它所在的提交互相追逐，
-> 永远差一步。**去镜像**把这一类缺陷的入口收窄到一个**显式白名单**：记录中除机器生成产物外不得出现现刻数字断言，由 `check_current_numbers.py` 机械核查；**其域、词表、豁免、自检形态与冻结条款一律以 `run-manifest.md` 的「检查器现状（SSOT）」节为准**，本处不复述。第 11 轮删的是 **Git 可导出**的一类，第 12 轮补上 **脚本可导出**的一类。**此处不再声称「结构上不再可能」**——会话 C 用 `run-manifest.md:49` 的残值证伪过那个无界说法；能声称的只是「白名单之外的数字会被核查命令抓住」。
+> 永远差一步。**去镜像**把这一类缺陷的入口收窄到一个**显式的豁免集合**（其构成见 SSOT 节；旧称「白名单」的框架已撤回）：记录中除机器生成产物外不得出现现刻数字断言，由 `check_current_numbers.py` 机械核查；**其域、词表、豁免、自检形态与冻结条款一律以 `run-manifest.md` 的「检查器现状（SSOT）」节为准**，本处不复述。第 11 轮删的是 **Git 可导出**的一类，第 12 轮补上 **脚本可导出**的一类。**此处不再声称「结构上不再可能」**——会话 C 用 `run-manifest.md:49` 的残值证伪过那个无界说法；能声称的只是「豁免集合之外的数字会被核查命令抓住」。
 
 ### 复核者应执行的命令（本记录不抄录其输出）
 
@@ -88,7 +88,7 @@ gh pr view 7 --repo StevenG3/scaffold \
 | 第 1 步 远端锁定 | 锁定前驱 HEAD：`state=OPEN` `draft=true` `mergeable=MERGEABLE` `mergeState=CLEAN`（当次实测） |
 | 第 2 步 增量与边界 | **按去镜像约定不抄录统计量**；`git diff main -- template/` 实测为空（零回灌） |
 | 第 5 步 绿灯电池 | `default 0` / `--baseline 0` / `--help 0` / `--emit-markdown PATH 0`；生成物与入库表 `cmp` 逐字节一致；源码**无**非 ASCII 字节（`grep -c '[^ -~]'` 输出为空）。**定向数、失败数、红基线数字按去镜像约定不抄录**——运行上述命令，或读机器生成的 `boundary-cases.md` |
-| 第 5 步 产物不变量 | 脚本 SHA-256 `067d1c7bb7af8594adf83ff20599b221f3358571572f98d3de4e555a925a4338`（**本轮变更**：Group E 注释恢复纯 ASCII）；结果摘要 `20ad0f5005822570f955e0542e7446b21f962b187c630b08d75d5f1d7f4a6b6d`——**与上一轮相同**：摘要覆盖的是用例值，不是源码字节，源码注释的改动本就不应移动它，这正是本轮 ASCII 修复的正确性旁证 |
+| 第 5 步 产物不变量 | 脚本 SHA-256 与结果摘要**见 `run-manifest.md` 的「本节保留的唯一两个不变量」小节**（R20 起全库唯一抄本，此处不复制）。R19 该脚本的注释恢复纯 ASCII，其 SHA 随之变化而**结果摘要未变**——摘要覆盖的是用例值而非源码字节，这正是那次修复的正确性旁证 |
 | 第 6 步 变异探针 | 穷举投毒：`--emit-markdown` `rc=1`；`--emit-markdown PATH` `rc=1` 且**正式文件逐字节未变**；横幅为首行。未抽中输入探针 `digest_changed=False`（与收窄后的检测范围声明一致，非缺陷） |
 | 第 6 步 结构攻击（R14 新增，此后每轮复跑） | 审阅方反例（end 哨兵前移至 marker 之后、FAIL 行之前）**被拒**；premature end / late begin / 空视图 / 仅 marker / 缺 layer / 缺 attestation 六种形状全部**被拒**；真实非零层在**两个出口**仍 fail closed |
 | 第 7 步 七条门禁 | **全部**门禁 exit 0（门禁条目见 `rules/project.md` §2；分流字节数与条目数按去镜像约定不抄录，复核请用 `capture_gate` 包装器实测） |
@@ -125,15 +125,20 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 | 字符串 / 模式（含英文） | 全库命中（`.md` + `.py`，节级排除本小节） | 逐处处置终态 |
 | --- | --- | --- |
 | `每个被扫文件各注入一次` | 0 | R17 已改写为历史绑定表述 |
-| `三种记法` | 未绑定命中仅存于 **R18 节级历史域内**（描述该轮修正的叙述句） | 合法：节头已声明轮次与 HEAD，节内的时态指当轮时点 |
+| `三种记法` | **1**：`summary.md:764`，位于 **R17 终验节**（历史@63b853c0）的整改行内 | 良性：轮次域内的**自引用**——该行记录的正是「上一轮这格填了假值」这件事。上一版本表把它错记为 0、且错归到 R18 节，两项均已按当场执行输出改正 |
 | `整个 Change Record 目录全部` | 0 | R17 已改写并指向 SSOT |
-| `pure ASCII`（英文） | 命中全部合法 | `carrier_sweep.py` 自述（本轮修复后**恢复为真**）、`check_current_numbers.py` 自述（说明自身为何不是纯 ASCII）、本小节核查命令 |
-| `exactly two`（英文） | 0 | 检查器模块 docstring 已重写为指针式，不再自报豁免族数 |
-| `every other .md`（英文） | 0 | 同上——域的描述只留在 SSOT |
-| 非 ASCII 字节 in `carrier_sweep.py` | 0 | 历史绑定移入 `run-manifest.md`；脚本注释恢复纯 ASCII 且不含数字 |
+| `pure ASCII`（英文） | **3**：`carrier_sweep.py:75`、`check_current_numbers.py:20`、`summary.md:793` | 前两处为源码自述编码（R19 的 ASCII 修复后**恢复为真**）；第三处在 R19 节内，是该轮扫描词表的自引用 |
+| `exactly two`（英文） | **1**：`summary.md:793` | 同上，R19 节内自引用（记录「这个英文串曾是第二事实源」）；检查器 docstring 侧已改指针式，不再自报豁免族数 |
+| `every other .md`（英文） | **1**：`summary.md:793` | 同上，R19 节内自引用；域的描述只留在 SSOT |
+| `1020c231`（旧脚本 SHA 前缀） | 0 | R20 单点化：全库不再有旧抄本 |
+| `whitelist table`（英文） | **1**：`check_current_numbers.py:82` | 该处**显式声明该表已撤回**并指向 SSOT，属「命名一个已死框架以说明它已死」，非第二事实源 |
+| 非 ASCII 字节 in `carrier_sweep.py` | 0 | 历史绑定移入 `run-manifest.md`；脚本注释纯 ASCII 且不含数字 |
 
-> **本轮教训入表**：英文措辞躲过了此前所有中文关键词扫描——
-> **扫描词表必须与记录实际使用的语言同域**，中英文都要覆盖。
+> **填表纪律（R20 收紧）**：
+> **每一格的值必须来自当场执行该行命令的输出**，不得凭印象、不得沿用上一轮。
+> **凡命中不为 0，必须写明命中所在的文件、行号与所属节**——只写「良性」而不写位置，
+> 等于要求复核者重做一遍扫描才能证伪你。R19 这张表把三个格子填成零，而当场执行给出的是非零，
+> 正是「填了表却没复跑」——与 `summary.md:764` 自己记录的 R17 教训完全同形。
 
 ### 机制关键词归类（断言级扫描，R18 起随扫描记录一并提交）
 
@@ -164,8 +169,14 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 D=.harness/changes/2026-07-27-bootstrap-adoption-1
 PR=$D/evidence/protocol-runs.md
 
-# 1) 把本小节切掉，得到「记录正文」视图
-sed '/^### 内容寻址扫描记录/,/^### 落地核对清单/d' "$PR" > /tmp/pr-noscan.md
+# 1) 把本小节切掉，得到「记录正文」视图。
+#    注意范围内的否定：`/^### 落地核对清单/!d` 保住终止行——
+#    朴素的 `/start/,/end/d` 会连下一节的标题一起删掉，
+#    于是「落地核对清单」整节的标题从视图里消失，扫描对它半盲。
+#    （`;}` 不可省：BSD sed 不接受紧挨的 `d}`，会报 extra characters——
+#    这条命令第一次写出来时正是这样静默失败的，本行注释即其记录。
+sed '/^### 内容寻址扫描记录/,/^### 落地核对清单/{/^### 落地核对清单/!d;}' "$PR" > /tmp/pr-noscan.md
+grep -c '^### 落地核对清单' /tmp/pr-noscan.md      # 期望 1：终止行必须保留
 
 # 2) 在全域（.md + .py）搜字面串；protocol-runs 用切掉后的视图代替
 scan_corpus() {           # $1 = 字面串
@@ -174,11 +185,13 @@ scan_corpus() {           # $1 = 字面串
 }
 
 scan_corpus "每个被扫文件各注入一次" | wc -l          # 期望 0
-scan_corpus "三种记法" | grep -v "历史@" | wc -l        # 期望 0
+scan_corpus "三种记法" | grep -v "历史@" | wc -l        # 期望 1（summary.md:764，R17 节内自引用）
 scan_corpus "整个 Change Record 目录全部" | grep -v "历史@" | wc -l   # 期望 0
-scan_corpus "pure ASCII" | wc -l                        # 英文串同样在域内
-scan_corpus "exactly two" | wc -l                       # 期望 0（已重写）
-scan_corpus "every other .md" | wc -l                   # 期望 0（已重写）
+scan_corpus "1020c231" | wc -l                          # 期望 0（旧脚本 SHA 已单点化）
+scan_corpus "whitelist table" | wc -l                   # 期望 1（checker:82，声明其已撤回）
+scan_corpus "pure ASCII" | wc -l                        # 期望 3（两处源码自述 + 一处 R19 节内自引用）
+scan_corpus "exactly two" | wc -l                       # 期望 1（summary.md:793，R19 节内自引用）
+scan_corpus "every other .md" | wc -l                   # 期望 1（summary.md:793，同上）
 ```
 
 ### 落地核对清单（本提交声称的每一处修复）
@@ -190,7 +203,7 @@ scan_corpus "every other .md" | wc -l                   # 期望 0（已重写�
 | 视图结构完整性校验存在 | `grep -c "_layer_rows\|_attested_classes" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py` | ≥ 2 |
 | 结构攻击回归全绿 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| grep -cE "(premature end\|late begin\|removed begin\|empty view\|marker-only\|missing layer row\|missing attestation).*PASS"` | 7 |
 | 去镜像：记录中无现刻数字断言 | `sed -n '/^## 结果/,/^### 红基线/p' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/run-manifest.md \| grep -cE "定向用例数 \|分支 \(a\) 命中"` | 0 |
-| 去镜像：Git 统计量仅在病灶引述中出现 | `grep -rn "+42/-8\\|+60/-27" .harness/changes/2026-07-27-bootstrap-adoption-1 | grep -v "内容寻址\|落地核对"` | 剩余命中**全部落在描述该病灶的叙述句内**（句中含「差异统计」或「与 Git 不符」等上下文串），无任何现刻断言；**期望以内容锚给出，不再用行号坐标**——行号会随任何编辑漂移 |
+| 去镜像：Git 统计量仅在病灶引述中出现 | `grep -rn "+42/-8\\|+60/-27" .harness/changes/2026-07-27-bootstrap-adoption-1 \| grep -v "内容寻址\|落地核对"` | 剩余命中**全部落在描述该病灶的叙述句内**（句中含「差异统计」或「与 Git 不符」等上下文串），无任何现刻断言；**期望以内容锚给出，不再用行号坐标**——行号会随任何编辑漂移 |
 | umask 韧性 | `( umask 177; python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py >/dev/null 2>&1; echo $? )` 与 `grep -c Traceback` | exit 1 且 traceback 计数 0 |
 | 起始哨兵定向用例 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| grep -c "begin sentinel literal"` | 1 |
 | 核查的参数域 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --bogus` | exit 2 |
@@ -201,5 +214,8 @@ scan_corpus "every other .md" | wc -l                   # 期望 0（已重写�
 | 变异验证：文件 × 记法叉积 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test` | 每个文件 × 每个变体全部 `caught=True`（**变体集合与自检形态见 SSOT 节**），打印句与实现一致；变体含裸数字、逗号格式、反引号包裹、两条历史豁免逃逸样本、英文注释形态 |
 | 单行 docstring 覆盖（C2） | `grep -A 14 "^SELF_TEST_VARIANTS" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py \| grep -c '"""'` | 非零——变体集合含单行 docstring 形态（**覆盖声称见 SSOT 节**）。轴表声称「`.py` 注释与 docstring = 覆盖」，而此前该形态从未被扫（三引号同行成对，旧解析只认奇数个），属**已声称覆盖域内的实现缺陷**，已补齐 |
 | **被存证脚本的纯 ASCII 不变式** | `grep -c '[^ -~]' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py` | **0**。该构造保证在记录中被声称十一轮，却从未有清单守护——第十一次复发正是它被打破（历史标签把非 ASCII 字节写进了被哈希存证的脚本）。**声称了却没有清单行的不变式，等于没有守护。** |
+| **手抄不变量：脚本 SHA 与实际字节一致** | `test "$(shasum -a 256 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| cut -d' ' -f1)" = "$(grep '脚本 SHA-256' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/run-manifest.md \| grep -oE '[0-9a-f]{64}')"; echo $?` | **0**。不变量节记录的 SHA 与当场计算的字节哈希必须相等；脚本一改而抄本未同步，本行立即变红。 |
+| **手抄不变量：SHA 抄本数** | `grep -rn --exclude-dir=__pycache__ "$(shasum -a 256 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| cut -d' ' -f1)" .harness/changes/2026-07-27-bootstrap-adoption-1 \| wc -l` | **恰 1**——即 `run-manifest.md` 的「本节保留的唯一两个不变量」小节。R19 的 Critical 正是同一个值散落三处而只同步了一处；把「有几处抄本」写成可执行期望值，是手抄值唯一可行的守护。 |
+| **手抄不变量：结果摘要抄本数** | `grep -rln --exclude-dir=__pycache__ "$(python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| grep -oE '[0-9a-f]{64}' \| head -1)" .harness/changes/2026-07-27-bootstrap-adoption-1 \| sort` | **恰三个文件，逐一具名**：`evidence/run-manifest.md`（唯一手抄本）、`evidence/boundary-cases.md`（`--emit-markdown` 机器生成）、`summary.md`（逐字粘贴的运行输出）。后两者是**产物**不是手抄，故不计入单点化约束——但它们必须逐一具名，否则「恰 N 处」这个期望值本身又成了没人核对的数字。 |
 | 核查器的源码编码 | `python3 -c "import pathlib;print(sum(1 for b in pathlib.Path('.harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py').read_bytes() if b>0x7e))"` | **非零**——该文件不是纯 ASCII，因为它要在定义处逐字列出被禁的中文标记词；纯 ASCII 纪律只约束被哈希存证的 `carrier_sweep.py`，已在其 docstring 中明示 |
 | 无非预期未完成任务 | `grep -c "^- \[ \]" .harness/changes/2026-07-27-bootstrap-adoption-1/tasks.md` | 1（仅剩预期中的后续项） |
