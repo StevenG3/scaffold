@@ -1,47 +1,24 @@
 #!/usr/bin/env python3
-"""Forbid current-state numeric assertions anywhere except the generated table.
+"""Forbid current-state numeric assertions outside the generated table.
 
-WHY THIS SHAPE. The previous version whitelisted number shapes inside three
-line-range windows. Both halves were breached in one review:
+Mechanism authority: the "checker as it stands" (SSOT) section of
+run-manifest.md. That section is the only place the domain, the marker
+vocabulary, the exemption families, the self-test form and the freeze clause
+are described; this docstring deliberately does not restate them, because a
+second description is a second thing that can go stale.
 
-  * the windows covered three line ranges, so summary.md was scanned not at all
-    and run-manifest.md only in part -- a stale count sat outside the window in
-    the very commit that shipped the checker;
-  * inline code spans were blinded, so wrapping a figure in backticks bypassed
-    the comma-format detection that same commit advertised -- and backticked
-    figures are the record's dominant style.
+In outline: markdown files are scanned in full and Python files in their prose
+lines; a line pairing a current-state marker with a number is a violation;
+exemptions fall into three families. Details live in the SSOT section.
 
-Patching the windows would have been the third repair of one idea. The rule is
-restated instead, into a shape that admits a whole-corpus check:
-
-  A current-state numeric assertion may exist ONLY in the machine-generated
-  boundary-cases.md. In every other .md of this Change Record, a line carrying
-  a current-state marker word AND a number is a violation.
-
-There is no window to fall outside of and no quoting style to hide behind: the
-domain is every .md in the directory, full text, backticks included.
-
-Exemptions are machine-decidable, and there are exactly two:
-
-  1. HISTORY BINDING -- the line carries 历史 and a commit id (>= 7 hex chars).
-     A round-specific figure is legitimate when it says which round it belongs
-     to and binds the HEAD that produced it.
-  2. INVARIANT WHITELIST -- the two artifact fingerprints (script SHA-256 and
-     result digest). They describe the artifact's content, not the run or the
-     commit containing it, so carrying them forward cannot make them stale.
-
-Usage:  python3 check_current_numbers.py            # scan, exit 1 on violation
+Usage:  python3 check_current_numbers.py            # scan
         python3 check_current_numbers.py --self-test  # prove it can fail
 
-Exit codes:
-  0  no current-state numeric assertion outside the generated table
-  1  violation(s) found (file, line, marker, number token printed)
-  2  bad arguments, or the Change Record directory is missing
+Exit codes are listed in the SSOT section's mechanism table.
 
 Note on source encoding: carrier_sweep.py holds a pure-ASCII discipline because
 its source is hashed and attested. THIS file is not pure ASCII and cannot be:
-the marker words it forbids are Chinese, so they appear here verbatim. Escaping
-them would make the rule unreadable at the point where it is defined.
+the marker words it forbids are Chinese, so they appear here verbatim.
 """
 
 import os

@@ -53,11 +53,16 @@
 
 ---
 
-## 当前条目：最终内容态的机械终检（实现方自跑，C 式）
+## 当前条目：R19 最终内容态的机械终检（实现方自跑，C 式）
+
+> **重跑惯例（R19 起）**：本节**每轮必须整体重跑并重写**，不得沿用上一轮的观察值。
+> 节标题带轮次、条目内绑定**当轮**前驱 HEAD——上一版正是因为标题不带轮次、
+> 前驱 HEAD 停在 历史@351c70aa 而观察值早已漂移，成为一份「看起来当前、其实陈旧」的条目。
+> 轮次与 HEAD 写进节头，是让陈旧一眼可见的最小构造。
 
 - 运行时间：2026-07-28
 - 角色：实现方在最终内容态自跑 C 式机械终检（外部第 11 轮 I3 要求落库）
-- 前驱 HEAD（第 1 步锁定对象）：`351c70aa7670e416decf1b77c1a9903290cd9a28`
+- 前驱 HEAD（第 1 步锁定对象）：`6507a986` 起始的 R19 修复集
 - 绑定：**本记录随其所在提交生效**；该提交的 SHA、`rev-list` 计数与 CI run id 见 PR 正文指针
 
 > **本节两次犯过它要防的病**：先是逐字沿用前一提交的数值，再是记录了一份
@@ -69,8 +74,8 @@
 
 ```sh
 git show --stat HEAD
-git diff --name-status 351c70aa7670e416decf1b77c1a9903290cd9a28..HEAD
-git rev-list --count 351c70aa7670e416decf1b77c1a9903290cd9a28..HEAD
+git diff --name-status 6507a986..HEAD
+git rev-list --count 6507a986..HEAD
 git diff --exit-code e338db8936a07b2f102df6fbd0bfa900577545b7...HEAD -- template/
 gh pr view 7 --repo StevenG3/scaffold \
   --json state,isDraft,baseRefOid,headRefOid,mergeable,mergeStateStatus,statusCheckRollup
@@ -83,9 +88,9 @@ gh pr view 7 --repo StevenG3/scaffold \
 | 第 1 步 远端锁定 | 锁定前驱 HEAD：`state=OPEN` `draft=true` `mergeable=MERGEABLE` `mergeState=CLEAN`（当次实测） |
 | 第 2 步 增量与边界 | **按去镜像约定不抄录统计量**；`git diff main -- template/` 实测为空（零回灌） |
 | 第 5 步 绿灯电池 | `default 0` / `--baseline 0` / `--help 0` / `--emit-markdown PATH 0`；生成物与入库表 `cmp` 逐字节一致；源码**无**非 ASCII 字节（`grep -c '[^ -~]'` 输出为空）。**定向数、失败数、红基线数字按去镜像约定不抄录**——运行上述命令，或读机器生成的 `boundary-cases.md` |
-| 第 5 步 产物不变量 | 脚本 SHA-256 `1020c231b9b5e11b43d0febb2e05e8e25ed9e6e092f4e222f2c3a5a0f90c8fd3`；结果摘要 `20ad0f5005822570f955e0542e7446b21f962b187c630b08d75d5f1d7f4a6b6d` |
+| 第 5 步 产物不变量 | 脚本 SHA-256 `067d1c7bb7af8594adf83ff20599b221f3358571572f98d3de4e555a925a4338`（**本轮变更**：Group E 注释恢复纯 ASCII）；结果摘要 `20ad0f5005822570f955e0542e7446b21f962b187c630b08d75d5f1d7f4a6b6d`——**与上一轮相同**：摘要覆盖的是用例值，不是源码字节，源码注释的改动本就不应移动它，这正是本轮 ASCII 修复的正确性旁证 |
 | 第 6 步 变异探针 | 穷举投毒：`--emit-markdown` `rc=1`；`--emit-markdown PATH` `rc=1` 且**正式文件逐字节未变**；横幅为首行。未抽中输入探针 `digest_changed=False`（与收窄后的检测范围声明一致，非缺陷） |
-| 第 6 步 结构攻击（本轮新增） | 审阅方反例（end 哨兵前移至 marker 之后、FAIL 行之前）**被拒**；premature end / late begin / 空视图 / 仅 marker / 缺 layer / 缺 attestation 六种形状全部**被拒**；真实非零层在**两个出口**仍 fail closed |
+| 第 6 步 结构攻击（R14 新增，此后每轮复跑） | 审阅方反例（end 哨兵前移至 marker 之后、FAIL 行之前）**被拒**；premature end / late begin / 空视图 / 仅 marker / 缺 layer / 缺 attestation 六种形状全部**被拒**；真实非零层在**两个出口**仍 fail closed |
 | 第 7 步 七条门禁 | **全部**门禁 exit 0（门禁条目见 `rules/project.md` §2；分流字节数与条目数按去镜像约定不抄录，复核请用 `capture_gate` 包装器实测） |
 | 第 8 步 复锁 | 提交并推送后由 PR 正文指针给出 exact-head 的 SHA 与 CI run id |
 
@@ -117,13 +122,18 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 
 **查找必须做到「断言级」**：只搜字面串会漏掉**同一断言的转述**——第十次复发即如此（两条被废止断言的四处活体转述未被绑定，因为它们的措辞与被删行不同字）。因此除字面串外，还须对该 finding 的**机制关键词**逐词全库 `grep`，每个命中归类为：**SSOT 内** / **指针** / **节级历史域内** / **违规→处置**。
 
-| 字符串 / 模式 | 全库命中 | 逐处处置终态 |
+| 字符串 / 模式（含英文） | 全库命中（`.md` + `.py`，节级排除本小节） | 逐处处置终态 |
 | --- | --- | --- |
-| `每个被扫文件各注入一次` | 记录正文已清零；仅剩本小节自身的两处引用（本表一行 + 下方核查命令一行） | 叙事段原句改写为历史绑定表述（`历史@c399394`），并注明已被后续轮次两次取代。**核查命令因此排除本文件**——把自己的引用算进命中，就是又一个自指 |
-| `三种记法` | 未绑定命中 0（`summary.md` 的该句已在 R17 改写为不含此串的表述；`tasks.md` 一处带 `历史@c399394`） | 叙事段改写 + 历史绑定；**本格首次填写时写成「summary 一处」，实为 0——填表本身也要复跑，不能凭印象** |
-| `整个 Change Record 目录全部 .md 全文` | 剩余命中全部带 `历史@` 绑定 | 域自 R15 起含 `.py` 注释与 docstring；原句改为当轮历史 + 指向轴表 |
-| 无界句「…只存在于机器生成产物中」（PR 正文复活） | PR 正文一处 | 改为缩面表述：机器保证仅及轴表覆盖域，其余为命令 / 白名单 / 历史绑定 |
-| 单行 docstring 未被扫描（C2） | 实现缺陷，无字符串命中 | 已修复并加自检变体；**形态与覆盖范围以 `run-manifest.md`「检查器现状（SSOT）」节为准**，此处不复述 |
+| `每个被扫文件各注入一次` | 0 | R17 已改写为历史绑定表述 |
+| `三种记法` | 未绑定命中仅存于 **R18 节级历史域内**（描述该轮修正的叙述句） | 合法：节头已声明轮次与 HEAD，节内的时态指当轮时点 |
+| `整个 Change Record 目录全部` | 0 | R17 已改写并指向 SSOT |
+| `pure ASCII`（英文） | 命中全部合法 | `carrier_sweep.py` 自述（本轮修复后**恢复为真**）、`check_current_numbers.py` 自述（说明自身为何不是纯 ASCII）、本小节核查命令 |
+| `exactly two`（英文） | 0 | 检查器模块 docstring 已重写为指针式，不再自报豁免族数 |
+| `every other .md`（英文） | 0 | 同上——域的描述只留在 SSOT |
+| 非 ASCII 字节 in `carrier_sweep.py` | 0 | 历史绑定移入 `run-manifest.md`；脚本注释恢复纯 ASCII 且不含数字 |
+
+> **本轮教训入表**：英文措辞躲过了此前所有中文关键词扫描——
+> **扫描词表必须与记录实际使用的语言同域**，中英文都要覆盖。
 
 ### 机制关键词归类（断言级扫描，R18 起随扫描记录一并提交）
 
@@ -145,20 +155,30 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 
 核查命令（可复跑）：
 
+**节级排除的正确做法**——把「内容寻址扫描记录」小节从文件中切掉后再搜。
+上一版交付的 `scan_only` 用 `awk` 生成 `(a|b)` 再喂给基本正则 `grep -v`，
+括号与竖线都被当字面量，**过滤实际零匹配**；同时 `--include=*.md` 让字面串扫描
+对域的 `.py` 半边**结构性失明**——而第十一次复发恰恰住在 `.py` 里。两处都已修正。
+
 ```sh
 D=.harness/changes/2026-07-27-bootstrap-adoption-1
-# 节级排除：只排除「内容寻址扫描记录」小节自身（它必须引用这些串），
-# 不再整文件排除——文件级排除会把同文件其他位置的真违规一并掩掉。
-scan_only() {   # 打印除扫描记录小节之外的全部命中
-  grep -rn "$1" $D | grep -v "$(printf 'protocol-runs.md:%s' "$(awk '/^### 内容寻址扫描记录/{s=NR} /^### 落地核对清单/{e=NR} END{printf "(%d|%d)", s, e}' $D/evidence/protocol-runs.md)")"
+PR=$D/evidence/protocol-runs.md
+
+# 1) 把本小节切掉，得到「记录正文」视图
+sed '/^### 内容寻址扫描记录/,/^### 落地核对清单/d' "$PR" > /tmp/pr-noscan.md
+
+# 2) 在全域（.md + .py）搜字面串；protocol-runs 用切掉后的视图代替
+scan_corpus() {           # $1 = 字面串
+  grep -rn --include='*.md' --include='*.py' "$1" "$D" | grep -v '^.*protocol-runs\.md:'
+  grep -n "$1" /tmp/pr-noscan.md | sed 's|^|evidence/protocol-runs.md(noscan):|'
 }
 
-# 更简单且稳定的等价做法：把扫描记录小节从文件中切掉后再搜
-sed '/^### 内容寻址扫描记录/,/^### 落地核对清单/d' $D/evidence/protocol-runs.md > /tmp/pr-noscan.md
-grep -rn "每个被扫文件各注入一次" $D --include=*.md | grep -v "evidence/protocol-runs.md" | wc -l   # 期望 0
-grep -n "每个被扫文件各注入一次" /tmp/pr-noscan.md | wc -l                                          # 期望 0
-grep -rn "三种记法" $D | grep -v "历史@" | grep -v "evidence/protocol-runs.md" | wc -l              # 期望 0
-grep -n "三种记法" /tmp/pr-noscan.md | grep -v "历史@" | wc -l                                      # 期望 0
+scan_corpus "每个被扫文件各注入一次" | wc -l          # 期望 0
+scan_corpus "三种记法" | grep -v "历史@" | wc -l        # 期望 0
+scan_corpus "整个 Change Record 目录全部" | grep -v "历史@" | wc -l   # 期望 0
+scan_corpus "pure ASCII" | wc -l                        # 英文串同样在域内
+scan_corpus "exactly two" | wc -l                       # 期望 0（已重写）
+scan_corpus "every other .md" | wc -l                   # 期望 0（已重写）
 ```
 
 ### 落地核对清单（本提交声称的每一处修复）
@@ -170,7 +190,7 @@ grep -n "三种记法" /tmp/pr-noscan.md | grep -v "历史@" | wc -l            
 | 视图结构完整性校验存在 | `grep -c "_layer_rows\|_attested_classes" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py` | ≥ 2 |
 | 结构攻击回归全绿 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| grep -cE "(premature end\|late begin\|removed begin\|empty view\|marker-only\|missing layer row\|missing attestation).*PASS"` | 7 |
 | 去镜像：记录中无现刻数字断言 | `sed -n '/^## 结果/,/^### 红基线/p' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/run-manifest.md \| grep -cE "定向用例数 \|分支 \(a\) 命中"` | 0 |
-| 去镜像：Git 统计量仅在病灶引述中出现 | `grep -rn "+42/-8\|+60/-27" .harness/changes/2026-07-27-bootstrap-adoption-1 | grep -v "内容寻址\|落地核对"` | 剩余命中**全部落在描述该病灶的叙述句内**（句中含「差异统计」或「与 Git 不符」等上下文串），无任何现刻断言；**期望以内容锚给出，不再用行号坐标**——行号会随任何编辑漂移 |
+| 去镜像：Git 统计量仅在病灶引述中出现 | `grep -rn "+42/-8\\|+60/-27" .harness/changes/2026-07-27-bootstrap-adoption-1 | grep -v "内容寻址\|落地核对"` | 剩余命中**全部落在描述该病灶的叙述句内**（句中含「差异统计」或「与 Git 不符」等上下文串），无任何现刻断言；**期望以内容锚给出，不再用行号坐标**——行号会随任何编辑漂移 |
 | umask 韧性 | `( umask 177; python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py >/dev/null 2>&1; echo $? )` 与 `grep -c Traceback` | exit 1 且 traceback 计数 0 |
 | 起始哨兵定向用例 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| grep -c "begin sentinel literal"` | 1 |
 | 核查的参数域 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --bogus` | exit 2 |
@@ -180,5 +200,6 @@ grep -n "三种记法" /tmp/pr-noscan.md | grep -v "历史@" | wc -l            
 | 现刻数字断言：覆盖域终态 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py` | exit 0，并打印扫描到的文件数与域说明；**声称仅限载体自由度表标记为覆盖的轴**，开放轴见该表 |
 | 变异验证：文件 × 记法叉积 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test` | 每个文件 × 每个变体全部 `caught=True`（**变体集合与自检形态见 SSOT 节**），打印句与实现一致；变体含裸数字、逗号格式、反引号包裹、两条历史豁免逃逸样本、英文注释形态 |
 | 单行 docstring 覆盖（C2） | `grep -A 14 "^SELF_TEST_VARIANTS" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py \| grep -c '"""'` | 非零——变体集合含单行 docstring 形态（**覆盖声称见 SSOT 节**）。轴表声称「`.py` 注释与 docstring = 覆盖」，而此前该形态从未被扫（三引号同行成对，旧解析只认奇数个），属**已声称覆盖域内的实现缺陷**，已补齐 |
+| **被存证脚本的纯 ASCII 不变式** | `grep -c '[^ -~]' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py` | **0**。该构造保证在记录中被声称十一轮，却从未有清单守护——第十一次复发正是它被打破（历史标签把非 ASCII 字节写进了被哈希存证的脚本）。**声称了却没有清单行的不变式，等于没有守护。** |
 | 核查器的源码编码 | `python3 -c "import pathlib;print(sum(1 for b in pathlib.Path('.harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py').read_bytes() if b>0x7e))"` | **非零**——该文件不是纯 ASCII，因为它要在定义处逐字列出被禁的中文标记词；纯 ASCII 纪律只约束被哈希存证的 `carrier_sweep.py`，已在其 docstring 中明示 |
 | 无非预期未完成任务 | `grep -c "^- \[ \]" .harness/changes/2026-07-27-bootstrap-adoption-1/tasks.md` | 1（仅剩预期中的后续项） |
