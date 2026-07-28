@@ -192,7 +192,7 @@ grep -rnE --exclude-dir=__pycache__ \
 ```
 
 本表**基于最终提交态的收集器命中集 + 人工分类**：收集器在本次提交的最终内容上重跑，
-命中 **446 行**，分布见下表。（上一版记录的 175 行是**跨状态混合值**——
+命中 **453 行**，分布见下表。（上一版记录的 175 行是**跨状态混合值**——
 自验会话 B 证明：同一命令在该 HEAD 上得 191、在其前一状态得 157，记录的分布两者都不匹配。
 根因是收集器在编辑中途运行、随后文本又被改动。现改为**提交前最后一步**重跑并记录。）
 
@@ -202,11 +202,11 @@ grep -rnE --exclude-dir=__pycache__ \
 | `evidence/boundary-cases.md` | 8 |
 | `evidence/carrier_sweep.py` | 151 |
 | `evidence/check_current_numbers.py` | 19 |
-| `evidence/protocol-runs.md` | 34 |
+| `evidence/protocol-runs.md` | 39 |
 | `evidence/run-manifest.md` | 67 |
 | `spec.md` | 6 |
-| `summary.md` | 115 |
-| `tasks.md` | 41 |
+| `summary.md` | 116 |
+| `tasks.md` | 42 |
 
 命中集中**每一条承载能力声明的句子**都在下表拥有自己的行；本节不再使用
 「其余命中不构成全称能力声明」这类概括性兜底句——那本身又是一个未经逐条检验的全称句。
