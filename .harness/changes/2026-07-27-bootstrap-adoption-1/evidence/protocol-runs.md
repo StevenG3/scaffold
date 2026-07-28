@@ -63,7 +63,7 @@
 > **本节两次犯过它要防的病**：先是逐字沿用前一提交的数值，再是记录了一份
 > 与 Git 不符的差异统计（记 4 文件 `+42/-8`，真实 5 文件 `+60/-27`）。
 > 根因不是粗心，而是**把可导出的统计量抄进记录**——记录与它所在的提交互相追逐，
-> 永远差一步。**去镜像**之后这一类缺陷在结构上**不再可能**：记录里没有这些数字了——第 11 轮删除的是 **Git 可导出**的一类，本轮补上 **脚本可导出**的一类，两者合起来，**当前态数字只存在于机器生成产物中**。
+> 永远差一步。**去镜像**把这一类缺陷的入口收窄到一个**显式白名单**：当前态小节内只允许出现脚本 SHA、结果摘要与规范标识符，其余数字一律视为违规，由 `check_current_numbers.py` 机械核查（该命令已做变异验证，能失败）。第 11 轮删的是 **Git 可导出**的一类，第 12 轮补上 **脚本可导出**的一类。**此处不再声称「结构上不再可能」**——会话 C 用 `run-manifest.md:49` 的残值证伪过那个无界说法；能声称的只是「白名单之外的数字会被核查命令抓住」。
 
 ### 复核者应执行的命令（本记录不抄录其输出）
 
@@ -82,11 +82,11 @@ gh pr view 7 --repo StevenG3/scaffold \
 | --- | --- |
 | 第 1 步 远端锁定 | 锁定前驱 HEAD：`state=OPEN` `draft=true` `mergeable=MERGEABLE` `mergeState=CLEAN`（当次实测） |
 | 第 2 步 增量与边界 | **按去镜像约定不抄录统计量**；`git diff main -- template/` 实测为空（零回灌） |
-| 第 5 步 绿灯电池 | `default 0` / `--baseline 0` / `--help 0` / `--emit-markdown PATH 0`；生成物与入库表 `cmp` 逐字节一致；非 ASCII 字节 **0**。**定向数、失败数、红基线数字按去镜像约定不抄录**——运行上述命令，或读机器生成的 `boundary-cases.md` |
-| 第 5 步 产物不变量 | 脚本 SHA-256 `67ffcc8e9aa3eecf1e16cbe37f8c922ecc60469ea200758f6e0a2e1e7518ecbe`；结果摘要 `20ad0f5005822570f955e0542e7446b21f962b187c630b08d75d5f1d7f4a6b6d` |
+| 第 5 步 绿灯电池 | `default 0` / `--baseline 0` / `--help 0` / `--emit-markdown PATH 0`；生成物与入库表 `cmp` 逐字节一致；源码**无**非 ASCII 字节（`grep -c '[^ -~]'` 输出为空）。**定向数、失败数、红基线数字按去镜像约定不抄录**——运行上述命令，或读机器生成的 `boundary-cases.md` |
+| 第 5 步 产物不变量 | 脚本 SHA-256 `edd1e762a905e006c796d73d4210df0f4cd6ed1d170045a5a3d120926e6261ee`；结果摘要 `20ad0f5005822570f955e0542e7446b21f962b187c630b08d75d5f1d7f4a6b6d` |
 | 第 6 步 变异探针 | 穷举投毒：`--emit-markdown` `rc=1`；`--emit-markdown PATH` `rc=1` 且**正式文件逐字节未变**；横幅为首行。未抽中输入探针 `digest_changed=False`（与收窄后的检测范围声明一致，非缺陷） |
 | 第 6 步 结构攻击（本轮新增） | 审阅方反例（end 哨兵前移至 marker 之后、FAIL 行之前）**被拒**；premature end / late begin / 空视图 / 仅 marker / 缺 layer / 缺 attestation 六种形状全部**被拒**；真实非零层在**两个出口**仍 fail closed |
-| 第 7 步 七条门禁 | 7/7 exit 0（分流字节数按去镜像约定不抄录；复核请用 `capture_gate` 包装器实测） |
+| 第 7 步 七条门禁 | **全部**门禁 exit 0（门禁条目见 `rules/project.md` §2；分流字节数与条目数按去镜像约定不抄录，复核请用 `capture_gate` 包装器实测） |
 | 第 8 步 复锁 | 提交并推送后由 PR 正文指针给出 exact-head 的 SHA 与 CI run id |
 
 ### 落地核对清单（本提交声称的每一处修复）
@@ -101,4 +101,8 @@ gh pr view 7 --repo StevenG3/scaffold \
 | 去镜像：Git 统计量仅在病灶引述中出现 | `grep -n "+42/-8\|+60/-27" .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/protocol-runs.md \| grep -v '^[0-9]*:|'` | 恰 **2** 行：第 14 行（第 11 轮 I2 的病灶描述）与第 64 行（当前条目的引述）。`grep -v '^[0-9]*:|'` 排除本清单自身那一行——**核对命令若把自己算进去，就是又一个自指**。 |
 | umask 韧性 | `( umask 177; python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py >/dev/null 2>&1; echo $? )` 与 `grep -c Traceback` | exit 1 且 traceback 计数 0 |
 | 起始哨兵定向用例 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| grep -c "begin sentinel literal"` | 1 |
+| **当前态数字白名单核查（本轮新增）** | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py` | exit 0 且输出「no non-whitelisted number…」 |
+| **该核查的变异验证**（证明它能失败） | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test` | 打印 `injected-stray scan caught the stray: True` 并 exit 0；注入仅在内存中进行，**不修改任何文件**（已实测，未留插入物） |
+| 核查器的源码编码 | `python3 -c "import pathlib;print(sum(1 for b in pathlib.Path('.harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py').read_bytes() if b>0x7e))"` | **非零**——该文件**不是**纯 ASCII，因为它要匹配中文小节标题；纯 ASCII 纪律只约束被哈希存证的 `carrier_sweep.py`。已在其 docstring 中明示 |
+| 核查的参数域 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --bogus` | exit 2 |
 | 无非预期未完成任务 | `grep -c "^- \[ \]" .harness/changes/2026-07-27-bootstrap-adoption-1/tasks.md` | 1（仅剩预期中的后续项） |

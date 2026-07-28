@@ -807,7 +807,12 @@ def argv_path_checks():
              parse_args(["--emit-markdown", writable])[2] == "emit"),
         ]
     except OSError as exc:
-        return [("argv path fixture could not be built (%s: %s)"
+        # Neutral attribution: this may be an environment restriction (a
+        # restrictive umask, a full disk) OR a genuine defect in this script.
+        # The check cannot tell which, so it must not claim to -- it fails
+        # closed either way, and says only what it observed.
+        return [("argv path fixture construction raised OSError (%s: %s)"
+                 " -- environment restriction or script defect; either way FAIL"
                  % (type(exc).__name__, exc), False)]
     finally:
         if base is not None:
