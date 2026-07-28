@@ -83,7 +83,7 @@ gh pr view 7 --repo StevenG3/scaffold \
 | 第 1 步 远端锁定 | 锁定前驱 HEAD：`state=OPEN` `draft=true` `mergeable=MERGEABLE` `mergeState=CLEAN`（当次实测） |
 | 第 2 步 增量与边界 | **按去镜像约定不抄录统计量**；`git diff main -- template/` 实测为空（零回灌） |
 | 第 5 步 绿灯电池 | `default 0` / `--baseline 0` / `--help 0` / `--emit-markdown PATH 0`；生成物与入库表 `cmp` 逐字节一致；源码**无**非 ASCII 字节（`grep -c '[^ -~]'` 输出为空）。**定向数、失败数、红基线数字按去镜像约定不抄录**——运行上述命令，或读机器生成的 `boundary-cases.md` |
-| 第 5 步 产物不变量 | 脚本 SHA-256 `edd1e762a905e006c796d73d4210df0f4cd6ed1d170045a5a3d120926e6261ee`；结果摘要 `20ad0f5005822570f955e0542e7446b21f962b187c630b08d75d5f1d7f4a6b6d` |
+| 第 5 步 产物不变量 | 脚本 SHA-256 `4f946c10dbe73bab03acc61a734b78dc16ab0ff87096479fa2a3078aeff81e32`；结果摘要 `20ad0f5005822570f955e0542e7446b21f962b187c630b08d75d5f1d7f4a6b6d` |
 | 第 6 步 变异探针 | 穷举投毒：`--emit-markdown` `rc=1`；`--emit-markdown PATH` `rc=1` 且**正式文件逐字节未变**；横幅为首行。未抽中输入探针 `digest_changed=False`（与收窄后的检测范围声明一致，非缺陷） |
 | 第 6 步 结构攻击（本轮新增） | 审阅方反例（end 哨兵前移至 marker 之后、FAIL 行之前）**被拒**；premature end / late begin / 空视图 / 仅 marker / 缺 layer / 缺 attestation 六种形状全部**被拒**；真实非零层在**两个出口**仍 fail closed |
 | 第 7 步 七条门禁 | **全部**门禁 exit 0（门禁条目见 `rules/project.md` §2；分流字节数与条目数按去镜像约定不抄录，复核请用 `capture_gate` 包装器实测） |
@@ -114,8 +114,9 @@ R13 按 C 给的行号修了 `run-manifest.md`，却没有对同一字符串做�
 | **现刻数字断言核查（全文域）** | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py` | exit 0，且打印「scanned N markdown file(s) in full」——域是整个 Change Record 的全部 `.md`（生成表除外），**无行号窗口、无反引号置盲** |
 | **该核查的变异验证** | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test` | **每个被扫文件各注入一次**，三种记法（裸数字 / 逗号格式 / 反引号包裹）轮换，全部 `caught=True` 才过；注入仅在内存中，**不修改任何文件** |
 | 核查的参数域 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --bogus` | exit 2 |
-| 原违规字符串的全目录终态 | `grep -rn "当前定向用例为" .harness/changes/2026-07-27-bootstrap-adoption-1` | 仅剩两类命中，均合法：本清单自身引用该模式的行，以及 `summary.md` 中**历史绑定**的 finding 描述（含「历史」与当轮 HEAD）。**无任何现刻断言**——由 `check_current_numbers.py` exit 0 兜底 |
-| 原违规字符串的全目录终态 | `grep -rn "当前为" .harness/changes/2026-07-27-bootstrap-adoption-1` | 仅剩本清单自身引用该模式的行 |
-| 死指针的全目录终态 | `grep -rn "「当前结果」" .harness/changes/2026-07-27-bootstrap-adoption-1` | 仅剩本清单自身引用该模式的行；记录正文中的死指针已全部改指机器生成的 `boundary-cases.md` |
+| 现刻数字断言：全域终态 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py` | exit 0，并打印扫描到的文件数——域为 Change Record 内**全部 `.md` 与 `.py`**（生成表除外），`.py` 只扫注释与 docstring 行 |
+| 变异验证：真叉积 | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test` | **每个文件 × 每个变体**全部 `caught=True`，打印句与实现一致；六个变体含裸数字、逗号格式、反引号包裹、**两条历史豁免逃逸样本**、英文注释形态 |
+| 历史豁免形态 | `grep -c "历史@" .harness/changes/2026-07-27-bootstrap-adoption-1/summary.md` | 非零——历史行已迁移到**显式绑定记号** `历史@<hex>`；旧式「散落 hex + 历史」不再豁免 |
+| 旧式豁免逃逸 | 上条自检中的两个逃逸样本 | 均 `caught=True`（终验给出的原文：引用 commit id 走私现刻数字） |
 | 核查器的源码编码 | `python3 -c "import pathlib;print(sum(1 for b in pathlib.Path('.harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py').read_bytes() if b>0x7e))"` | **非零**——该文件不是纯 ASCII，因为它要在定义处逐字列出被禁的中文标记词；纯 ASCII 纪律只约束被哈希存证的 `carrier_sweep.py`，已在其 docstring 中明示 |
 | 无非预期未完成任务 | `grep -c "^- \[ \]" .harness/changes/2026-07-27-bootstrap-adoption-1/tasks.md` | 1（仅剩预期中的后续项） |

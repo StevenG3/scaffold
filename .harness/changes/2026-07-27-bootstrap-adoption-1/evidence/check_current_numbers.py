@@ -58,21 +58,48 @@ GENERATED_ARTIFACT = "boundary-cases.md"
 # using a new way of saying "as of now" -- the same standing obligation the
 # forall collector's keyword list carries.
 CURRENT_STATE_MARKERS = (
+    # Chinese. The first review of this list found it missing the corpus's
+    # dominant vocabulary -- a marker list is only as good as its enumeration,
+    # the same standing obligation the forall collector's keywords carry.
     "当前",
     "现为",
     "现有",
+    "现在",
+    "现行",
     "此时",
     "如今",
     "目前",
+    "实测",
+    "本轮",
+    "最新",
+    # English, for the .py prose that entered the domain this round.
+    "now",
+    "currently",
+    "at present",
+    "as of",
 )
+
+# Counting words that only assert current state when paired with a quantifier.
+# Scanning them unconditionally floods the output; requiring the quantifier
+# keeps them meaningful without creating a blind spot.
+COUNTING_MARKERS = ("共", "合计", "总计")
+QUANTIFIERS = ("项", "个", "条", "行", "处", "次")
+# 共 is also the first character of 共因 / 共享 / 共同 / 共存, which assert
+# nothing about counts. A counting use is followed by a digit or by 计.
+COUNTING_COMPOUNDS = ("共因", "共享", "共同", "共存", "共用", "公共")
 
 # Number tokens, plain and comma-grouped. Backticks are NOT stripped first:
 # `137,527` must be caught exactly like 137,527.
 NUMBER_TOKEN = re.compile(r"\d{1,3}(?:,\d{3})+|\d+")
 
-# Exemption 1: a line that binds its figure to a round and a commit.
-HISTORY_WORD = "历史"
-COMMIT_ID = re.compile(r"\b[0-9a-f]{7,40}\b")
+# Exemption 1: an EXPLICIT binding token, not a co-occurrence.
+#
+# The previous form exempted any line containing 历史 and a loose hex string.
+# A review smuggled current-state figures past it twice by quoting a commit id
+# in the same sentence: co-occurrence is not a statement of intent. The token
+# below has to be written deliberately, and it binds the figure on that line to
+# one round's HEAD.
+HISTORY_BINDING = re.compile(r"历史@[0-9a-f]{7,40}")
 
 # Exemption 2: the artifact invariants, enumerated here and mirrored verbatim
 # in run-manifest.md's whitelist table.
@@ -94,10 +121,11 @@ STRUCTURAL_PATTERNS = (
     r"SHA-?256",                 # algorithm name
     r"第 \d+ 步",                 # protocol step numbers
     r"第 \d+ 轮",                 # review round numbers
-    r"第 \d+ 行",                 # line references
     r"^\|\s*\d+\s*\|",           # leading table row number (audit rows)
     r"§\s*\d+",                  # rule section references
     r"R\d+[a-z]?",               # round labels such as R7, R10b
+    r"\bv\d+\b",                 # product version labels such as v0, v3
+    r"Errno \d+",                # errno names quoted in messages
     r"\b(?:[A-Z]-)*[A-Z]{1,2}\d+[a-z]?\b",  # finding labels: I1, C1, M2, A-C1, B-S-I2
     r"\bexit \d\b",              # exit-code semantics
     r"退出 \d",
@@ -105,14 +133,54 @@ STRUCTURAL_PATTERNS = (
 
 
 def scanned_files():
-    """Every .md in the Change Record except the generated artifact."""
+    """Every .md and every .py in the Change Record, minus the generated table.
+
+    The seventh recurrence of the stale-figure defect hid in a COMMENT of the
+    attested script: the domain had been closed along the axis that was
+    breached (line windows, quoting style) and left open along two others --
+    file extension, and marker vocabulary. Closing a domain means enumerating
+    every carrier axis, not the one that happened to fail.
+    """
     found = []
     for root, _dirs, files in os.walk(RECORD_DIR):
         for name in sorted(files):
-            if not name.endswith(".md") or name == GENERATED_ARTIFACT:
+            if name == GENERATED_ARTIFACT:
                 continue
-            found.append(os.path.join(root, name))
+            if name.endswith(".md") or name.endswith(".py"):
+                found.append(os.path.join(root, name))
     return sorted(found)
+
+
+TRIPLE_QUOTE = re.compile(r'\"\"\"|\'\'\'')
+
+
+def prose_lines(path, lines):
+    """Yield (line_number, line) for lines that carry PROSE.
+
+    For markdown that is every line. For Python it is comment lines and
+    docstring bodies only: a number inside code is the code's business, but a
+    number inside a comment is an assertion aimed at a reader, and that is
+    exactly where the seventh recurrence lived.
+    """
+    if not path.endswith(".py"):
+        for number, line in enumerate(lines, start=1):
+            yield number, line
+        return
+    in_doc = False
+    for number, line in enumerate(lines, start=1):
+        quotes = len(TRIPLE_QUOTE.findall(line))
+        stripped = line.strip()
+        if in_doc:
+            yield number, line
+            if quotes % 2 == 1:
+                in_doc = False
+            continue
+        if stripped.startswith("#"):
+            yield number, line
+            continue
+        if quotes % 2 == 1:
+            yield number, line
+            in_doc = True
 
 
 def _strip_exempt(line):
@@ -124,9 +192,17 @@ def _strip_exempt(line):
 
 def line_violations(line):
     """Return (marker, token) pairs that make this line a violation."""
-    if HISTORY_WORD in line and COMMIT_ID.search(line):
-        return []                      # exemption 1: bound to a round and HEAD
+    if HISTORY_BINDING.search(line):
+        return []                      # exemption 1: explicitly bound to a HEAD
     markers = [marker for marker in CURRENT_STATE_MARKERS if marker in line]
+    if not markers:
+        for counter in COUNTING_MARKERS:
+            probe = line
+            for compound in COUNTING_COMPOUNDS:
+                probe = probe.replace(compound, " ")
+            if counter in probe and any(q in probe for q in QUANTIFIERS):
+                markers = [counter]
+                break
     if not markers:
         return []
     tokens = NUMBER_TOKEN.findall(_strip_exempt(line))
@@ -143,7 +219,7 @@ def scan(injections=None):
             lines = handle.read().splitlines()
         if injections and path in injections:
             lines = list(lines) + list(injections[path])
-        for number, line in enumerate(lines, start=1):
+        for number, line in prose_lines(path, lines):
             for marker, token in line_violations(line):
                 violations.append((os.path.relpath(path, RECORD_DIR),
                                    number, marker, token, line.strip()))
@@ -154,15 +230,22 @@ SELF_TEST_VARIANTS = (
     "当前定向用例为 9999",
     "当前唯一输入数为 137,527",
     "当前认证自检为 `9999` 项",
+    # The two escapes a review drove through the old co-occurrence exemption:
+    # quoting a commit id beside the word 历史 used to launder any figure.
+    "历史 c399394 参照：现在定向用例为 9999",
+    "参见历史提交 fd8032ca，实测认证自检 9999 项",
+    # English prose, for the .py comment domain.
+    "# directed cases (69 of them at the time; 9999 now)",
 )
 
 
 def self_test():
-    """Inject a stray figure into EVERY scanned file, in three notations.
+    """Inject every variant into every scanned file -- a true cross product.
 
+    The previous version rotated one variant per file and exercised the full
+    set on the first file only, while printing "every file and every notation".
     A check shown to fail on one file in one notation has only been shown to
-    fail there. Every file and every variant goes through the real scan path;
-    nothing is written to disk.
+    fail there. Everything goes through the real scan path; nothing is written.
     """
     baseline = scan()
     print("clean scan violations: %d" % len(baseline))
@@ -171,23 +254,21 @@ def self_test():
         print("SELF-TEST FAILED: no files to scan")
         return 1
     misses = []
-    for index, path in enumerate(files):
-        variant = SELF_TEST_VARIANTS[index % len(SELF_TEST_VARIANTS)]
-        dirty = scan(injections={path: [variant]})
-        caught = len(dirty) > len(baseline)
+    for path in files:
         rel = os.path.relpath(path, RECORD_DIR)
-        print("  %-26s variant=%-26s caught=%s" % (rel, variant, caught))
-        if not caught:
-            misses.append((rel, variant))
-    for variant in SELF_TEST_VARIANTS:
-        probe = scan(injections={files[0]: [variant]})
-        if len(probe) <= len(baseline):
-            misses.append((os.path.relpath(files[0], RECORD_DIR), variant))
+        for variant in SELF_TEST_VARIANTS:
+            injected = variant if not path.endswith(".py") else "# " + variant
+            dirty = scan(injections={path: [injected]})
+            caught = len(dirty) > len(baseline)
+            print("  %-26s variant=%-30s caught=%s" % (rel, variant[:30], caught))
+            if not caught:
+                misses.append((rel, variant))
     if misses:
         print("SELF-TEST FAILED: injections not caught: %r" % (misses,))
         return 1
-    print("SELF-TEST PASSED: every scanned file and every notation variant is")
-    print("caught (injections were in-memory only; no file was modified)")
+    print("SELF-TEST PASSED: %d file(s) x %d variant(s), every combination caught"
+          % (len(files), len(SELF_TEST_VARIANTS)))
+    print("(injections were in-memory only; no file was modified)")
     return 0
 
 

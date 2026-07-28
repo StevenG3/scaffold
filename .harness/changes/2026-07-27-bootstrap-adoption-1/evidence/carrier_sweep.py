@@ -7,7 +7,7 @@ Harness component: it is deliberately not registered in manifest.json.
 It contains a mechanical implementation of the carrier rule as written in
 `.harness/rules/project.md` section 2, then attacks that implementation with:
 
-  1. DIRECTED cases drawn verbatim from the project's declared adversarial
+  - DIRECTED cases drawn verbatim from the project's declared adversarial
      input domain (`docs/process/invariant-closure-design.md` section 2.3),
      plus every family of the fixed unrenderable code-point set the rule
      enumerates, plus visible neighbours just outside that set. Each directed
@@ -16,19 +16,19 @@ It contains a mechanical implementation of the carrier rule as written in
      an implementation that classifies correctly and then records the wrong
      bytes -- an external review proved exactly that hole by stubbing the
      digest helper to a constant and still seeing zero failures.
-  2. A COMPARATOR SELF-TEST that mutates known-good expectations (wrong SHA,
+  - A COMPARATOR SELF-TEST that mutates known-good expectations (wrong SHA,
      wrong byte count, wrong verbatim line, wrong branch) and asserts the
      comparator rejects each one, plus a control that must still be accepted.
      Without this, a comparator that always passed would look identical to a
      correct one. A CERTIFICATION SELF-TEST proves that every
      verdict layer, and any unregistered failure label, blocks certification
      and changes the emitted conclusion text.
-  3. An ARGV SELF-TEST asserting that unknown flags and mutually exclusive
+  - An ARGV SELF-TEST asserting that unknown flags and mutually exclusive
      mode combinations are rejected rather than silently reinterpreted.
-  4. An EXHAUSTIVE sweep of every input of length 0-2 (65793 inputs) against
+  - An EXHAUSTIVE sweep of every input of the shortest lengths against
      the oracle. This is the one place a universal claim is affordable, and it
      is claimed only over that subdomain.
-  5. A SAMPLED sweep over lengths 0-6: each DRAWN input gets an independent
+  - A SAMPLED sweep over the longer lengths: each DRAWN input gets an independent
      oracle check of BOTH branch and carrier value; what it cannot establish is
      anything about inputs never drawn. The full 0-6 domain is 2.8e14 inputs.
 
@@ -69,8 +69,8 @@ Exit codes are per mode:
                    exits 1; without PATH it prints the uncertified table on
                    stdout, banner first, and exits 1. Default and this mode are
                    both verdict-bearing; neither is "the only one that counts".
-  bad arguments    2, with a message and usage on stderr. This covers unknown
-                   flags and mutually exclusive combinations alike.
+  bad arguments    exit code two, with a message and usage on stderr. This
+                   covers unknown flags and mutually exclusive combinations.
 
 Note on source encoding: this file is pure ASCII. Every non-ASCII code point
 appears as an escape sequence (for example "\\u0085"), never as a literal
@@ -474,8 +474,7 @@ DIRECTED = [(name, raw, branch, resolve_expectation(raw, spec))
 # independent transcriptions that disagree on ANY fuzz input turn the run red,
 # so the fuzz domain now checks recorded VALUES, not just branch labels --
 # without it, an implementation that recorded garbage for inputs outside the
-# directed cases (69 of them at the time; 74 now) reproduced the recorded digest
-# exactly and stayed green.
+# directed cases reproduced the recorded digest exactly and stayed green.
 # ---------------------------------------------------------------------------
 
 def oracle_carrier(raw):
