@@ -76,6 +76,7 @@ character, so the script stays reviewable in a plain text diff.
 import hashlib
 import os
 import random
+import re
 import sys
 import tempfile
 
@@ -737,6 +738,14 @@ def selftest_argv():
         ("empty path rejected", parse_args(["--emit-markdown", ""])[0] == 2),
         ("whitespace-only path rejected",
          parse_args(["--emit-markdown", "   "])[0] == 2),
+        ("nonexistent parent directory rejected",
+         parse_args(["--emit-markdown",
+                     os.path.join(os.sep, "no-such-dir-4f2a", "out.md")])[0] == 2),
+        ("directory target rejected",
+         parse_args(["--emit-markdown", os.path.abspath(os.curdir)])[0] == 2),
+        ("writable path accepted",
+         parse_args(["--emit-markdown",
+                     os.path.join(tempfile.gettempdir(), "out.md")])[2] == "emit"),
     ]
 
 
@@ -818,16 +827,37 @@ def parse_args(argv):
                 % " ".join(positionals),
                 None, None)
     if any(not arg.strip() for arg in positionals):
-        # An empty path used to be accepted and then died deep inside the write
-        # with a FileNotFoundError traceback and exit 1 -- indistinguishable at
-        # a glance from a rule failure, which is what exit 1 is reserved for.
+        # Exit 1 means a verdict layer failed. An unusable path is a protocol
+        # error, so it must exit 2 -- otherwise a typo is indistinguishable at a
+        # glance from a rule failure. This applies to every unusable path shape,
+        # not only the empty one: see target_path_problem().
         return (2, "--emit-markdown path must not be empty", None, None)
+    if positionals:
+        problem = target_path_problem(positionals[0])
+        if problem is not None:
+            return 2, problem, None, None
 
     if baseline:
         return 0, None, "baseline", None
     if emit:
         return 0, None, "emit", positionals[0] if positionals else None
     return 0, None, "default", None
+
+
+def target_path_problem(path):
+    """Return a message if PATH cannot be written, else None.
+
+    An internal verifier pointed a nonexistent directory and a directory itself
+    at --emit-markdown: both produced an OSError traceback and exit 1 while
+    certification was PASSING, contradicting the mode matrix (illegal path = 2)
+    and spending the code reserved for a failed verdict on an IO error.
+    """
+    if os.path.isdir(path):
+        return "--emit-markdown path is a directory: %s" % path
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    if not os.path.isdir(parent):
+        return "--emit-markdown parent directory does not exist: %s" % parent
+    return None
 
 
 def write_atomically(path, text):
@@ -926,6 +956,12 @@ CERT_LAYERS = (
 CERTIFIED_MARKER = "Certification state: **CERTIFIED**"
 UNCERTIFIED_MARKER = "Certification state: **NOT CERTIFIED**"
 FAIL_CELL = "**FAIL**"
+PASS_CELL = "PASS"
+# The renderer below writes these exact tokens and the guard scans for them.
+# Sharing the constants removes the latent brittleness of a guard keyed to a
+# literal the renderer could change independently; a self-test asserts a real
+# uncertified render actually contains FAIL_CELL, so the coupling is measured,
+# not assumed.
 
 
 def verdict(layers):
@@ -953,7 +989,27 @@ def artifact_guard_violations(text):
         problems.append("rendered table states no certification marker")
     if claims_uncertified and not text.startswith(UNCERTIFIED_BANNER.splitlines()[0]):
         problems.append("uncertified table does not start with the banner")
+    if claims_certified:
+        # A forged layer row renders as PASS and carries no FAIL cell, so the
+        # token scan alone lets "8/23 passed" sit under a CERTIFIED header. Any
+        # attestation pair must be complete when the table claims certification.
+        for passed, total, line in _attestation_pairs(text):
+            if passed != total:
+                problems.append(
+                    "CERTIFIED table reports an incomplete attestation: %s"
+                    % line.strip())
     return problems
+
+
+ATTESTATION_PAIR = re.compile(r"(\d+)\s*/\s*(\d+)\s+passed")
+
+
+def _attestation_pairs(text):
+    """Yield (passed, total, line) for every 'X/Y passed' attestation line."""
+    for line in text.splitlines():
+        match = ATTESTATION_PAIR.search(line)
+        if match:
+            yield int(match.group(1)), int(match.group(2)), line
 
 
 PRODUCER_NAME_PREFIXES = ("selftest_", "_selftest_")
@@ -1089,7 +1145,8 @@ def emit_markdown(rows, failures, digest, summary, mismatches, unique, exhaustiv
     out.append("| verdict layer | result | status |")
     out.append("| --- | --- | --- |")
     for name, ok, detail in layers:
-        out.append("| %s | %s | %s |" % (name, detail, "PASS" if ok else "**FAIL**"))
+        out.append("| %s | %s | %s |" % (name, detail,
+                                         PASS_CELL if ok else FAIL_CELL))
     out.append("")
     out.append("Directed cases: **%d**, failures: **%d**." % (len(rows), failures))
     out.append("A case passes only if BOTH its branch and its carrier value match the")
@@ -1128,7 +1185,7 @@ def emit_markdown(rows, failures, digest, summary, mismatches, unique, exhaustiv
                           repr(expected_carrier).replace("|", "\\|"),
                           actual_branch,
                           repr(actual_carrier).replace("|", "\\|"),
-                          "PASS" if ok else "**FAIL**"))
+                          PASS_CELL if ok else FAIL_CELL))
     out.append("")
     out.append("## Conclusion")
     out.append("")
@@ -1289,6 +1346,18 @@ def selftest_certification():
                    not artifact_guard_violations(text_ok)))
     checks.append(("artifact guard accepts a consistent uncertified render",
                    not artifact_guard_violations(text_bad)))
+    # A forged LAYER row renders as PASS and carries no FAIL cell, so the token
+    # scan alone would pass it. The attestation completeness check is what
+    # catches it: this is the internal verifier's exact probe.
+    forged_attestation = text_ok.replace("- comparator self-test 1/1 passed.",
+                                         "- comparator self-test 8/23 passed.")
+    checks.append(("artifact guard rejects an incomplete attestation under CERTIFIED",
+                   forged_attestation != text_ok
+                   and bool(artifact_guard_violations(forged_attestation))))
+    # The guard scans for FAIL_CELL; assert a real uncertified render contains
+    # it, so the shared-constant coupling is measured rather than assumed.
+    checks.append(("uncertified render actually contains the FAIL token",
+                   FAIL_CELL in text_bad))
     checks.append(("every registered producer is discovered and registered",
                    _discovery_ok()))
 
@@ -1409,7 +1478,15 @@ def main(argv):
         if path is None:
             sys.stdout.write(text)
         else:
-            write_atomically(path, text)
+            try:
+                write_atomically(path, text)
+            except OSError as exc:
+                # Pre-validation covers the known shapes; anything the
+                # filesystem raises later is still a protocol error, never a
+                # verdict. Exit 2 keeps the matrix true.
+                sys.stderr.write("carrier_sweep.py: cannot write %s: %s\n"
+                                 % (path, exc))
+                return 2
             sys.stderr.write("wrote %s\n" % path)
         return 0
 
