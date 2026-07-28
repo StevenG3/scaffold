@@ -448,7 +448,11 @@ DIRECTED_SPECS = [
      ORACLE_BRANCH_LINE, ("verbatim", "\u07ff")),
     ("D four-byte astral plane", "\U0001f600\n".encode("utf-8"),
      ORACLE_BRANCH_LINE, ("verbatim", "\U0001f600")),
-    # -- Group E: real gate outputs recorded by this Change Record --
+    # -- Group E: gate-output SNAPSHOTS taken at 历史@444cc95, not current
+    #    measurements. The bytes below are frozen fixture inputs: the test
+    #    count and the elapsed time in them drift with every real run and are
+    #    NOT re-measured here. They exercise the carrier rule on realistic
+    #    shapes; they assert nothing about the current suite. --
     ("E gate 1/2/6 stdout", b"Harness contract is valid.\n",
      ORACLE_BRANCH_LINE, ("verbatim", "Harness contract is valid.")),
     ("E gate 3 stdout two lines",

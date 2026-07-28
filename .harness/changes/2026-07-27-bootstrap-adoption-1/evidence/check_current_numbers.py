@@ -284,7 +284,8 @@ def main(argv):
     violations = scan()
     if not violations:
         print("no current-state numeric assertion outside %s" % GENERATED_ARTIFACT)
-        print("scanned %d markdown file(s) in full" % len(scanned_files()))
+        print("scanned %d file(s) (.md in full, .py prose lines)"
+              % len(scanned_files()))
         return 0
     print("current-state numeric assertion(s) outside %s:" % GENERATED_ARTIFACT)
     for rel, number, marker, token, line in violations:
