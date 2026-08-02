@@ -1,0 +1,1816 @@
+#!/usr/bin/env python3
+"""Adversarial sweep over the gate-evidence carrier rule.
+
+This script is EVIDENCE MATERIAL of the bootstrap Change Record, not a reusable
+Harness component: it is deliberately not registered in manifest.json.
+
+It contains a mechanical implementation of the carrier rule as written in
+`.harness/rules/project.md` section 2, then attacks that implementation with:
+
+  - DIRECTED cases drawn verbatim from the project's declared adversarial
+     input domain (`docs/process/invariant-closure-design.md` section 2.3),
+     plus every family of the fixed unrenderable code-point set the rule
+     enumerates, plus visible neighbours just outside that set. Each directed
+     case carries an EXPECTED BRANCH and an EXPECTED CARRIER VALUE, and a case
+     passes only if BOTH match byte-exactly. Branch-only checking would accept
+     an implementation that classifies correctly and then records the wrong
+     bytes -- an external review proved exactly that hole by stubbing the
+     digest helper to a constant and still seeing zero failures.
+  - A COMPARATOR SELF-TEST that mutates known-good expectations (wrong SHA,
+     wrong byte count, wrong verbatim line, wrong branch) and asserts the
+     comparator rejects each one, plus a control that must still be accepted.
+     Without this, a comparator that always passed would look identical to a
+     correct one. A CERTIFICATION SELF-TEST proves that every
+     verdict layer, and any unregistered failure label, blocks certification
+     and changes the emitted conclusion text.
+  - An ARGV SELF-TEST asserting that unknown flags and mutually exclusive
+     mode combinations are rejected rather than silently reinterpreted.
+  - An EXHAUSTIVE sweep of every input of the shortest lengths against
+     the oracle. This is the one place a universal claim is affordable, and it
+     is claimed only over that subdomain.
+  - A SAMPLED sweep over the longer lengths: each DRAWN input gets an independent
+     oracle check of BOTH branch and carrier value; what it cannot establish is
+     anything about inputs never drawn. The full 0-6 domain is 2.8e14 inputs.
+
+Expected carriers are constructed INDEPENDENTLY of the code under test:
+verbatim expectations are literal strings written out by hand, and hash
+expectations pair a literal byte count with a direct hashlib.sha256() call.
+Neither `_digest()` nor `carrier()` is ever used to build an expectation.
+
+Deterministic, with a stated scope: standard library only, fixed seed, no
+clock input and no reading of shared environment state. The argv path checks do
+perform real filesystem operations, but only inside a private directory they
+create with mkdtemp() and delete afterwards, so ambient files cannot change any
+result -- an internal verifier previously flipped certification by creating a
+directory at a shared $TMPDIR name the checks consulted. Re-running under the SAME interpreter version
+reproduces the same sample set and the same result digest bit for bit. NO
+cross-version promise is made: the sample is drawn with random.randint() and
+getrandbits(), and CPython documents that most random-module algorithms may
+change between releases -- the cross-version guarantee covers random() under a
+compatible seeder, not this combination of calls.
+See https://docs.python.org/3/library/random.html#notes-on-reproducibility
+The measured interpreter version is recorded in run-manifest.md.
+
+Usage:  python3 carrier_sweep.py [--baseline | --emit-markdown]
+
+The two flags are mutually exclusive; passing both is rejected.
+
+Exit codes are per mode:
+  default          0 only if every layer fact is PASS: directed cases pass on
+                   branch AND carrier, all four self-test classes pass
+                   (comparator, common-cause, argv, certification), the
+                   exhaustive length 0-2 sweep has no mismatch, the sampled
+                   sweep has no mismatch and no undefined input, and no
+                   unregistered failure label appeared. 1 otherwise.
+  --baseline       always 0 unless the run itself errors. It is a reporting
+                   mode, is EXPECTED to show failures, and never writes a file.
+  --emit-markdown  Carries the SAME verdict as default mode. 0 only when every
+                   layer fact is PASS. On failure it refuses to write PATH and
+                   exits 1; without PATH it prints the uncertified table on
+                   stdout, banner first, and exits 1. Default and this mode are
+                   both verdict-bearing; neither is "the only one that counts".
+  bad arguments    exit code two, with a message and usage on stderr. This
+                   covers unknown flags and mutually exclusive combinations.
+
+Note on source encoding: this file is pure ASCII. Every non-ASCII code point
+appears as an escape sequence (for example "\\u0085"), never as a literal
+character, so the script stays reviewable in a plain text diff.
+"""
+
+import hashlib
+import os
+import random
+import re
+import shutil
+import sys
+import tempfile
+
+# Fixed seed. Changing this invalidates the recorded result digest.
+SEED = 20260727
+ITERATIONS = 200000
+MAX_LEN = 6
+
+# The rule's fixed unrenderable code-point set, spelled out exactly as the rule
+# enumerates it. Membership is tested by code point, never by Unicode category,
+# so the outcome does not move with a Unicode version upgrade.
+UNRENDERABLE_SET = frozenset(
+    list(range(0x00, 0x20))          # C0 controls
+    + [0x7F]                         # DEL
+    + list(range(0x80, 0xA0))        # C1 controls, includes NEL U+0085
+    + [0xAD]                         # SOFT HYPHEN
+    + [0x61C]                        # ARABIC LETTER MARK
+    + list(range(0x200B, 0x200E))    # ZWSP ZWNJ ZWJ
+    + [0x200E, 0x200F]               # LRM / RLM
+    + [0x2028, 0x2029]               # line / paragraph separators
+    + list(range(0x202A, 0x202F))    # LRE RLE PDF LRO RLO
+    + list(range(0x2060, 0x2065))    # word joiner, invisible operators
+    + list(range(0x2066, 0x2070))    # bidi isolates + deprecated format chars
+    + list(range(0xFFF9, 0xFFFC))    # interlinear annotation marks
+    + list(range(0xFE00, 0xFE10))    # variation selectors, basic block
+    + [0xFEFF]                       # BOM / ZWNBSP
+    + list(range(0xE0000, 0xE0080))  # tag characters
+)
+
+# ---------------------------------------------------------------------------
+# VERIFICATION-SIDE CONSTANTS.
+#
+# These belong to the checking side and must never be read from the code under
+# test. An external review showed why: when the directed expectation and the
+# oracle both read the SUT's CARRIER_EMPTY, editing that one constant to
+# "<wrong>" left every check green. A literal written out separately here fails
+# that mutation immediately.
+# ---------------------------------------------------------------------------
+
+EXPECTED_EMPTY_LITERAL = "<empty>"   # independent copy; do NOT use CARRIER_EMPTY
+
+# The oracle's OWN transcription of the unrenderable code-point set. This is a
+# second literal list, not an alias: sharing one set made SUT and oracle fail
+# in the same direction, so deleting a member that no directed case covered
+# left both agreeing and the run green. assert_set_agreement() cross-checks the
+# two transcriptions at import, so deleting from either one fires immediately.
+# A deletion applied to BOTH lists is still a genuine common cause -- see the
+# trusted-computing-base disclosure in run-manifest.md.
+ORACLE_UNRENDERABLE_SET = frozenset(
+    list(range(0x0000, 0x0020))
+    + [0x007F]
+    + list(range(0x0080, 0x00A0))
+    + [0x00AD]
+    + [0x061C]
+    + [0x200B, 0x200C, 0x200D]
+    + [0x200E, 0x200F]
+    + [0x2028, 0x2029]
+    + [0x202A, 0x202B, 0x202C, 0x202D, 0x202E]
+    + [0x2060, 0x2061, 0x2062, 0x2063, 0x2064]
+    + [0x2066, 0x2067, 0x2068, 0x2069]
+    + [0x206A, 0x206B, 0x206C, 0x206D, 0x206E, 0x206F]
+    + [0xFFF9, 0xFFFA, 0xFFFB]
+    + list(range(0xFE00, 0xFE10))
+    + [0xFEFF]
+    + list(range(0xE0000, 0xE0080))
+)
+
+
+# The checking side's OWN branch labels. Same treatment as the empty carrier:
+# an internal review showed that carrier(), oracle_carrier() and every directed
+# expectation all read one set of BRANCH_* constants, so making two of them
+# identical silently collapsed the five-way partition to four and every check
+# stayed green. These literals are written out separately and cross-asserted
+# against the SUT's at import.
+ORACLE_BRANCH_EMPTY = "(a) empty"
+ORACLE_BRANCH_LINE = "(b) last-non-empty-line verbatim"
+ORACLE_BRANCH_NO_LINE = "(b) no non-empty line -> bytes+sha256"
+ORACLE_BRANCH_UNRENDERABLE = "(b) unrenderable code point -> bytes+sha256"
+ORACLE_BRANCH_UNDECODABLE = "(c) not UTF-8 decodable -> bytes+sha256"
+ORACLE_BRANCHES = (
+    ORACLE_BRANCH_EMPTY,
+    ORACLE_BRANCH_LINE,
+    ORACLE_BRANCH_NO_LINE,
+    ORACLE_BRANCH_UNRENDERABLE,
+    ORACLE_BRANCH_UNDECODABLE,
+)
+
+
+def branch_label_problems(sut_branches, oracle_branches):
+    """Return a list of problems with the two branch-label transcriptions.
+
+    Two distinct failures are checked, because they fail differently:
+      - collision: two labels in one transcription are the same string, which
+        collapses the partition without any pair disagreeing;
+      - divergence: the transcriptions disagree pairwise.
+    """
+    problems = []
+    if len(set(sut_branches)) != len(sut_branches):
+        problems.append("SUT branch labels are not distinct: %r" % (sut_branches,))
+    if len(set(oracle_branches)) != len(oracle_branches):
+        problems.append("oracle branch labels are not distinct: %r" % (oracle_branches,))
+    if len(sut_branches) != len(oracle_branches):
+        problems.append("branch label count differs: %d vs %d"
+                        % (len(sut_branches), len(oracle_branches)))
+    else:
+        for index, (left, right) in enumerate(zip(sut_branches, oracle_branches)):
+            if left != right:
+                problems.append("branch label %d differs: %r vs %r"
+                                % (index, left, right))
+    return problems
+
+
+def assert_branch_labels():
+    """Fail loudly at import on label collision or SUT/oracle divergence."""
+    problems = branch_label_problems(BRANCHES, ORACLE_BRANCHES)
+    if problems:
+        raise AssertionError("; ".join(problems))
+
+
+def set_divergence(set_a, set_b):
+    """Return (only_in_a, only_in_b) as sorted lists. Empty pair means agreement."""
+    return (sorted(set_a - set_b), sorted(set_b - set_a))
+
+
+def assert_set_agreement():
+    """Fail loudly at import if the two transcriptions disagree."""
+    only_sut, only_oracle = set_divergence(UNRENDERABLE_SET, ORACLE_UNRENDERABLE_SET)
+    if only_sut or only_oracle:
+        raise AssertionError(
+            "unrenderable set transcriptions disagree; only in SUT: %s; "
+            "only in oracle: %s"
+            % ([hex(cp) for cp in only_sut], [hex(cp) for cp in only_oracle]))
+
+
+BRANCH_EMPTY = "(a) empty"
+BRANCH_LINE = "(b) last-non-empty-line verbatim"
+BRANCH_NO_LINE = "(b) no non-empty line -> bytes+sha256"
+BRANCH_UNRENDERABLE = "(b) unrenderable code point -> bytes+sha256"
+BRANCH_UNDECODABLE = "(c) not UTF-8 decodable -> bytes+sha256"
+BRANCHES = (
+    BRANCH_EMPTY,
+    BRANCH_LINE,
+    BRANCH_NO_LINE,
+    BRANCH_UNRENDERABLE,
+    BRANCH_UNDECODABLE,
+)
+
+CARRIER_EMPTY = "<empty>"
+
+# Fire at import if a common-cause edit hits only one transcription, or if
+# two branch labels collide (which would collapse the partition silently).
+assert_set_agreement()
+assert_branch_labels()
+
+
+# ---------------------------------------------------------------------------
+# Code under test.
+# ---------------------------------------------------------------------------
+
+def _digest(raw):
+    return "bytes=%d sha256=%s" % (len(raw), hashlib.sha256(raw).hexdigest())
+
+
+def carrier(raw):
+    """Mechanical implementation of the carrier rule. Total over all bytes."""
+    if len(raw) == 0:
+        return BRANCH_EMPTY, CARRIER_EMPTY
+
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return BRANCH_UNDECODABLE, _digest(raw)
+
+    # Lines: split on 0x0A only; strip at most one trailing 0x0D.
+    lines = raw.split(b"\x0a")
+    stripped = [ln[:-1] if ln.endswith(b"\x0d") else ln for ln in lines]
+    non_empty = [ln for ln in stripped if len(ln) >= 1]
+    if not non_empty:
+        return BRANCH_NO_LINE, _digest(raw)
+
+    last = non_empty[-1].decode("utf-8")
+    if any(ord(ch) in UNRENDERABLE_SET for ch in last):
+        return BRANCH_UNRENDERABLE, _digest(raw)
+    return BRANCH_LINE, last
+
+
+BASELINE_UNRENDERABLE_BYTES = frozenset(list(range(0x00, 0x20)) + [0x7F])
+
+
+def carrier_baseline(raw):
+    """The PRE-FIX predicate, kept so the fix can be shown to go red on it.
+
+    This is the rule as it stood before the unrenderable code-point set was
+    introduced: the unrenderable test looked at raw BYTES for C0/DEL only, so
+    every strictly-decodable invisible character (NEL, U+2028, bidi controls,
+    zero-width characters, ...) was classified as renderable verbatim.
+    """
+    if len(raw) == 0:
+        return BRANCH_EMPTY, CARRIER_EMPTY
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return BRANCH_UNDECODABLE, _digest(raw)
+    lines = raw.split(b"\x0a")
+    stripped = [ln[:-1] if ln.endswith(b"\x0d") else ln for ln in lines]
+    non_empty = [ln for ln in stripped if len(ln) >= 1]
+    if not non_empty:
+        return BRANCH_NO_LINE, _digest(raw)
+    last = non_empty[-1]
+    if any(byte in BASELINE_UNRENDERABLE_BYTES for byte in last):
+        return BRANCH_UNRENDERABLE, _digest(raw)
+    return BRANCH_LINE, last.decode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Independent expectation construction.
+#
+# expect_hash() takes the LITERAL expected byte count from the case table and
+# asserts it against the input, so a wrong literal fails loudly at import
+# rather than silently agreeing with whatever the implementation produced. The
+# SHA comes straight from hashlib, which is not the thing under test.
+# ---------------------------------------------------------------------------
+
+def expect_hash(raw, expected_len):
+    if len(raw) != expected_len:
+        raise AssertionError(
+            "case table declares %d bytes but the input is %d bytes: %r"
+            % (expected_len, len(raw), raw))
+    return "bytes=%d sha256=%s" % (expected_len, hashlib.sha256(raw).hexdigest())
+
+
+def resolve_expectation(raw, spec):
+    """Carrier specs: ("empty",), ("verbatim", literal), ("hash", literal_len)."""
+    kind = spec[0]
+    if kind == "empty":
+        return EXPECTED_EMPTY_LITERAL
+    if kind == "verbatim":
+        return spec[1]
+    if kind == "hash":
+        return expect_hash(raw, spec[1])
+    raise AssertionError("unknown carrier spec: %r" % (spec,))
+
+
+# ---------------------------------------------------------------------------
+# Directed cases: (name, input bytes, expected branch, expected carrier spec).
+#
+# Group A mirrors the declared adversarial byte domain (process section 2.3).
+# Group B covers every family of the unrenderable set, plus visible neighbours.
+# Group C attacks the byte-level definition of "line".
+# Group D attacks UTF-8 decodability boundaries.
+# Group E replays the real gate outputs recorded by this Change Record.
+# ---------------------------------------------------------------------------
+DIRECTED_SPECS = [
+    # -- Group A: declared adversarial byte domain (section 2.3) --
+    ("A CRLF line ending", b"OK\r\n", ORACLE_BRANCH_LINE, ("verbatim", "OK")),
+    ("A CRLF only", b"\r\n", ORACLE_BRANCH_NO_LINE, ("hash", 2)),
+    ("A no trailing newline", b"OK", ORACLE_BRANCH_LINE, ("verbatim", "OK")),
+    ("A empty stream", b"", ORACLE_BRANCH_EMPTY, ("empty",)),
+    ("A non-ASCII CJK", "\u5951\u7ea6\u6709\u6548\u3002\n".encode("utf-8"),
+     ORACLE_BRANCH_LINE, ("verbatim", "\u5951\u7ea6\u6709\u6548\u3002")),
+    ("A non-ASCII emoji", "done \U0001f600\n".encode("utf-8"),
+     ORACLE_BRANCH_LINE, ("verbatim", "done \U0001f600")),
+    ("A C0 control NUL", b"\x00\n", ORACLE_BRANCH_UNRENDERABLE, ("hash", 2)),
+    ("A C0 control BEL", b"\x07\n", ORACLE_BRANCH_UNRENDERABLE, ("hash", 2)),
+    ("A DEL U+007F", b"\x7f\n", ORACLE_BRANCH_UNRENDERABLE, ("hash", 2)),
+    ("A NEL U+0085", "A\u0085B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
+    ("A U+2028 line sep", "A\u2028B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("A U+2029 para sep", "A\u2029B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("A surrogate bytes D800", b"\xed\xa0\x80", ORACLE_BRANCH_UNDECODABLE, ("hash", 3)),
+    ("A surrogate bytes DFFF", b"\xed\xbf\xbf", ORACLE_BRANCH_UNDECODABLE, ("hash", 3)),
+    ("A literal escape vs real char", b"line\\nnot-a-newline\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "line\\nnot-a-newline")),
+    ("A literal <empty> collision", b"<empty>\n", ORACLE_BRANCH_LINE, ("verbatim", "<empty>")),
+    # Payload that collides with the GUARD's own vocabulary. These must render
+    # inside the payload table and leave certification untouched -- the guard
+    # reads only the delimited certification view.
+    ("A guard-token collision: defect count", b"7 failures\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "7 failures")),
+    ("A guard-token collision: FAIL cell", b"**FAIL**\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "**FAIL**")),
+    ("A guard-token collision: certification marker",
+     b"Certification state: **CERTIFIED**.\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "Certification state: **CERTIFIED**.")),
+    ("A guard-token collision: NOT CERTIFIED", b"NOT CERTIFIED\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "NOT CERTIFIED")),
+    ("A guard-token collision: does NOT certify prose",
+     b"log line: this run does NOT certify anything\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "log line: this run does NOT certify anything")),
+    ("A guard-token collision: begin sentinel literal",
+     b"<!--CARRIER-SWEEP-CERTIFICATION-VIEW-BEGIN-->\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "<!--CARRIER-SWEEP-CERTIFICATION-VIEW-BEGIN-->")),
+    # -- Group B: the rule's unrenderable code-point set --
+    ("B C1 control U+0080", "A\u0080B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
+    ("B C1 control U+009F", "A\u009fB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
+    ("B SOFT HYPHEN U+00AD", "A\u00adB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
+    ("B ARABIC LETTER MARK U+061C", "A\u061cB\n".encode("utf-8"),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
+    ("B ZWSP U+200B", "A\u200bB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B ZWNJ U+200C", "A\u200cB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B ZWJ U+200D", "A\u200dB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B LRM U+200E", "A\u200eB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B RLM U+200F", "A\u200fB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B LRE U+202A", "A\u202aB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B RLO U+202E", "A\u202eB\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B WORD JOINER U+2060", "A\u2060B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B INVISIBLE TIMES U+2062", "A\u2062B\n".encode("utf-8"),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B INVISIBLE PLUS U+2064", "A\u2064B\n".encode("utf-8"),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B LRI U+2066", "A\u2066B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B FSI U+2068", "A\u2068B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B PDI U+2069", "A\u2069B\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B INHIBIT SYMMETRIC SWAP U+206A", "A\u206aB\n".encode("utf-8"),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B NOMINAL DIGIT SHAPES U+206F", "A\u206fB\n".encode("utf-8"),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B VARIATION SELECTOR-1 U+FE00", "A\ufe00B\n".encode("utf-8"),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B VARIATION SELECTOR-16 U+FE0F", "A\ufe0fB\n".encode("utf-8"),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B ANNOTATION ANCHOR U+FFF9", "A\ufff9B\n".encode("utf-8"),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B ANNOTATION TERMINATOR U+FFFB", "A\ufffbB\n".encode("utf-8"),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B BOM U+FEFF", "\ufeffOK\n".encode("utf-8"), ORACLE_BRANCH_UNRENDERABLE, ("hash", 6)),
+    ("B LANGUAGE TAG U+E0001", "A\U000e0001B\n".encode("utf-8"),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 7)),
+    ("B TAG LATIN SMALL A U+E0061", "A\U000e0061B\n".encode("utf-8"),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 7)),
+    ("B CANCEL TAG U+E007F", "A\U000e007fB\n".encode("utf-8"),
+     ORACLE_BRANCH_UNRENDERABLE, ("hash", 7)),
+    # Visible neighbours just outside the set. These MUST stay verbatim.
+    # Every one is an assigned, visible (or visibly spacing) character; the set
+    # makes no claim about unassigned code points, so none are used here.
+    ("B neighbour U+00A0 NBSP visible-spacing", "A\u00a0B\n".encode("utf-8"),
+     ORACLE_BRANCH_LINE, ("verbatim", "A\u00a0B")),
+    ("B neighbour U+2010 HYPHEN visible", "A\u2010B\n".encode("utf-8"),
+     ORACLE_BRANCH_LINE, ("verbatim", "A\u2010B")),
+    ("B neighbour U+2027 HYPHENATION POINT visible", "A\u2027B\n".encode("utf-8"),
+     ORACLE_BRANCH_LINE, ("verbatim", "A\u2027B")),
+    ("B neighbour U+202F NNBSP visible-spacing", "A\u202fB\n".encode("utf-8"),
+     ORACLE_BRANCH_LINE, ("verbatim", "A\u202fB")),
+    ("B neighbour U+3000 IDEOGRAPHIC SPACE visible-spacing", "A\u3000B\n".encode("utf-8"),
+     ORACLE_BRANCH_LINE, ("verbatim", "A\u3000B")),
+    # -- Group C: byte-level definition of "line" --
+    ("C lone LF", b"\n", ORACLE_BRANCH_NO_LINE, ("hash", 1)),
+    ("C lone CR", b"\r", ORACLE_BRANCH_NO_LINE, ("hash", 1)),
+    ("C several blank lines", b"\n\n\n", ORACLE_BRANCH_NO_LINE, ("hash", 3)),
+    ("C several CRLF blanks", b"\r\n\r\n", ORACLE_BRANCH_NO_LINE, ("hash", 4)),
+    ("C single space line", b" \n", ORACLE_BRANCH_LINE, ("verbatim", " ")),
+    ("C spaces no newline", b"   ", ORACLE_BRANCH_LINE, ("verbatim", "   ")),
+    ("C trailing blanks after text", b"OK\n\n\n", ORACLE_BRANCH_LINE, ("verbatim", "OK")),
+    ("C trailing CRLF blanks after text", b"OK\r\n\r\n", ORACLE_BRANCH_LINE, ("verbatim", "OK")),
+    ("C CR inside line not trailing", b"A\rB\n", ORACLE_BRANCH_UNRENDERABLE, ("hash", 4)),
+    ("C only one trailing CR stripped", b"OK\r\r\n", ORACLE_BRANCH_UNRENDERABLE, ("hash", 5)),
+    ("C lone CR line", b"\r\r\n", ORACLE_BRANCH_UNRENDERABLE, ("hash", 3)),
+    # -- Group D: UTF-8 decodability boundaries --
+    ("D undecodable tail byte", b"OK\n\xff", ORACLE_BRANCH_UNDECODABLE, ("hash", 4)),
+    ("D undecodable no non-empty line", b"\n\xff", ORACLE_BRANCH_UNDECODABLE, ("hash", 2)),
+    ("D truncated multi-byte seq", "\u5951".encode("utf-8")[:2],
+     ORACLE_BRANCH_UNDECODABLE, ("hash", 2)),
+    ("D overlong encoding of slash", b"\xc0\xaf", ORACLE_BRANCH_UNDECODABLE, ("hash", 2)),
+    ("D two-byte boundary U+07FF", "\u07ff\n".encode("utf-8"),
+     ORACLE_BRANCH_LINE, ("verbatim", "\u07ff")),
+    ("D four-byte astral plane", "\U0001f600\n".encode("utf-8"),
+     ORACLE_BRANCH_LINE, ("verbatim", "\U0001f600")),
+    # -- Group E: gate-output snapshots from an earlier round, not current
+    #    measurements. The bytes below are frozen fixture inputs: the test
+    #    count and the elapsed time in them drift with every real run and are
+    #    NOT re-measured here. They exercise the carrier rule on realistic
+    #    shapes; they assert nothing about the current suite. --
+    ("E gate 1/2/6 stdout", b"Harness contract is valid.\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "Harness contract is valid.")),
+    ("E gate 3 stdout two lines",
+     b"[ADAPT_SKIPPED_TEMPLATE] .: origin is null\nadapt: ok\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "adapt: ok")),
+    ("E gate 4 stderr tail",
+     b"Ran 175 tests in 12.316s\n\nOK (skipped=2)\n",
+     ORACLE_BRANCH_LINE, ("verbatim", "OK (skipped=2)")),
+    ("E gate 5 both streams", b"", ORACLE_BRANCH_EMPTY, ("empty",)),
+]
+
+# Resolved at import: (name, raw, expected_branch, expected_carrier).
+DIRECTED = [(name, raw, branch, resolve_expectation(raw, spec))
+            for name, raw, branch, spec in DIRECTED_SPECS]
+
+
+# ---------------------------------------------------------------------------
+# Independent value oracle for the fuzz domain.
+#
+# This is a SECOND, deliberately different transcription of the same rule. It
+# never calls carrier() or _digest(): it walks bytes by hand instead of using
+# split(), and rebuilds the hash string from a direct hashlib call. Two
+# independent transcriptions that disagree on ANY fuzz input turn the run red,
+# so the fuzz domain now checks recorded VALUES, not just branch labels --
+# without it, an implementation that recorded garbage for inputs outside the
+# directed cases reproduced the recorded digest exactly and stayed green.
+# ---------------------------------------------------------------------------
+
+def oracle_carrier(raw):
+    """Independent transcription of the carrier rule. Never calls carrier()."""
+    if not raw:
+        return ORACLE_BRANCH_EMPTY, EXPECTED_EMPTY_LITERAL
+
+    hashed = "bytes=%d sha256=%s" % (len(raw), hashlib.sha256(raw).hexdigest())
+
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ORACLE_BRANCH_UNDECODABLE, hashed
+
+    # Split on 0x0A by hand rather than with bytes.split(), so a defect in one
+    # transcription's use of the library shows up as a disagreement.
+    segments = []
+    current = bytearray()
+    for byte in raw:
+        if byte == 0x0A:
+            segments.append(bytes(current))
+            current = bytearray()
+        else:
+            current.append(byte)
+    segments.append(bytes(current))
+
+    last_non_empty = None
+    for segment in segments:
+        trimmed = segment[:-1] if (segment and segment[-1] == 0x0D) else segment
+        if len(trimmed) > 0:
+            last_non_empty = trimmed
+    if last_non_empty is None:
+        return ORACLE_BRANCH_NO_LINE, hashed
+
+    decoded = last_non_empty.decode("utf-8")
+    for code_point in map(ord, decoded):
+        if code_point in ORACLE_UNRENDERABLE_SET:
+            return ORACLE_BRANCH_UNRENDERABLE, hashed
+    return ORACLE_BRANCH_LINE, decoded
+
+
+# ---------------------------------------------------------------------------
+# Comparator.
+# ---------------------------------------------------------------------------
+
+def compare(expected_branch, expected_carrier, actual_branch, actual_carrier):
+    """A case passes only if BOTH the branch and the carrier match exactly."""
+    return (expected_branch == actual_branch
+            and expected_carrier == actual_carrier)
+
+
+def run_directed(predicate=carrier):
+    rows = []
+    failures = 0
+    for name, raw, expected_branch, expected_carrier in DIRECTED:
+        actual_branch, actual_carrier = predicate(raw)
+        ok = compare(expected_branch, expected_carrier,
+                     actual_branch, actual_carrier)
+        if not ok:
+            failures += 1
+        rows.append((name, raw, expected_branch, expected_carrier,
+                     actual_branch, actual_carrier, ok))
+    return rows, failures
+
+
+EXHAUSTIVE_MAX_LEN = 2
+
+
+def run_exhaustive():
+    """Compare SUT against the oracle on EVERY input of length 0..2.
+
+    1 + 256 + 65536 = 65793 inputs. This is the only part of the byte domain
+    where a universal claim is affordable, and it is made only here: lengths
+    3..6 are sampled, never exhausted (the full 0..6 domain is 2.8e14 inputs).
+    """
+    total = 0
+    mismatches = 0
+    for length in range(EXHAUSTIVE_MAX_LEN + 1):
+        for index in range(256 ** length):
+            raw = index.to_bytes(length, "big") if length else b""
+            total += 1
+            try:
+                branch, recorded = carrier(raw)
+            except Exception:  # noqa: BLE001
+                mismatches += 1
+                continue
+            expected_branch, expected_carrier = oracle_carrier(raw)
+            if branch != expected_branch or recorded != expected_carrier:
+                mismatches += 1
+    return total, mismatches
+
+
+def run_fuzz():
+    """Fuzz the full byte domain, checking BRANCH and CARRIER VALUE.
+
+    This is SAMPLING, not exhaustion: 200000 draws over lengths 0..6, whose
+    full domain is 2.8e14 inputs. Every DRAWN input is scored against
+    oracle_carrier(); inputs never drawn are not checked here and nothing about
+    them is claimed. Returns (counts, undefined, mismatches, unique_inputs).
+    """
+    rng = random.Random(SEED)
+    counts = {branch: 0 for branch in BRANCHES}
+    undefined = 0
+    mismatches = 0
+    unique = set()
+    for _ in range(ITERATIONS):
+        raw = bytes(rng.getrandbits(8) for _ in range(rng.randint(0, MAX_LEN)))
+        unique.add(raw)
+        try:
+            branch, recorded = carrier(raw)
+        except Exception:  # noqa: BLE001 - any escape at all is a rule defect
+            undefined += 1
+            continue
+        if branch not in counts or not recorded:
+            undefined += 1
+            continue
+        counts[branch] += 1
+        expected_branch, expected_carrier = oracle_carrier(raw)
+        if branch != expected_branch or recorded != expected_carrier:
+            mismatches += 1
+    return counts, undefined, mismatches, len(unique)
+
+
+# ---------------------------------------------------------------------------
+# Self-tests. A comparator that always returned True would make every directed
+# case pass and look exactly like a correct one, so the comparator itself must
+# be shown to discriminate -- in both directions.
+# ---------------------------------------------------------------------------
+
+def selftest_comparator():
+    """Mutate known-good expectations and assert the comparator rejects them."""
+    results = []
+
+    hash_case = next(c for c in DIRECTED if c[0] == "A NEL U+0085")
+    line_case = next(c for c in DIRECTED if c[0] == "E gate 1/2/6 stdout")
+
+    _, hash_raw, hash_branch, hash_carrier = hash_case
+    _, line_raw, line_branch, line_carrier = line_case
+    actual_hash_branch, actual_hash_carrier = carrier(hash_raw)
+    actual_line_branch, actual_line_carrier = carrier(line_raw)
+
+    # Mutation 1: wrong SHA (flip one hex digit of the expected digest).
+    head, sha = hash_carrier.split("sha256=")
+    flipped = ("1" if sha[0] != "1" else "2") + sha[1:]
+    results.append((
+        "wrong sha256 rejected",
+        not compare(hash_branch, head + "sha256=" + flipped,
+                    actual_hash_branch, actual_hash_carrier)))
+
+    # Mutation 2: wrong byte count (same SHA, count off by one).
+    wrong_count = hash_carrier.replace("bytes=%d " % len(hash_raw),
+                                       "bytes=%d " % (len(hash_raw) + 1), 1)
+    results.append((
+        "wrong byte count rejected",
+        wrong_count != hash_carrier
+        and not compare(hash_branch, wrong_count,
+                        actual_hash_branch, actual_hash_carrier)))
+
+    # Mutation 3: wrong verbatim line (trailing period dropped).
+    results.append((
+        "wrong verbatim line rejected",
+        not compare(line_branch, line_carrier.rstrip("."),
+                    actual_line_branch, actual_line_carrier)))
+
+    # Mutation 4: right carrier, wrong branch -- the branch half must still bite.
+    results.append((
+        "wrong branch rejected",
+        not compare(BRANCH_LINE, hash_carrier,
+                    actual_hash_branch, actual_hash_carrier)))
+
+    # Control: unmutated expectations must still be ACCEPTED. Without this, a
+    # comparator hardwired to False would pass every mutation check above.
+    results.append((
+        "control: unmutated expectation accepted",
+        compare(hash_branch, hash_carrier,
+                actual_hash_branch, actual_hash_carrier)
+        and compare(line_branch, line_carrier,
+                    actual_line_branch, actual_line_carrier)))
+
+    return results
+
+
+def selftest_common_cause():
+    """Attack the shared trusted computing base itself.
+
+    Two mutations that an external review showed were survivable when the
+    checking side read the SUT's own constants: corrupting the empty-stream
+    carrier, and deleting a set member no directed case covers.
+    """
+    results = []
+
+    # Common cause 1: the SUT's empty carrier is wrong. The independent literal
+    # must disagree with it. (Before the split, both sides read one constant.)
+    sut_branch, sut_empty = carrier(b"")
+    results.append((
+        "empty carrier checked against independent literal",
+        sut_empty == EXPECTED_EMPTY_LITERAL and sut_branch == BRANCH_EMPTY))
+    results.append((
+        "a wrong empty carrier would be rejected",
+        not compare(BRANCH_EMPTY, EXPECTED_EMPTY_LITERAL, sut_branch, "<wrong>")))
+
+    # Common cause 2: a set member deleted on one side only. The cross-check
+    # must report the divergence. U+0001 is deliberately chosen: no directed
+    # case covers it, which is exactly why the shared-set version stayed green.
+    mutated = frozenset(ORACLE_UNRENDERABLE_SET - {0x0001})
+    only_sut, only_oracle = set_divergence(UNRENDERABLE_SET, mutated)
+    results.append((
+        "one-sided set deletion is detected",
+        only_sut == [0x0001] and not only_oracle))
+
+    # Control: the real transcriptions must agree, or every check above is moot.
+    only_sut, only_oracle = set_divergence(UNRENDERABLE_SET, ORACLE_UNRENDERABLE_SET)
+    results.append((
+        "control: the two set transcriptions agree",
+        not only_sut and not only_oracle))
+
+    # Common cause 3: branch labels. Making two of them the same string collapses
+    # the five-way partition to four without any pair disagreeing, so a
+    # uniqueness check is needed in addition to the pairwise cross-check.
+    collided = ("(a) empty", "(a) empty", BRANCH_NO_LINE,
+                BRANCH_UNRENDERABLE, BRANCH_UNDECODABLE)
+    results.append((
+        "colliding branch labels are detected",
+        bool(branch_label_problems(collided, ORACLE_BRANCHES))))
+    renamed = (BRANCH_EMPTY, "(b) RENAMED", BRANCH_NO_LINE,
+               BRANCH_UNRENDERABLE, BRANCH_UNDECODABLE)
+    results.append((
+        "a one-sided branch label rename is detected",
+        bool(branch_label_problems(renamed, ORACLE_BRANCHES))))
+    results.append((
+        "control: the two branch label transcriptions agree",
+        not branch_label_problems(BRANCHES, ORACLE_BRANCHES)))
+
+    # The uncovered member must actually be classified by the rule, so that a
+    # deletion would change behaviour rather than being inert.
+    branch, _ = carrier(b"\x01\n")
+    results.append((
+        "uncovered set member still classified unrenderable",
+        branch == BRANCH_UNRENDERABLE))
+
+    return results
+
+
+def selftest_argv():
+    """Assert bad argv is rejected rather than silently reinterpreted."""
+    return [
+        ("unknown flag rejected", parse_args(["--bogus"])[1] is not None),
+        ("unknown flag exits 2", parse_args(["--bogus"])[0] == 2),
+        ("mutually exclusive combination rejected",
+         parse_args(["--baseline", "--emit-markdown"])[1] is not None),
+        ("mutually exclusive combination exits 2",
+         parse_args(["--baseline", "--emit-markdown"])[0] == 2),
+        ("reversed order also rejected",
+         parse_args(["--emit-markdown", "--baseline"])[1] is not None),
+        ("repeated flag is still one mode",
+         parse_args(["--baseline", "--baseline"])[2] == "baseline"),
+        ("default mode accepted", parse_args([])[2] == "default"),
+        ("baseline mode accepted", parse_args(["--baseline"])[2] == "baseline"),
+        ("emit mode accepted", parse_args(["--emit-markdown"])[2] == "emit"),
+        # NOTE: no check here may pass a RELATIVE path to --emit-markdown.
+        # target_path_problem() resolves it against the process cwd, so
+        # `mkdir out.md` anywhere would flip certification. Path-shape checks
+        # live in argv_path_checks(), inside a private temp directory.
+        ("path without emit rejected",
+         parse_args(["out.md"])[0] == 2),
+        ("two paths rejected",
+         parse_args(["--emit-markdown", "a.md", "b.md"])[0] == 2),
+        ("baseline with path rejected",
+         parse_args(["--baseline", "out.md"])[0] == 2),
+        ("help accepted and exits 0",
+         parse_args(["--help"])[2] == "help" and parse_args(["--help"])[0] == 0),
+        ("short help accepted", parse_args(["-h"])[2] == "help"),
+        ("help with unknown flag rejected",
+         parse_args(["--help", "--bogus"])[0] == 2),
+        ("help with baseline rejected",
+         parse_args(["--help", "--baseline"])[0] == 2),
+        ("help with emit rejected",
+         parse_args(["--help", "--emit-markdown"])[0] == 2),
+        ("help with path rejected", parse_args(["-h", "stray.md"])[0] == 2),
+        ("help with both modes rejected",
+         parse_args(["--help", "--baseline", "--emit-markdown"])[0] == 2),
+        ("help after other tokens rejected",
+         parse_args(["--baseline", "--help"])[0] == 2),
+        ("both help forms together rejected",
+         parse_args(["-h", "--help"])[0] == 2),
+        ("empty path rejected", parse_args(["--emit-markdown", ""])[0] == 2),
+        ("whitespace-only path rejected",
+         parse_args(["--emit-markdown", "   "])[0] == 2),
+    ] + argv_path_checks()
+
+
+def argv_path_checks():
+    """Path-shape checks, run inside a PRIVATE temp directory.
+
+    An internal verifier ran `mkdir "$TMPDIR/out.md"` and flipped certification
+    to FAIL on an unmodified script: the checks consulted shared names under
+    $TMPDIR, the current working directory, and a hardcoded absolute path whose
+    meaning inverts if it happens to exist. That put ambient filesystem state
+    inside a certified verdict layer.
+
+    These cases build their own directory with mkdtemp(), construct all three
+    shapes inside it, and remove it. target_path_problem() is unchanged --
+    production behaviour was correct; only the self-tests had to stop reading
+    shared environment state.
+
+    The construction itself can still fail for reasons outside this process's
+    control -- a restrictive umask makes mkdir() produce an unusable directory,
+    which a later review reproduced as a raw traceback exiting 1, i.e. an
+    environment problem wearing the exit code reserved for a failed verdict.
+    Any OSError here is therefore reported as a NAMED FAILING CHECK inside the
+    argv layer: the certification block still renders, the run is honestly
+    uncertified, and the reason is legible.
+    """
+    base = None
+    try:
+        base = tempfile.mkdtemp(prefix="carrier_sweep-argv-")
+        missing_parent = os.path.join(base, "absent-parent", "out.md")
+        directory_target = os.path.join(base, "a-directory")
+        os.mkdir(directory_target)
+        writable = os.path.join(base, "out.md")
+        return [
+            ("emit with path accepted",
+             parse_args(["--emit-markdown", writable])[2:] == ("emit", writable)),
+            ("nonexistent parent directory rejected",
+             parse_args(["--emit-markdown", missing_parent])[0] == 2),
+            ("directory target rejected",
+             parse_args(["--emit-markdown", directory_target])[0] == 2),
+            ("writable path accepted",
+             parse_args(["--emit-markdown", writable])[2] == "emit"),
+        ]
+    except OSError as exc:
+        # Neutral attribution: this may be an environment restriction (a
+        # restrictive umask, a full disk) OR a genuine defect in this script.
+        # The check cannot tell which, so it must not claim to -- it fails
+        # closed either way, and says only what it observed.
+        return [("argv path fixture construction raised OSError (%s: %s)"
+                 " -- environment restriction or script defect; either way FAIL"
+                 % (type(exc).__name__, exc), False)]
+    finally:
+        if base is not None:
+            shutil.rmtree(base, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Argument parsing, reporting, digest.
+# ---------------------------------------------------------------------------
+
+USAGE = (
+    "usage: carrier_sweep.py [--baseline | --emit-markdown [PATH] | -h | --help]\n"\
+    "       PATH is an optional operand of --emit-markdown only.\n"
+    "\n"
+    "  (no flag)        run every verdict layer and report the certification\n"
+    "                   state. Layers: directed cases; comparator, common-cause,\n"
+    "                   argv and certification self-tests; exhaustive sweep of\n"
+    "                   lengths 0-2; sampled sweep of lengths 0-6; unregistered\n"
+    "                   failure labels. Exit 0 only if ALL layers pass.\n"
+    "  --emit-markdown [PATH]\n"
+    "                   emit the boundary-case table. VERDICT-BEARING, carrying\n"
+    "                   the SAME verdict as default mode: exit 0\n"
+    "                   only when certification holds. On failure it refuses to\n"
+    "                   write PATH and exits 1; with no PATH it prints the\n"
+    "                   uncertified table on stdout, banner first, and exits 1.\n"
+    "                   With PATH and certification holding, the table is written\n"
+    "                   atomically (temp file plus os.replace), so an interrupted\n"
+    "                   run cannot leave a truncated official table behind.\n"
+    "  --baseline       report the pre-fix predicate's results. Reporting mode:\n"
+    "                   EXPECTED to be red, never writes a file, always exits 0\n"
+    "                   unless the run itself errors.\n"
+    "  -h, --help       print this usage on stdout and exit 0. Must be the only\n"
+    "                   argument.\n"
+    "\n"
+    "--baseline and --emit-markdown are mutually exclusive.\n"
+)
+KNOWN_FLAGS = ("--baseline", "--emit-markdown")
+HELP_FLAGS = ("-h", "--help")
+
+
+def parse_args(argv):
+    """Return (exit_code, error_message, mode, path). exit_code 0 when accepted.
+
+    The COMPLETE argv is validated before any mode is selected. An external
+    review showed why: returning early on -h let `--help --bogus`,
+    `--help --baseline --emit-markdown` and `-h stray.md` all exit 0, quietly
+    reopening the argument domain that the manifest claimed was closed. `-h`
+    and `--help` are therefore valid only on their own.
+    """
+    flags = [arg for arg in argv if arg.startswith("-")]
+    positionals = [arg for arg in argv if not arg.startswith("-")]
+
+    unknown = [arg for arg in flags if arg not in KNOWN_FLAGS and arg not in HELP_FLAGS]
+    if unknown:
+        return 2, "unknown argument(s): %s" % " ".join(unknown), None, None
+
+    help_tokens = [arg for arg in flags if arg in HELP_FLAGS]
+    if help_tokens:
+        # "on its own" means exactly one token in the whole argv -- not merely
+        # "no non-help tokens", which would still admit `-h --help`.
+        if len(argv) != 1:
+            return (2,
+                    "-h/--help must be the only argument; got: %s" % " ".join(argv),
+                    None, None)
+        return 0, None, "help", None
+
+    baseline = "--baseline" in flags
+    emit = "--emit-markdown" in flags
+    if baseline and emit:
+        return (2,
+                "--baseline and --emit-markdown are mutually exclusive; "
+                "combining them would mix baseline failures into the generated "
+                "table and its digest",
+                None, None)
+    if positionals and not emit:
+        return (2,
+                "a path argument is only valid with --emit-markdown: %s"
+                % " ".join(positionals),
+                None, None)
+    if len(positionals) > 1:
+        return (2,
+                "--emit-markdown takes at most one path: %s"
+                % " ".join(positionals),
+                None, None)
+    if any(not arg.strip() for arg in positionals):
+        # Exit 1 means a verdict layer failed. An unusable path is a protocol
+        # error, so it must exit 2 -- otherwise a typo is indistinguishable at a
+        # glance from a rule failure. This applies to every unusable path shape,
+        # not only the empty one: see target_path_problem().
+        return (2, "--emit-markdown path must not be empty", None, None)
+    if positionals:
+        problem = target_path_problem(positionals[0])
+        if problem is not None:
+            return 2, problem, None, None
+
+    if baseline:
+        return 0, None, "baseline", None
+    if emit:
+        return 0, None, "emit", positionals[0] if positionals else None
+    return 0, None, "default", None
+
+
+def target_path_problem(path):
+    """Return a message if PATH cannot be written, else None.
+
+    An internal verifier pointed a nonexistent directory and a directory itself
+    at --emit-markdown: both produced an OSError traceback and exit 1 while
+    certification was PASSING, contradicting the mode matrix (illegal path = 2)
+    and spending the code reserved for a failed verdict on an IO error.
+    """
+    if os.path.isdir(path):
+        return "--emit-markdown path is a directory: %s" % path
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    if not os.path.isdir(parent):
+        return "--emit-markdown parent directory does not exist: %s" % parent
+    return None
+
+
+def write_atomically(path, text):
+    """Write text to path atomically: temp file in the same dir, then replace.
+
+    The documented regeneration command used to be a shell redirect, which
+    truncates the official table the instant the shell opens it -- so a crash
+    or a rejected argv left a zero-length or half-written artifact in the
+    Change Record. os.replace() is atomic on POSIX and Windows alike, so the
+    old table survives untouched unless a complete new one is ready.
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    handle, temp_path = tempfile.mkstemp(dir=directory, prefix=".carrier_sweep-",
+                                         suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(text)
+        os.replace(temp_path, path)
+    except BaseException:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+
+
+def result_digest(rows, counts, undefined, mismatches, unique, exhaustive, failures):
+    """SHA-256 over sorted result lines.
+
+    DETECTION RANGE, stated exactly. The payload binds:
+      - every DIRECTED row: input bytes, expected and ACTUAL carrier;
+      - AGGREGATE counts for the exhaustive and sampled layers.
+    It therefore moves when a directed row's recorded carrier changes, or when
+    any layer's counts change. It does NOT bind the carrier of an input that
+    was never executed: an external review poisoned b"\x00" * 6 -- absent from
+    the directed cases, from the length 0-2 exhaustive sweep, and from this
+    seed's sample -- and the digest was unchanged. Errors on inputs never
+    executed are OUTSIDE this digest's detection range.
+    """
+    lines = ["directed\t%s\t%s\t%s\t%s\t%s\t%s"
+             % (name, repr(raw), expected_branch, repr(expected_carrier),
+                actual_branch, repr(actual_carrier))
+             for (name, raw, expected_branch, expected_carrier,
+                  actual_branch, actual_carrier, ok) in rows]
+    lines += ["fuzz\t%s\t%d" % (branch, counts[branch]) for branch in BRANCHES]
+    lines += ["fuzz\tundefined\t%d" % undefined,
+              "fuzz\tvalue_mismatches\t%d" % mismatches,
+              "fuzz\tunique_inputs\t%d" % unique,
+              "exhaustive\ttotal\t%d" % exhaustive[0],
+              "exhaustive\tmismatches\t%d" % exhaustive[1],
+              "directed\tfailures\t%d" % failures]
+    payload = "\n".join(sorted(lines)) + "\n"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Check-class registry. ONE source for both the self-test failure prefixes and
+# the certification layer names.
+#
+# The previous version hardcoded three prefixes inside certification_state() and
+# built its layer list separately. A "certification:" failure matched none of
+# them and was silently dropped: a broken certification self-test still yielded
+# certified YES, exit 0, and an official CERTIFIED table. Both self-verification
+# sessions reproduced it independently. Deriving the buckets from this registry
+# means adding a class cannot leave its failures unconsumed, and any failure
+# whose prefix is NOT registered fails closed rather than disappearing.
+# ---------------------------------------------------------------------------
+# Each entry is (prefix, layer name, producer function name). The producer is
+# named rather than referenced so the registry can sit above the definitions.
+# A class registered WITHOUT a producer that actually runs checks used to yield
+# a fabricated "0 failures PASS" row and certified YES -- session C probed this
+# live. certification_state() now fails closed when a registered class produced
+# no executed checks, so registering a class is not enough to look green: it has
+# to actually run something.
+CHECK_CLASSES = (
+    ("comparator", "comparator self-test", "selftest_comparator"),
+    ("common-cause", "common-cause self-test", "selftest_common_cause"),
+    ("argv", "argv self-test", "selftest_argv"),
+    ("certification", "certification self-test", "selftest_certification"),
+)
+CHECK_CLASS_PREFIXES = tuple(prefix for prefix, _, _ in CHECK_CLASSES)
+
+LAYER_DIRECTED = "directed"
+LAYER_EXHAUSTIVE = "exhaustive length 0-2"
+LAYER_SAMPLED = "sampled length 0-6"
+LAYER_UNREGISTERED = "unregistered self-test failures"
+
+# Derived, not hand-maintained: every registered class contributes a layer.
+CERT_LAYERS = (
+    (LAYER_DIRECTED,)
+    + tuple(name for _, name, _ in CHECK_CLASSES)
+    + (LAYER_EXHAUSTIVE, LAYER_SAMPLED, LAYER_UNREGISTERED)
+)
+
+
+# The guard must read ONLY the certification view, never payload. Payload rows
+# can legitimately contain "**FAIL**", "7 failures", or the marker text itself
+# as directed-case inputs, so the view is delimited by sentinel LINES the
+# renderer never emits for payload: every payload line is a table row starting
+# with "| " or prose, so no payload line can EQUAL a sentinel.
+CERT_VIEW_BEGIN = "<!--CARRIER-SWEEP-CERTIFICATION-VIEW-BEGIN-->"
+CERT_VIEW_END = "<!--CARRIER-SWEEP-CERTIFICATION-VIEW-END-->"
+CERTIFIED_MARKER = "Certification state: **CERTIFIED**"
+UNCERTIFIED_MARKER = "Certification state: **NOT CERTIFIED**"
+FAIL_CELL = "**FAIL**"
+PASS_CELL = "PASS"
+# The renderer below writes these exact tokens and the guard scans for them.
+# Sharing the constants removes the latent brittleness of a guard keyed to a
+# literal the renderer could change independently; a self-test asserts a real
+# uncertified render actually contains FAIL_CELL, so the coupling is measured,
+# not assumed.
+
+
+def verdict(layers):
+    """Derive the verdict from layer facts. Callers derive it from THEIR rows."""
+    return all(ok for _name, ok, _detail in layers)
+
+
+def _layer_rows(region):
+    """Layer names in the order the region renders them."""
+    names = set(CERT_LAYERS)
+    found = []
+    for line in region:
+        if line.startswith("| ") and line.endswith(" |"):
+            cell = line.split("|")[1].strip()
+            if cell in names:
+                found.append(cell)
+    return found
+
+
+def _attested_classes(region):
+    """Attested layer names in the order the region renders them."""
+    names = [layer for _p, layer, _pr in CHECK_CLASSES]
+    found = []
+    for line in region:
+        if not line.startswith("- "):
+            continue
+        for layer in names:
+            if line.startswith("- %s " % layer) and "passed." in line:
+                found.append(layer)
+                break
+    return found
+
+
+def certification_view(text):
+    """Return (region_lines, problems) for the delimited certification view.
+
+    The view is validated for STRUCTURAL COMPLETENESS, not merely for its
+    boundaries. An external review moved the single end sentinel to sit just
+    after the CERTIFIED marker and before the FAIL rows: the sentinels were
+    still one each and still ordered, so a boundary-only check returned no
+    problems while the document as a whole carried CERTIFIED above FAIL. A view
+    that does not contain every layer row and every attestation, in registry
+    order, is not a certification view -- it is a fragment, and a fragment
+    cannot certify anything.
+    """
+    lines = text.splitlines()
+    begins = [i for i, line in enumerate(lines) if line == CERT_VIEW_BEGIN]
+    ends = [i for i, line in enumerate(lines) if line == CERT_VIEW_END]
+    problems = []
+    if len(begins) != 1:
+        problems.append("certification view begin sentinel appears %d times"
+                        % len(begins))
+    if len(ends) != 1:
+        problems.append("certification view end sentinel appears %d times"
+                        % len(ends))
+    if problems:
+        return [], problems
+    if begins[0] > ends[0]:
+        return [], ["certification view sentinels are out of order"]
+
+    region = lines[begins[0] + 1:ends[0]]
+    if not [line for line in region if line.strip()]:
+        return [], ["certification view is empty"]
+
+    markers = [line for line in region
+               if CERTIFIED_MARKER in line or UNCERTIFIED_MARKER in line]
+    if len(markers) != 1:
+        problems.append("certification view holds %d certification markers, "
+                        "expected exactly 1" % len(markers))
+
+    layers_found = _layer_rows(region)
+    if layers_found != list(CERT_LAYERS):
+        missing = [name for name in CERT_LAYERS if name not in layers_found]
+        duplicated = sorted({name for name in layers_found
+                             if layers_found.count(name) > 1})
+        problems.append(
+            "certification view layer rows do not match the registry "
+            "(missing=%s duplicated=%s order_ok=%s)"
+            % (missing, duplicated,
+               [n for n in layers_found if n in CERT_LAYERS]
+               == [n for n in CERT_LAYERS if n in layers_found]))
+
+    expected_classes = [layer for _p, layer, _pr in CHECK_CLASSES]
+    attested = _attested_classes(region)
+    if attested != expected_classes:
+        problems.append(
+            "certification view attestations do not match the registry "
+            "(expected=%s found=%s)" % (expected_classes, attested))
+
+    if problems:
+        return [], problems
+    return region, []
+
+
+def artifact_guard_violations(text):
+    """Artifact-level guard, independent of how the verdict was derived.
+
+    It reads only the RENDERED TEXT, and only the delimited certification view
+    within it: a table that shows any FAIL row while claiming CERTIFIED is
+    self-contradictory and must never reach the official path, no matter what
+    any function returned. This shares no code with verdict() or
+    certification_state() -- that is the point.
+
+    Scoping to the view is what makes the guard carrier-transparent: a directed
+    case whose INPUT is b"**FAIL**", b"7 failures", b"NOT CERTIFIED" or a line
+    saying "does NOT certify" renders inside a payload table, outside the view,
+    and cannot trip THIS function. Anything else that reads the whole render
+    must scope itself the same way -- the certification self-test previously did
+    not, and those same payloads flipped certification through it.
+    """
+    region, problems = certification_view(text)
+    if problems:
+        return problems
+    region_text = "\n".join(region)
+    banner_first_line = UNCERTIFIED_BANNER.splitlines()[0]
+
+    has_fail_row = any(FAIL_CELL in line for line in region)
+    claims_certified = any(CERTIFIED_MARKER in line for line in region)
+    claims_uncertified = any(UNCERTIFIED_MARKER in line for line in region)
+    if has_fail_row and claims_certified:
+        problems.append("rendered table contains a FAIL row under a CERTIFIED header")
+    if claims_certified and claims_uncertified:
+        problems.append("rendered table claims both CERTIFIED and NOT CERTIFIED")
+    if not claims_certified and not claims_uncertified:
+        problems.append("rendered table states no certification marker")
+    if claims_uncertified and not text.startswith(banner_first_line):
+        problems.append("uncertified table does not start with the banner")
+    if claims_certified:
+        for passed, total, line in _attestation_pairs(region_text):
+            if passed != total:
+                problems.append(
+                    "CERTIFIED table reports an incomplete attestation: %s"
+                    % line.strip())
+        for count, line in _nonzero_defect_counts(region_text):
+            problems.append(
+                "CERTIFIED table reports %d defect(s): %s" % (count, line.strip()))
+        if any(line == banner_first_line for line in text.splitlines()):
+            problems.append("CERTIFIED text still carries the uncertified banner")
+        if any("does NOT certify" in line for line in region):
+            problems.append("CERTIFIED text still says it does NOT certify")
+    return problems
+
+
+ATTESTATION_PAIR = re.compile(r"(\d+)\s*/\s*(\d+)\s+passed")
+
+
+def _attestation_pairs(text):
+    """Yield (passed, total, line) for every 'X/Y passed' attestation line."""
+    for line in text.splitlines():
+        match = ATTESTATION_PAIR.search(line)
+        if match:
+            yield int(match.group(1)), int(match.group(2)), line
+
+
+DEFECT_COUNT = re.compile(
+    r"(\d+)\s+(?:value\s+)?(?:mismatches|failures|undefined|unrecognised)")
+
+
+def _nonzero_defect_counts(text):
+    """Yield (count, line) for every nonzero defect number in the region."""
+    for line in text.splitlines():
+        for match in DEFECT_COUNT.finditer(line):
+            count = int(match.group(1))
+            if count:
+                yield count, line
+
+
+PRODUCER_NAME_PREFIXES = ("selftest_", "_selftest_")
+
+
+def assert_producers_registered(namespace):
+    """Every callable following the producer naming convention must be registered.
+
+    A producer that is written but never added to CHECK_CLASSES simply never
+    runs, so nothing reaches the residual layer to fail closed. Discovery at
+    import turns "forgot to register" into an immediate hard failure. The
+    convention is the contract: a callable named selftest_* (or _selftest_*)
+    IS a producer, and must appear in the registry.
+    """
+    registered = set(producer for _p, _l, producer in CHECK_CLASSES)
+    unregistered = sorted(
+        name for name, value in namespace.items()
+        if name.startswith(PRODUCER_NAME_PREFIXES) and callable(value)
+        and name not in registered)
+    if unregistered:
+        raise AssertionError(
+            "self-test producer(s) not registered in CHECK_CLASSES: %s"
+            % ", ".join(unregistered))
+
+
+def classify_selftest_failures(selftest_failures):
+    """Bucket failure labels by registered prefix. Returns (buckets, residual).
+
+    residual holds every label whose prefix is not in the registry. It is never
+    discarded: an unrecognised failure is treated as a certification failure,
+    because a label the registry does not know about is exactly the case where
+    silently dropping it would hide a real defect.
+    """
+    buckets = {prefix: [] for prefix in CHECK_CLASS_PREFIXES}
+    residual = []
+    for label in selftest_failures:
+        for prefix in CHECK_CLASS_PREFIXES:
+            if label.startswith(prefix + ":"):
+                buckets[prefix].append(label)
+                break
+        else:
+            residual.append(label)
+    return buckets, residual
+
+
+def certification_state(directed_failures, selftest_failures, exhaustive_mismatches,
+                        sampled_mismatches, undefined, executed_counts=None):
+    """The ONE certification state: a conjunction over every verdict layer.
+
+    Returns ONLY the layer facts: a list of (name, ok, detail) covering exactly
+    CERT_LAYERS, in that order. It deliberately does NOT return a verdict.
+
+    An external review corrupted the arbiter by wrapping it to return True while
+    passing the original layer rows through; the official table was overwritten
+    with a CERTIFIED header sitting above a FAIL row, exit 0. A boolean that
+    travels alongside the facts can drift from them. Every outlet now derives
+    all(ok) from the exact rows IT renders, so a header cannot disagree with the
+    table beneath it, and a separate artifact-level guard re-checks the rendered
+    text before any official write.
+    """
+    buckets, residual = classify_selftest_failures(selftest_failures)
+    if executed_counts is None:
+        # Fixture path (self-tests): assume each registered class ran.
+        executed_counts = {prefix: 1 for prefix in CHECK_CLASS_PREFIXES}
+    layers = [(LAYER_DIRECTED, directed_failures == 0,
+               "%d failures" % directed_failures)]
+    for prefix, layer_name, _producer in CHECK_CLASSES:
+        failed = buckets[prefix]
+        executed = executed_counts.get(prefix, 0)
+        ok = (not failed) and executed > 0
+        detail = "%d failures, %d checks executed" % (len(failed), executed)
+        if executed == 0:
+            detail += " (NO CHECKS RAN -- fails closed)"
+        layers.append((layer_name, ok, detail))
+    layers.append((LAYER_EXHAUSTIVE, exhaustive_mismatches == 0,
+                   "%d mismatches" % exhaustive_mismatches))
+    layers.append((LAYER_SAMPLED, sampled_mismatches == 0 and undefined == 0,
+                   "%d value mismatches, %d undefined"
+                   % (sampled_mismatches, undefined)))
+    layers.append((LAYER_UNREGISTERED, not residual,
+                   "%d unrecognised failure label(s)%s"
+                   % (len(residual),
+                      (": " + ", ".join(residual)) if residual else "")))
+
+    # The layer list must cover the registry exactly, or a class could be added
+    # without ever reaching the conjunction.
+    if tuple(name for name, _, _ in layers) != CERT_LAYERS:
+        raise AssertionError(
+            "certification layers %r do not match the registry %r"
+            % (tuple(name for name, _, _ in layers), CERT_LAYERS))
+
+    return layers
+
+
+UNCERTIFIED_BANNER = (
+    "# THIS TABLE DOES NOT CERTIFY THE RULE\n"
+    "\n"
+    "One or more verdict layers FAILED, so this output is diagnostic only. It was\n"
+    "NOT written to the official table and must not be committed as evidence.\n"
+)
+
+
+GROUP_TITLES = {
+    "A": "A group -- declared adversarial byte domain (process section 2.3)",
+    "B": "B group -- the rule's unrenderable code-point set, plus visible neighbours",
+    "C": 'C group -- the byte-level definition of "line"',
+    "D": "D group -- UTF-8 decodability boundaries",
+    "E": "E group -- replay of the gate outputs this Change Record records",
+}
+
+
+def render_certification_block(layers, results, banner=True):
+    """Render the certification block. ONE renderer for BOTH outlets.
+
+    Session A found that only emit mode ran the artifact guard: a forged layer
+    row that touched no printed number was rejected by --emit-markdown with ten
+    violations while default mode printed certified YES at exit 0, and a
+    one-line verdict() mutation printed certified YES above six FAIL rows.
+    Default mode now renders through this same function and runs the same guard
+    over its output, so the guard is outlet-independent.
+    """
+    certified = verdict(layers)
+    out = []
+    if banner and not certified:
+        out.append(UNCERTIFIED_BANNER)
+    out.append(CERT_VIEW_BEGIN)
+    out.append("Certification state: **%s**."
+               % ("CERTIFIED" if certified else "NOT CERTIFIED"))
+    out.append("")
+    out.append("| verdict layer | result | status |")
+    out.append("| --- | --- | --- |")
+    for name, ok, detail in layers:
+        out.append("| %s | %s | %s |" % (name, detail,
+                                         PASS_CELL if ok else FAIL_CELL))
+    out.append("")
+    out.append("Self-test attestation for the run that produced this table:")
+    for line in attestation_lines(results):
+        out.append("- %s passed." % line)
+    if not certified:
+        out.append("")
+        out.append("**This table does NOT certify the rule.** Failing layers:")
+        for name, ok, detail in layers:
+            if not ok:
+                out.append("- %s: %s" % (name, detail))
+    out.append(CERT_VIEW_END)
+    return "\n".join(out)
+
+
+def emit_markdown(rows, failures, digest, summary, mismatches, unique, exhaustive,
+                  layers):
+    """Emit the boundary-case table. Values are shown in full, untruncated.
+
+    Every verdict layer feeds the conclusion. No sentence asserting agreement
+    survives a failure in the layer it describes.
+    """
+    exhaustive_total, exhaustive_mismatches = exhaustive
+    certified = verdict(layers)
+    out = []
+    if not certified:
+        out.append(UNCERTIFIED_BANNER)
+    out.append("# Boundary case table -- gate evidence carrier rule")
+    out.append("")
+    out.append("DO NOT EDIT BY HAND. Generated by `carrier_sweep.py --emit-markdown`;")
+    out.append("regenerate rather than editing, or the result digest stops matching.")
+    out.append("")
+    out.append(render_certification_block(layers, summary, banner=False))
+    out.append("")
+    out.append("Directed cases: **%d**, failures: **%d**." % (len(rows), failures))
+    out.append("A case passes only if BOTH its branch and its carrier value match the")
+    out.append("independently constructed expectation, byte for byte. Inputs and")
+    out.append("carriers are shown in full and are never truncated.")
+    out.append("")
+    out.append("Exhaustive sweep of all %d inputs of length 0-2: %d mismatches."
+               % exhaustive)
+    out.append("Sampled sweep: %d draws over lengths 0-6, %d unique inputs, %d "
+               "value mismatches." % (ITERATIONS, unique, mismatches))
+    out.append("These counts change under the mutation classes the self-tests")
+    out.append("enumerate (wrong SHA, wrong byte count, wrong verbatim line, wrong")
+    out.append("branch, wrong empty carrier, one-sided set or label edits); no claim")
+    out.append("is made about mutation classes outside that enumeration.")
+    out.append("")
+    out.append("Result digest: `%s`" % digest)
+    for key in "ABCDE":
+        subset = [r for r in rows if r[0].startswith(key + " ")]
+        if not subset:
+            continue
+        out.append("")
+        out.append("## " + GROUP_TITLES[key])
+        out.append("")
+        out.append("| case | input bytes | expected branch | expected carrier "
+                   "| actual branch | actual carrier | status |")
+        out.append("| --- | --- | --- | --- | --- | --- | --- |")
+        for (name, raw, expected_branch, expected_carrier,
+             actual_branch, actual_carrier, ok) in subset:
+            out.append("| %s | `%s` | `%s` | `%s` | `%s` | `%s` | %s |"
+                       % (name[2:],
+                          repr(raw).replace("|", "\\|"),
+                          expected_branch,
+                          repr(expected_carrier).replace("|", "\\|"),
+                          actual_branch,
+                          repr(actual_carrier).replace("|", "\\|"),
+                          PASS_CELL if ok else FAIL_CELL))
+    out.append("")
+    out.append("## Conclusion")
+    out.append("")
+    if failures == 0:
+        out.append("- Directed: all %d cases match BOTH their expected branch and"
+                   % len(rows))
+        out.append("  their expected carrier value.")
+    else:
+        out.append("- Directed: **%d of %d cases FAILED** -- branch or carrier value"
+                   % (failures, len(rows)))
+        out.append("  differs from the independently constructed expectation:")
+        for (name, raw, expected_branch, expected_carrier,
+             actual_branch, actual_carrier, ok) in rows:
+            if not ok:
+                out.append("  - `%s`: expected `%s` / `%s`, got `%s` / `%s`"
+                           % (name, expected_branch, repr(expected_carrier),
+                              actual_branch, repr(actual_carrier)))
+    if exhaustive_mismatches == 0:
+        out.append("- Exhaustive: every input of length 0-2 (%d of them) agrees with"
+                   % exhaustive_total)
+        out.append("  the oracle. This universal claim is made over that subdomain only.")
+    else:
+        out.append("- Exhaustive: **%d of %d inputs of length 0-2 DISAGREE** with the"
+                   % (exhaustive_mismatches, exhaustive_total))
+        out.append("  oracle. No universal claim holds over this subdomain.")
+    if mismatches == 0:
+        out.append("- Sampled: each of the %d drawn inputs was oracle-compared for"
+                   % ITERATIONS)
+        out.append("  branch AND carrier value; %d unique inputs. What sampling cannot"
+                   % unique)
+        out.append("  establish is anything about inputs never drawn.")
+    else:
+        out.append("- Sampled: **%d drawn inputs DISAGREE** with the oracle." % mismatches)
+    out.append("")
+    out.append("See `run-manifest.md`, including its trusted-computing-base disclosure")
+    out.append("and its forall-sentence audit.")
+    return "\n".join(out) + "\n"
+
+
+def _print_directed(rows, label):
+    failures = sum(1 for row in rows if not row[6])
+    print("== DIRECTED CASES -- %s ==" % label)
+    print("%-52s %-44s %s" % ("case", "expected branch", "status"))
+    for (name, raw, expected_branch, expected_carrier,
+         actual_branch, actual_carrier, ok) in rows:
+        print("%-52s %-44s %s"
+              % (name, expected_branch, "PASS" if ok else "FAIL"))
+    print("")
+    print("directed cases: %d, failures: %d" % (len(rows), failures))
+    print("(a case passes only if BOTH branch and carrier value match)")
+
+
+def _discovery_ok():
+    try:
+        assert_producers_registered(globals())
+    except AssertionError:
+        return False
+    return True
+
+
+def selftest_certification():
+    """Prove the certification state flips when ANY layer fails.
+
+    Fixtures below are hand-built layer-result tuples, not measurements of this
+    run: the numbers exercise one failing layer at a time and are labelled as
+    fixtures ("FIXTURE-DIGEST", zeroed counts) so nobody reads them as observed
+    values.
+    """
+    checks = []
+    all_ran = {prefix: 1 for prefix in CHECK_CLASS_PREFIXES}
+
+    green = certification_state(0, [], 0, 0, 0, all_ran)
+    checks.append(("control: all layers green certifies", verdict(green)))
+
+    exhaustive_bad = certification_state(0, [], 1, 0, 0, all_ran)
+    checks.append(("exhaustive failure blocks certification", not verdict(exhaustive_bad)))
+
+    sampled_bad = certification_state(0, [], 0, 3, 0, all_ran)
+    checks.append(("sampled failure blocks certification", not verdict(sampled_bad)))
+
+    comparator_bad = certification_state(0, ["comparator: fixture"], 0, 0, 0, all_ran)
+    checks.append(("comparator self-test failure blocks certification",
+                   not verdict(comparator_bad)))
+
+    cert_bad = certification_state(0, ["certification: fixture"], 0, 0, 0, all_ran)
+    checks.append(("certification self-test failure blocks certification",
+                   not verdict(cert_bad)))
+
+    unknown_bad = certification_state(0, ["unregistered-class: fixture"], 0, 0, 0,
+                                      all_ran)
+    checks.append(("unknown failure prefix fails closed", not verdict(unknown_bad)))
+
+    undefined_bad = certification_state(0, [], 0, 0, 2, all_ran)
+    checks.append(("undefined input blocks certification", not verdict(undefined_bad)))
+
+    directed_bad = certification_state(1, [], 0, 0, 0, all_ran)
+    checks.append(("directed failure blocks certification", not verdict(directed_bad)))
+
+    # A registered class whose producer runs nothing must NOT yield a fabricated
+    # "0 failures PASS" row. Session C probed this live on the previous HEAD.
+    for orphan_prefix in CHECK_CLASS_PREFIXES:
+        starved = dict(all_ran)
+        starved[orphan_prefix] = 0
+        starved_layers = certification_state(0, [], 0, 0, 0, starved)
+        checks.append(("registered class with zero executed checks fails closed: %s"
+                       % orphan_prefix, not verdict(starved_layers)))
+
+    checks.append(("every registered check class owns a layer",
+                   set(name for _, name, _ in CHECK_CLASSES)
+                   .issubset(set(name for name, _, _ in green))
+                   and LAYER_UNREGISTERED in [n for n, _, _ in green]))
+
+    # Conclusion text must follow the state. Directed rows are real; the
+    # attestation results handed in here are fixtures.
+    rows, _ = run_directed()
+    fixture_results = {layer_name: [("fixture check", True)]
+                       for _p, layer_name, _pr in CHECK_CLASSES}
+    text_bad = emit_markdown(rows, 0, "FIXTURE-DIGEST", fixture_results, 0, 1,
+                             (65793, 1), exhaustive_bad)
+    view_bad = "\n".join(certification_view(text_bad)[0])
+    checks.append(("failing exhaustive removes the universal agreement line",
+                   "EVERY input" not in view_bad
+                   and "every input of length 0-2 agrees" not in view_bad
+                   and "does NOT certify" in view_bad))
+    text_cert = emit_markdown(rows, 0, "FIXTURE-DIGEST", fixture_results, 0, 1,
+                              (65793, 0), cert_bad)
+    view_cert = "\n".join(certification_view(text_cert)[0])
+    checks.append(("failing certification self-test marks the table uncertified",
+                   "does NOT certify" in view_cert))
+    text_ok = emit_markdown(rows, 0, "FIXTURE-DIGEST", fixture_results, 0, 1,
+                            (65793, 0), green)
+    # Scope every assertion to the certification view, exactly as the guard is.
+    # Asserting over the whole render made the self-test itself payload-sensitive:
+    # a directed case whose input is b"NOT CERTIFIED" flipped certification.
+    view_ok = "\n".join(certification_view(text_ok)[0])
+    checks.append(("all-green table carries no uncertified banner",
+                   "does NOT certify" not in view_ok
+                   and "NOT CERTIFIED" not in view_ok))
+
+    # The banner must be the FIRST line of uncertified output, as USAGE promises.
+    # Asserting only that the marker appears somewhere left the banner deletable.
+    first_line = text_bad.splitlines()[0] if text_bad.splitlines() else ""
+    banner_first = UNCERTIFIED_BANNER.splitlines()[0]
+    checks.append(("uncertified output starts with the banner",
+                   first_line == banner_first))
+    checks.append(("certified output does not start with the banner",
+                   (text_ok.splitlines()[0] if text_ok.splitlines() else "")
+                   != banner_first))
+
+    # The artifact guard must reject a self-contradictory render even when the
+    # verdict handed to it says otherwise. This is the reviewer's corrupted
+    # arbiter, reduced to its observable effect on the artifact.
+    forged = text_bad.replace(UNCERTIFIED_MARKER, CERTIFIED_MARKER)
+    checks.append(("artifact guard rejects FAIL row under CERTIFIED header",
+                   bool(artifact_guard_violations(forged))))
+    checks.append(("artifact guard accepts a consistent certified render",
+                   not artifact_guard_violations(text_ok)))
+    checks.append(("artifact guard accepts a consistent uncertified render",
+                   not artifact_guard_violations(text_bad)))
+    # A forged LAYER row renders as PASS and carries no FAIL cell, so the token
+    # scan alone would pass it. The attestation completeness check is what
+    # catches it: this is the internal verifier's exact probe.
+    forged_attestation = text_ok.replace("- comparator self-test 1/1 passed.",
+                                         "- comparator self-test 8/23 passed.")
+    checks.append(("artifact guard rejects an incomplete attestation under CERTIFIED",
+                   forged_attestation != text_ok
+                   and bool(artifact_guard_violations(forged_attestation))))
+    # The guard scans for FAIL_CELL; assert a real uncertified render contains
+    # it, so the shared-constant coupling is measured rather than assumed.
+    checks.append(("uncertified render actually contains the FAIL token",
+                   FAIL_CELL in view_bad))
+    # Exhaustive and sampled layers carry no FAIL cell and no attestation pair,
+    # so only the printed digits expose a forged PASS on them.
+    forged_exhaustive = text_ok.replace("| exhaustive length 0-2 | 0 mismatches | PASS |",
+                                        "| exhaustive length 0-2 | 7 mismatches | PASS |")
+    checks.append(("artifact guard rejects a forged exhaustive layer",
+                   forged_exhaustive != text_ok
+                   and bool(artifact_guard_violations(forged_exhaustive))))
+    forged_sampled = text_ok.replace(
+        "| sampled length 0-6 | 0 value mismatches, 0 undefined | PASS |",
+        "| sampled length 0-6 | 11 value mismatches, 0 undefined | PASS |")
+    checks.append(("artifact guard rejects a forged sampled layer",
+                   forged_sampled != text_ok
+                   and bool(artifact_guard_violations(forged_sampled))))
+    checks.append(("every registered producer is discovered and registered",
+                   _discovery_ok()))
+
+    # Every registered class must appear in BOTH the layer table and the
+    # attestation, or a class could be certified against while invisible.
+    attested = " ".join(attestation_lines(fixture_results))
+    layer_names = [n for n, _, _ in green]
+    # Structural attacks on the view. The reviewer's counterexample moved the
+    # end sentinel to just after the marker, before the FAIL rows: boundaries
+    # still valid, view no longer a certification.
+    marker_line = [ln for ln in text_bad.splitlines()
+                   if UNCERTIFIED_MARKER in ln or CERTIFIED_MARKER in ln][0]
+    premature = text_bad.replace(CERT_VIEW_END, "", 1).replace(
+        marker_line, marker_line + "\n" + CERT_VIEW_END, 1)
+    checks.append(("premature end sentinel refused",
+                   bool(artifact_guard_violations(premature))))
+    # Late begin: the begin sentinel is MOVED to sit after the layer table, so
+    # the view opens too late and loses the rows it must contain. Feeding a
+    # begin-removed document instead would exercise a different shape.
+    without_begin = text_bad.replace(CERT_VIEW_BEGIN + "\n", "", 1)
+    attestation_anchor = "Self-test attestation for the run that produced this table:"
+    late_begin = without_begin.replace(
+        attestation_anchor, CERT_VIEW_BEGIN + "\n" + attestation_anchor, 1)
+    checks.append(("late begin sentinel refused",
+                   late_begin != without_begin
+                   and bool(artifact_guard_violations(late_begin))))
+    checks.append(("removed begin sentinel refused",
+                   bool(artifact_guard_violations(without_begin))))
+    empty_view = text_bad.replace(CERT_VIEW_BEGIN, CERT_VIEW_BEGIN + "\n" + CERT_VIEW_END, 1)
+    checks.append(("empty view refused", bool(artifact_guard_violations(empty_view))))
+    marker_only = "\n".join([CERT_VIEW_BEGIN, marker_line, CERT_VIEW_END])
+    checks.append(("marker-only view refused",
+                   bool(artifact_guard_violations(marker_only))))
+    dropped_layer = text_bad.replace("| " + LAYER_EXHAUSTIVE + " |", "| dropped |", 1)
+    checks.append(("missing layer row refused",
+                   bool(artifact_guard_violations(dropped_layer))))
+    dropped_attestation = text_bad.replace(
+        "- %s " % CHECK_CLASSES[0][1], "- dropped ", 1)
+    checks.append(("missing attestation refused",
+                   bool(artifact_guard_violations(dropped_attestation))))
+
+    checks.append(("every registered class appears in layers and attestation",
+                   all(layer_name in layer_names and layer_name in attested
+                       for _p, layer_name, _pr in CHECK_CLASSES)))
+    return checks
+
+
+def run_check_classes():
+    """Run every registered check class through its registered producer.
+
+    Returns (results, executed_counts, failures) where results maps the layer
+    name to its list of (name, ok). Driven entirely by CHECK_CLASSES: a class
+    with no producer, or whose producer runs nothing, contributes an executed
+    count of 0 and therefore fails closed in certification_state().
+    """
+    results = {}
+    executed_counts = {}
+    failures = []
+    for prefix, layer_name, producer_name in CHECK_CLASSES:
+        producer = globals().get(producer_name)
+        checks = producer() if callable(producer) else []
+        results[layer_name] = checks
+        executed_counts[prefix] = len(checks)
+        failures.extend("%s: %s" % (prefix, name) for name, ok in checks if not ok)
+    return results, executed_counts, failures
+
+
+def attestation_lines(results):
+    """Build the header attestation from the registry, not from a fixed tuple.
+
+    The line used to hardcode four class names and counts, so a newly registered
+    class could reach the layer table while never appearing in the attestation.
+    """
+    parts = []
+    for _prefix, layer_name, _producer in CHECK_CLASSES:
+        checks = results.get(layer_name, [])
+        parts.append("%s %d/%d" % (layer_name,
+                                   sum(1 for _, ok in checks if ok),
+                                   len(checks)))
+    return parts
+
+
+def run_all_check_classes():
+    results, executed_counts, failures = run_check_classes()
+    return results, executed_counts, failures
+
+
+def main(argv):
+    code, error, mode, path = parse_args(argv)
+    if error is not None:
+        sys.stderr.write("carrier_sweep.py: %s\n" % error)
+        sys.stderr.write(USAGE)
+        return code
+
+    if mode == "help":
+        sys.stdout.write(USAGE)
+        return 0
+
+    predicate = carrier_baseline if mode == "baseline" else carrier
+    rows, failures = run_directed(predicate)
+
+    if mode == "baseline":
+        # Reporting mode: exit code carries no verdict. The baseline is EXPECTED
+        # to be red, so tying its exit code to the failure count would invert
+        # what a reader assumes.
+        _print_directed(rows, "BASELINE (pre-fix predicate)")
+        print("")
+        print("Reporting mode: this exit code carries no verdict. The baseline is")
+        print("EXPECTED to be red. Cases the pre-fix predicate got wrong:")
+        for (name, raw, expected_branch, expected_carrier,
+             actual_branch, actual_carrier, ok) in rows:
+            if not ok:
+                print("  %-52s expected %-44s got %s"
+                      % (name, expected_branch, actual_branch))
+        return 0
+
+    results, executed_counts, selftest_failures = run_all_check_classes()
+    exhaustive = run_exhaustive()
+    counts, undefined, mismatches, unique = run_fuzz()
+    layers = certification_state(
+        failures, selftest_failures, exhaustive[1], mismatches, undefined,
+        executed_counts)
+    certified = verdict(layers)
+    digest = result_digest(rows, counts, undefined, mismatches, unique,
+                           exhaustive, failures)
+
+    if mode == "emit":
+        text = emit_markdown(rows, failures, digest, results, mismatches, unique,
+                             exhaustive, layers)
+        # Artifact-level guard: judge the RENDERED TEXT, independently of how
+        # any verdict was computed.
+        guard_problems = artifact_guard_violations(text)
+        if guard_problems:
+            sys.stderr.write("carrier_sweep.py: artifact guard REFUSED the render\n")
+            for problem in guard_problems:
+                sys.stderr.write("  %s\n" % problem)
+            return 1
+        if not certified:
+            if path is not None:
+                sys.stderr.write(
+                    "carrier_sweep.py: refusing to write %s -- certification "
+                    "FAILED\n" % path)
+                for name, ok, detail in layers:
+                    if not ok:
+                        sys.stderr.write("  failing layer: %s (%s)\n" % (name, detail))
+                sys.stderr.write(
+                    "  diagnostic output: rerun without a PATH to print the "
+                    "uncertified table on stdout\n")
+                return 1
+            sys.stdout.write(text)
+            return 1
+        if path is None:
+            sys.stdout.write(text)
+        else:
+            try:
+                write_atomically(path, text)
+            except OSError as exc:
+                # Pre-validation covers the known shapes; anything the
+                # filesystem raises later is still a protocol error, never a
+                # verdict. Exit 2 keeps the matrix true.
+                sys.stderr.write("carrier_sweep.py: cannot write %s: %s\n"
+                                 % (path, exc))
+                return 2
+            sys.stderr.write("wrote %s\n" % path)
+        return 0
+
+    # Default mode. Its exit code is the certification verdict.
+    _print_directed(rows, "CURRENT RULE")
+
+    for _prefix, layer_name, _producer in CHECK_CLASSES:
+        print("")
+        print("== %s ==" % layer_name.upper())
+        for name, ok in results.get(layer_name, []):
+            print("  %-52s %s" % (name, "PASS" if ok else "FAIL"))
+
+    print("")
+    print("== EXHAUSTIVE SWEEP, LENGTHS 0-%d ==" % EXHAUSTIVE_MAX_LEN)
+    print("inputs checked: %d (every input of those lengths)" % exhaustive[0])
+    print("value/branch mismatches vs independent oracle: %d" % exhaustive[1])
+
+    print("")
+    print("== SAMPLED SWEEP, LENGTHS 0-%d ==" % MAX_LEN)
+    print("seed=%d draws=%d unique inputs=%d domain=all 256 byte values"
+          % (SEED, ITERATIONS, unique))
+    print("(the full length 0-%d domain is 282578800148737 inputs; this is a "
+          "sample, not an exhaustion)" % MAX_LEN)
+    for branch in BRANCHES:
+        print("  %-44s %d" % (branch, counts[branch]))
+    print("undefined/exception cases: %d" % undefined)
+    print("value mismatches vs independent oracle: %d" % mismatches)
+    print("note: each DRAWN input is oracle-compared for branch AND carrier value;")
+    print("      what sampling cannot establish is anything about inputs never drawn.")
+
+    print("")
+    print("== CERTIFICATION ==")
+    block = render_certification_block(layers, results)
+    print(block)
+    guard_problems = artifact_guard_violations(block)
+    print("")
+    print("self-test failures: %d" % len(selftest_failures))
+    print("result digest (binds directed rows' actual carriers plus aggregate "
+          "counts): %s" % digest)
+    if guard_problems:
+        # Same guard as the emit outlet, over the block just rendered.
+        print("")
+        print("ARTIFACT GUARD REFUSED THIS CERTIFICATION BLOCK:")
+        for problem in guard_problems:
+            print("  %s" % problem)
+        return 1
+    return 0 if certified else 1
+
+
+# Import-time producer discovery. Placed after every definition so the whole
+# module namespace is visible: a producer written but never registered aborts
+# the import instead of silently never running.
+assert_producers_registered(globals())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
