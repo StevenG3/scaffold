@@ -22,6 +22,8 @@ import io
 import os
 import re
 import sys
+import shutil
+import tempfile
 import tokenize
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -132,23 +134,21 @@ def scanned_files():
 
 
 class UnparsablePython(Exception):
-    """A .py file in the domain could not be tokenized or parsed."""
+    """Raised when a .py file in the domain cannot be tokenized or parsed."""
 
 
-def _comment_lines(source):
-    """Line numbers carrying a COMMENT token -- whole-line AND trailing."""
-    numbers = set()
+def _comment_carriers(source):
+    """Yield (line_number, source_fragment) for COMMENT tokens."""
     reader = io.StringIO(source).readline
     for token in tokenize.generate_tokens(reader):
         if token.type == tokenize.COMMENT:
-            numbers.add(token.start[0])
-    return numbers
+            yield token.start[0], token.string
 
 
-def _docstring_lines(source):
-    """Line numbers spanned by real docstrings, as ast defines them."""
+def _docstring_carriers(source):
+    """Yield (line_number, source_fragment) for docstring nodes."""
     tree = ast.parse(source)
-    numbers = set()
+    lines = source.split("\n")
     holders = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
     for node in ast.walk(tree):
         if not isinstance(node, holders):
@@ -162,30 +162,32 @@ def _docstring_lines(source):
         value = first.value
         if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
             continue
-        end = getattr(first, "end_lineno", first.lineno)
-        numbers.update(range(first.lineno, end + 1))
-    return numbers
+        start, end = first.lineno, getattr(first, "end_lineno", first.lineno)
+        col, end_col = first.col_offset, getattr(first, "end_col_offset", None)
+        for number in range(start, end + 1):
+            text = lines[number - 1]
+            # Only the literal's own columns are prose (SSOT).
+            left = col if number == start else 0
+            right = end_col if (number == end and end_col is not None) else len(text)
+            yield number, text[left:right]
 
 
-def prose_lines(path, lines):
-    """Yield (line_number, line) for lines carrying prose.
+def prose_carriers(path, source):
+    """Yield (line_number, source_fragment) for fragments carrying prose.
 
-    Domain: see the SSOT section of run-manifest.md. This function implements
-    it via tokenize (comments) and ast (docstrings), and raises
-    UnparsablePython so the caller can fail closed.
+    Domain: see the SSOT section of run-manifest.md.
     """
     if not path.endswith(".py"):
-        for number, line in enumerate(lines, start=1):
+        for number, line in enumerate(source.split("\n"), start=1):
             yield number, line
         return
-    source = "".join(line + "\n" for line in lines)
     try:
-        carriers = _comment_lines(source) | _docstring_lines(source)
-    except (SyntaxError, tokenize.TokenError, IndentationError) as exc:
+        carriers = sorted(set(_comment_carriers(source))
+                          | set(_docstring_carriers(source)))
+    except (SyntaxError, tokenize.TokenError, IndentationError, ValueError) as exc:
         raise UnparsablePython("%s: %s" % (path, exc))
-    for number, line in enumerate(lines, start=1):
-        if number in carriers:
-            yield number, line
+    for number, fragment in carriers:
+        yield number, fragment
 
 
 def _strip_exempt(line):
@@ -216,87 +218,165 @@ def line_violations(line):
     return [(markers[0], token) for token in tokens]
 
 
+def read_source(path):
+    """Return a file's source text unchanged, honouring its coding cookie."""
+    if path.endswith(".py"):
+        with tokenize.open(path) as handle:
+            return handle.read()
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
 def scan(injections=None):
-    """Scan the corpus. injections maps a path to extra lines to splice in."""
+    """Scan the corpus. injections maps a path to source text to append."""
     violations = []
     for path in scanned_files():
-        with open(path, encoding="utf-8") as handle:
-            lines = handle.read().splitlines()
+        source = read_source(path)
         if injections and path in injections:
-            lines = list(lines) + list(injections[path])
+            suffix = injections[path]
+            if not source.endswith("\n"):
+                source += "\n"
+            source += suffix if suffix.endswith("\n") else suffix + "\n"
         try:
-            carriers = list(prose_lines(path, lines))
+            carriers = list(prose_carriers(path, source))
         except UnparsablePython as exc:
             # Fail closed: an unscannable file is an unknown, not a pass.
             violations.append((os.path.relpath(path, RECORD_DIR), 0,
                                "UNPARSABLE", "-", str(exc)))
             continue
-        for number, line in carriers:
-            for marker, token in line_violations(line):
+        for number, fragment in carriers:
+            for marker, token in line_violations(fragment):
                 violations.append((os.path.relpath(path, RECORD_DIR),
-                                   number, marker, token, line.strip()))
+                                   number, marker, token, fragment.strip()))
     return violations
 
 
-# Independent syntactic-form matrix for the .py domain (R28).
+# Independent syntactic-form matrix for the .py domain.
 #
-# Each row is (label, source lines, expected-prose line numbers). The
-# expectation is WRITTEN DOWN, never produced by prose_lines() -- a test whose
-# oracle is the code under test proves only self-consistency. Rows whose
-# expectation is empty are the negative direction: they must NOT be pulled
-# into the domain, which is how the '.py code strings' open axis is held open.
+# Each row is (label, source, expected carriers, expected violations). Both
+# expectations are WRITTEN DOWN -- a test whose oracle is the code under test
+# proves only self-consistency. The carrier column is what makes the open axis
+# checkable: it pins which SOURCE FRAGMENT is prose, not merely which line
+# holds one, so code sharing a line with a comment stays out of the domain.
 #
-# The prefix set is enumerated here on purpose even though ast resolves
-# prefixes for us: the review's counterexample was exactly an unenumerated
-# prefix, so the matrix states each one rather than trusting a class.
+# Prefixes are enumerated even though ast resolves them, because an
+# unenumerated prefix is exactly what an earlier round got wrong.
+MARK = "当前定向用例为 9999"
+HIT = [("当前", "9999")]
+
 PROSE_FORM_MATRIX = (
-    ("bare single-line docstring", ['"""当前定向用例为 9999"""'], {1}),
-    ("r single-line docstring", ['r"""当前定向用例为 9999"""'], {1}),
-    ("u single-line docstring", ['u"""当前定向用例为 9999"""'], {1}),
-    ("U single-line docstring", ['U"""当前定向用例为 9999"""'], {1}),
-    ("R single-line docstring", ['R"""当前定向用例为 9999"""'], {1}),
-    ("single-quote docstring", [chr(39)*3 + "当前定向用例为 9999" + chr(39)*3], {1}),
-    ("bare multi-line docstring", ['"""', "当前定向用例为 9999", '"""'], {1, 2, 3}),
-    ("r multi-line docstring", ['r"""', "当前定向用例为 9999", '"""'], {1, 2, 3}),
-    ("u multi-line docstring", ['u"""', "当前定向用例为 9999", '"""'], {1, 2, 3}),
-    ("U multi-line docstring", ['U"""', "当前定向用例为 9999", '"""'], {1, 2, 3}),
-    ("R multi-line docstring", ['R"""', "当前定向用例为 9999", '"""'], {1, 2, 3}),
-        ("whole-line comment", ["# 当前定向用例为 9999"], {1}),
-    ("indented whole-line comment", ["    # 当前定向用例为 9999"], {1}),
-    ("inline comment", ["x = 1  # 当前定向用例为 9999"], {1}),
-    ("function docstring", ["def f():", '    """当前定向用例为 9999"""', "    return 1"], {2}),
-    ("class docstring", ["class C:", '    """当前定向用例为 9999"""'], {2}),
+    ("bare single-line docstring", '"""%s"""\n' % MARK,
+     [(1, '"""%s"""' % MARK)], [HIT]),
+    ("r single-line docstring", 'r"""%s"""\n' % MARK,
+     [(1, 'r"""%s"""' % MARK)], [HIT]),
+    ("u single-line docstring", 'u"""%s"""\n' % MARK,
+     [(1, 'u"""%s"""' % MARK)], [HIT]),
+    ("U single-line docstring", 'U"""%s"""\n' % MARK,
+     [(1, 'U"""%s"""' % MARK)], [HIT]),
+    ("R single-line docstring", 'R"""%s"""\n' % MARK,
+     [(1, 'R"""%s"""' % MARK)], [HIT]),
+    ("single-quote docstring", "%s%s%s\n" % ("'" * 3, MARK, "'" * 3),
+     [(1, "%s%s%s" % ("'" * 3, MARK, "'" * 3))], [HIT]),
+    ("multi-line docstring", '"""\n%s\n"""\n' % MARK,
+     [(1, '"""'), (2, MARK), (3, '"""')], [[], HIT, []]),
+    ("whole-line comment", "# %s\n" % MARK, [(1, "# %s" % MARK)], [HIT]),
+    ("indented whole-line comment", "def f():\n    # %s\n    return 1\n" % MARK,
+     [(2, "# %s" % MARK)], [HIT]),
+    ("inline comment", "x = 1  # %s\n" % MARK, [(1, "# %s" % MARK)], [HIT]),
+    ("function docstring", 'def f():\n    """%s"""\n    return 1\n' % MARK,
+     [(2, '"""%s"""' % MARK)], [HIT]),
+    ("class docstring", 'class C:\n    """%s"""\n' % MARK,
+     [(2, '"""%s"""' % MARK)], [HIT]),
     ("async function docstring",
-     ["async def f():", '    """当前定向用例为 9999"""', "    return 1"], {2}),
-    # Negative direction -- the open axis must stay open.
-    ("assigned multi-line string", ['PAYLOAD = """', "当前定向用例为 9999", '"""'], set()),
-    ("assigned single-line string", ['PAYLOAD = "当前定向用例为 9999"'], set()),
-    ("string in a call", ['print("当前定向用例为 9999")'], set()),
-    ("second statement string",
-     ["x = 1", '"""当前定向用例为 9999"""'], set()),
+     'async def f():\n    """%s"""\n    return 1\n' % MARK,
+     [(2, '"""%s"""' % MARK)], [HIT]),
+    # --- the open axis: code strings never become prose ---
+    ("assigned multi-line string", 'PAYLOAD = """\n%s\n"""\n' % MARK, [], []),
+    ("assigned single-line string", 'PAYLOAD = "%s"\n' % MARK, [], []),
+    ("string in a call", 'print("%s")\n' % MARK, [], []),
+    ("second statement string", 'x = 1\n"""%s"""\n' % MARK, [], []),
+    ("b prefix first statement", 'b"""currently 9999"""\n', [], []),
+    ("f prefix first statement", 'f"""%s"""\n' % MARK, [], []),
+    # --- the review's bidirectional cases: one line, two axes ---
+    ("code string + harmless comment",
+     'payload = "%s"  # harmless note\n' % MARK,
+     [(1, "# harmless note")], [[]]),
+    ("code number + marker-only comment",
+     "payload = 9999  # 当前配置\n", [(1, "# 当前配置")], [[]]),
+    ("code marker + number-only comment",
+     'payload = "当前"  # 9999 items\n', [(1, "# 9999 items")], [[]]),
+    ("same-line docstring + numeric name",
+     'def f9999(): "当前配置"\n', [(1, '"当前配置"')], [[]]),
+    ("docstring after semicolon code",
+     'x = 9999; y = 2\n', [], []),
+    # --- reading layer: the parser must see the file's real bytes ---
+    ("U+2028 inside a legal comment",
+     "# note\u2028%s\nx = 1\n" % MARK,
+     [(1, "# note\u2028%s" % MARK)], [HIT]),
+    ("CRLF line endings", "# %s\r\nx = 1\r\n" % MARK,
+     [(1, "# %s" % MARK)], [HIT]),
+    ("no trailing newline", "x = 1  # %s" % MARK,
+     [(1, "# %s" % MARK)], [HIT]),
 )
 
-# A file that will not parse must fail closed, not be skipped silently.
-UNPARSABLE_SAMPLE = ["def f(:", "    pass"]
+# Sources that must fail closed rather than be silently normalised into
+# something parsable.
+UNPARSABLE_SAMPLES = (
+    ("broken def", "def f(:\n    pass\n"),
+    ("U+2028 between statements", "x = 1\u2028payload = 2"),
+)
+
+# The reading layer is exercised through a real file, because a coding cookie
+# or a BOM only exists on disk.
+READ_LAYER_SAMPLES = (
+    # The expectation is the full per-carrier list: a coding cookie is itself
+    # a comment, so that file has two carriers and only the second asserts.
+    ("utf-8 BOM", "\ufeff# %s\nx = 1\n" % MARK, [HIT]),
+    ("coding cookie", "# -*- coding: utf-8 -*-\n# %s\nx = 1\n" % MARK, [[], HIT]),
+)
 
 
 def form_matrix_check():
-    """Run the syntactic-form matrix against written-down expectations."""
+    """Check carriers and violations against written-down expectations."""
     failures = []
-    for label, lines, expected in PROSE_FORM_MATRIX:
-        got = {number for number, _ in prose_lines("probe.py", lines)}
-        ok = got == expected
-        print("  %-32s expected=%-12s got=%-12s %s"
-              % (label, sorted(expected), sorted(got), "ok" if ok else "MISMATCH"))
+    for label, source, want_carriers, want_violations in PROSE_FORM_MATRIX:
+        try:
+            got_carriers = list(prose_carriers("probe.py", source))
+        except UnparsablePython as exc:
+            print("  %-34s UNEXPECTED UnparsablePython: %s" % (label, exc))
+            failures.append((label, "carriers", want_carriers, "UnparsablePython"))
+            continue
+        got_violations = [line_violations(f) for _, f in got_carriers]
+        ok = (got_carriers == list(want_carriers)
+              and got_violations == list(want_violations))
+        print("  %-34s carriers=%-2d violations=%-2d %s"
+              % (label, len(got_carriers), sum(len(v) for v in got_violations),
+                 "ok" if ok else "MISMATCH"))
         if not ok:
-            failures.append((label, sorted(expected), sorted(got)))
-    try:
-        list(prose_lines("broken.py", UNPARSABLE_SAMPLE))
-    except UnparsablePython:
-        print("  %-32s raises UnparsablePython (fail closed)" % "unparsable source")
-    else:
-        print("  %-32s DID NOT FAIL CLOSED" % "unparsable source")
-        failures.append(("unparsable source", "UnparsablePython", "no exception"))
+            failures.append((label, got_carriers, got_violations))
+    for label, source in UNPARSABLE_SAMPLES:
+        try:
+            list(prose_carriers("broken.py", source))
+        except UnparsablePython:
+            print("  %-34s raises UnparsablePython (fail closed)" % label)
+        else:
+            print("  %-34s DID NOT FAIL CLOSED" % label)
+            failures.append((label, "UnparsablePython", "no exception"))
+    for label, source, want in READ_LAYER_SAMPLES:
+        directory = tempfile.mkdtemp()
+        try:
+            probe = os.path.join(directory, "probe.py")
+            with open(probe, "w", encoding="utf-8") as handle:
+                handle.write(source)
+            carriers = list(prose_carriers(probe, read_source(probe)))
+            got = [line_violations(f) for _, f in carriers]
+            ok = got == list(want)
+            print("  %-34s read-layer violations=%-2d %s"
+                  % (label, sum(len(v) for v in got), "ok" if ok else "MISMATCH"))
+            if not ok:
+                failures.append((label, list(want), got))
+        finally:
+            shutil.rmtree(directory)
     return failures
 
 
@@ -347,7 +427,7 @@ def self_test():
             already_python = variant.lstrip().startswith("#") or "  # " in variant
             injected = variant if (not path.endswith(".py") or already_python) \
                 else "# " + variant
-            dirty = scan(injections={path: [injected]})
+            dirty = scan(injections={path: injected})
             caught = len(dirty) > len(baseline)
             print("  %-26s variant=%-30s caught=%s" % (rel, variant[:30], caught))
             if not caught:

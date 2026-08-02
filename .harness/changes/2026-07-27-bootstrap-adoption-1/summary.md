@@ -954,6 +954,21 @@ checker 重写经终验全部核实。剩下的全是**外审记录落盘后轮�
 | **M3** 函数 docstring 又复述域定义 | 接受，精简为一句 + SSOT 指针（`_docstring_lines` 同样精简）。第二事实源纪律在**同一个文件**里第三次出现。 |
 | **M4** 前缀句未覆盖 `b` / `f` | 接受，补半句：二者的首条语句按 Python 定义就不是 docstring（`ast.get_docstring` 均返回 `None`，实测），故落在域外，实现与该定义一致。 |
 
+## 整改记录（外部第 13 轮复审，b3fa77d）
+
+> **本节为该轮历史（历史@b3fa77df）**：节内现在时均指**当轮时点**，不描述现状；
+> 机制现状见 `evidence/run-manifest.md` 的「检查器现状（SSOT）」节。
+
+审阅记录：`docs/reviews/2026-08-02-pr-7-scaffold-self-adoption-rereview-b3fa77d.md`，
+结论 Request changes（15/24）。第 12 轮的四个探针经审阅方确认按字面关闭。
+
+| Finding | 处置 |
+| --- | --- |
+| **[Important 1] 行号集合不是 prose 载体范围** | 接受，这条最值得记。上一轮把语法分类提升到了**行号集合**，却仍按行号回传整条物理行、对整行判定——于是同行的开放代码与受检 prose 互相污染，三个双向反例全部误报（数字或 marker 在开放代码侧，prose 侧并无断言）。**「域」不是一组行号，是一组源码片段。** 整改：COMMENT 取 token 的 `string`；docstring 按节点的 `lineno/col_offset/end_lineno/end_col_offset` 逐物理行切片，因此同行的 `def f(): "..."` 头部、`;` 之后的语句、注释左侧的代码都不进入片段；判定只作用于片段，行号仅用于报告定位。**旧反向矩阵只测孤立代码字符串，所以全绿**——反向用例必须把「同行还有 prose」这一维也覆盖到。 |
+| **[Important 2] 解析前源码被改写** | 接受。此前先 `splitlines()` 再以换行重建才喂 tokenize/ast，等于**在解析前改写被解析的对象**：`str.splitlines()` 把 U+2028 当行边界，而 Python tokenizer 在注释内不当。两个方向都被击穿——合法注释被洗成代码（覆盖域漏报），不可解析源码被洗成可解析（绕过 fail closed）。整改：以 `tokenize.open` 读取**文件原始源码**直接喂解析器（原生识别编码声明与 BOM），行文本在解析之后按 Python 坐标模型派生。编码决策显式写入 SSOT。 |
+| **[Minor] 函数 docstring 仍复述机制** | 接受。上一轮只删了 header outline，函数级没同步。三个函数的 docstring 精简为目的 + SSOT 指针；片段切片处的机制注释同样收为一句指针。第二事实源纪律在同一文件里的第四次。 |
+| **自检口径升级** | 期望值由「行号集合」升级为**「载体片段 + violations」两列并逐行写死**；审阅列出的同行双轴用例、两个 U+2028 反例、以及 CRLF / UTF-8 BOM / 编码声明 / 无尾换行等读取层回归全部入矩阵。**只断言行号，正是当轮被击穿的地方。** |
+
 ## Decision
 
 待独立审阅方在精确 HEAD 上裁定（Approve，可以合入 / Request changes，禁止合入），审阅记录归档于 `docs/reviews/`。
