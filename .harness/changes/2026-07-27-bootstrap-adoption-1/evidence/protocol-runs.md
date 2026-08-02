@@ -53,7 +53,7 @@
 
 ---
 
-## 当前条目：R31 最终内容态的机械终检（实现方自跑，C 式）
+## 当前条目：R32 最终内容态的机械终检（实现方自跑，C 式）
 
 > **重跑惯例（R19 起，R22 起有红命令背书）**：本节**每轮必须整体重跑并重写**，
 > 不得沿用上一轮的观察值。节标题带轮次、条目内绑定**当轮**前驱 HEAD。
@@ -66,7 +66,7 @@
 
 - 运行时间：2026-07-29
 - 角色：实现方在最终内容态自跑 C 式机械终检（外部第 11 轮 I3 要求落库）
-- 前驱 HEAD（第 1 步锁定对象）：`90845471`
+- 前驱 HEAD（第 1 步锁定对象）：`1ee71612`
 - 绑定：**本记录随其所在提交生效**；该提交的 SHA、`rev-list` 计数与 CI run id 见 PR 正文指针
 
 > **本节两次犯过它要防的病**：先是逐字沿用前一提交的数值，再是记录了一份
@@ -78,8 +78,8 @@
 
 ```sh
 git show --stat HEAD
-git diff --name-status 90845471..HEAD
-git rev-list --count 90845471..HEAD        # 在交付 HEAD 上应为一
+git diff --name-status 1ee71612..HEAD
+git rev-list --count 1ee71612..HEAD        # 在交付 HEAD 上应为一
 git diff --exit-code e338db8936a07b2f102df6fbd0bfa900577545b7...HEAD -- template/
 git log -1 --format='%h %ad' --date=short -- \
   .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py
@@ -428,10 +428,10 @@ sh /tmp/guard.sh          # 期望 guard exit=0
 | **外审轮次口径** | `git status --porcelain docs/reviews \| grep -c '^??.*pr-7'`；`git ls-files docs/reviews \| wc -l`；`git ls-files docs/reviews \| grep -c pr-7` | 依次为 **13**、**14**、**0**。外审文件现覆盖 R1–R13，故**下一轮外审为第 14 轮**。第一条依赖审阅方的落盘工作区，fresh clone 得零属预期；此前「`docs/reviews/` 有意不纳入版本控制」一句为假声称，缘由见 `summary.md` 的 R24 整改记录。**本行在 R28 交付时曾为红，R30 交付前又被外审第 13 轮记录推进了一次**——外审记录落盘会改变第一条的计数，而该行的期望不会自己跟上；凡「审阅方落盘」这类外部事件改变的计数，必须在下一轮开头复跑本行。 |
 | **数量断言自审（R26 起）** | 见「内容寻址扫描记录」小节 shell 块 4be 段（白名单逐处理由随命令入块） | **无输出**。域为去历史节的记录散文；**PR 正文不在该域内**——其数量断言在每次 fresh-clone 入口彩排时**人工对照**，彩排义务：历史域外的正文数量断言为 0。 |
 | **叙事节的作用域声明无遗漏（R23 起，R24 移入栅栏块）** | 见「内容寻址扫描记录」小节 shell 块 4c 段（整段复制即可执行；逐字期望随命令入块） | 输出**只含结构节**（当场枚举见该段输出），**任何叙事节落进这份输出即为违规**。该命令曾写在本单元格并因转义往返失效，缘由见 `summary.md` 的 R24 整改记录。 |
-| **Python 载体域：实现等于声明（R28，R30 升级为片段级）** | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test \| sed -n '/form matrix/,/clean scan/p'` | 矩阵每行 `ok`，两条不可解析源码各 `raises UnparsablePython (fail closed)`，读取层两行 `ok`。**期望是「载体片段 + violations」两列并逐行写死**，不由被测函数生成——只断言行号集合，正是外审第 13 轮击穿的地方：同行的开放代码会被整行判定连坐。反向用例（赋值/调用/非首条字符串、`b`/`f` 前缀、同行双轴五组）期望 violations 为空，把「`.py` 代码=开放」这条轴**双向**钉住。 |
+| **Python 载体域：实现等于声明（R28，R30 升级为片段级）** | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test \| sed -n '/form matrix/,/clean scan/p'` | 矩阵每行 `ok`；两条不可解析源码各 `raises UnparsablePython (fail closed)`；两条编码不可满足各 `read fails closed (named violation)`；读取层两行 `ok`。**期望是「载体片段 + violations」两列并逐行写死**，不由被测函数生成——只断言行号集合，正是外审第 13 轮击穿的地方：同行的开放代码会被整行判定连坐。反向用例（赋值/调用/非首条字符串、`b`/`f` 前缀、同行双轴五组）期望 violations 为空，把「`.py` 代码=开放」这条轴**双向**钉住。 |
 | **行内注释确实会变红（R28）** | `f=.harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py; cp $f /tmp/cs.bak; v=$(python3 -c "import re,pathlib;s=pathlib.Path('.harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py').read_text();print(re.search(r'\"(x = 1  # [^\"]+)\"',s).group(1))"); printf '%s\\n' "$v" >> $f; python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py; cp /tmp/cs.bak $f` | 注入样本取自 `SELF_TEST_VARIANTS` 里的行内注释条目（本行不复制该字面量，否则它自己就会被扫到）。注入后 exit 1 并点名该行（旧实现对同一注入 exit 0——SSOT 声称覆盖 `.py` 注释，实现只看整行 `#`）；还原后 exit 0，且被存证脚本的 SHA 不变（见不变量节守护行）。 |
 | **解析输入即文件原始源码（R30）** | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test \| grep -E 'U\+2028\|CRLF\|BOM\|coding cookie\|no trailing'` | 五行全 `ok` / `fail closed`。`tokenize.open` 读原始源码直接喂 tokenize/ast；此前先 `splitlines()` 再拼接，等于**在解析前改写源码**——U+2028 被 `str.splitlines()` 当行边界而 tokenizer 在注释内不当，既把合法注释洗成代码（漏报），也把不可解析源码洗成可解析（绕过 fail closed）。两个方向都已固化为用例。 |
-| **非 ASCII 片段边界（R31）** | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test \| grep -E '非 ASCII\|non-ASCII\|semicolon\|fails closed'` | 三条非 ASCII 边界行与「分号后字符串不是 docstring」行全 `ok`，两条编码不可满足行 `read fails closed`。`col_offset` 是 **UTF-8 字节偏移**，故片段一律取自 `ast.get_source_segment`，不自行按列切；R30 的双向用例边界全在 ASCII 上，所以字符下标切片全绿而缺陷仍在——**边界用例的边界必须落在会出错的字符上。** |
+| **非 ASCII 片段边界与行终止符（R31/R32）** | `python3 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/check_current_numbers.py --self-test \| grep -E '非 ASCII\|non-ASCII\|semicolon\|fails closed'` | 三条非 ASCII 边界行与「分号后字符串不是 docstring」行全 `ok`，两条编码不可满足行 `read fails closed`。`col_offset` 是 **UTF-8 字节偏移**，故片段一律取自 `ast.get_source_segment`，不自行按列切；R30 的双向用例边界全在 ASCII 上，所以字符下标切片全绿而缺陷仍在——**边界用例的边界必须落在会出错的字符上。** R32 另补三行：裸 CR 与 CRLF 的 docstring 须与 LF **等价**（段内按 `\r\n` / `\r` / `\n` 三者显式拆分），而 U+2028 **不**被当作终止符——`str.splitlines()` 会在那里多切一刀，正是两轮前把合法注释洗成代码的同一个坑。 |
 | **被存证脚本的纯 ASCII 不变式** | `grep -c '[^ -~]' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py` | **0**。该构造保证在记录中被声称十一轮，却从未有清单守护——第十一次复发正是它被打破（历史标签把非 ASCII 字节写进了被哈希存证的脚本）。**声称了却没有清单行的不变式，等于没有守护。** |
 | **手抄不变量：脚本 SHA 与实际字节一致** | `test "$(shasum -a 256 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| cut -d' ' -f1)" = "$(grep '脚本 SHA-256' .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/run-manifest.md \| grep -oE '[0-9a-f]{64}')"; echo $?` | **0**。不变量节记录的 SHA 与当场计算的字节哈希必须相等；脚本一改而抄本未同步，本行立即变红。 |
 | **手抄不变量：SHA 抄本数** | `grep -rn --exclude-dir=__pycache__ "$(shasum -a 256 .harness/changes/2026-07-27-bootstrap-adoption-1/evidence/carrier_sweep.py \| cut -d' ' -f1)" .harness/changes/2026-07-27-bootstrap-adoption-1 \| wc -l` | **恰 1**——即 `run-manifest.md` 的「本节保留的唯一两个不变量」小节。R19 的 Critical 正是同一个值散落三处而只同步了一处；把「有几处抄本」写成可执行期望值，是手抄值唯一可行的守护。 |

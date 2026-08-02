@@ -145,6 +145,18 @@ def _comment_carriers(source):
             yield token.start[0], token.string
 
 
+# The line terminators Python's tokenizer counts inside source: LF, CRLF and
+# a bare CR. Enumerated explicitly rather than using str.splitlines(), which
+# also breaks on U+2028 and friends -- the exact over-splitting that let a
+# legal comment be laundered into code two rounds ago.
+LINE_TERMINATORS = re.compile(r"\r\n|\r|\n")
+
+
+def _split_physical(segment):
+    """Split a source segment on Python's line terminators only."""
+    return LINE_TERMINATORS.split(segment)
+
+
 def _docstring_carriers(source):
     """Yield (line_number, source_fragment) for docstring nodes."""
     tree = ast.parse(source)
@@ -169,7 +181,7 @@ def _docstring_carriers(source):
         if segment is None:
             raise ValueError("no source segment for docstring at line %d"
                              % first.lineno)
-        for offset, text in enumerate(segment.split("\n")):
+        for offset, text in enumerate(_split_physical(segment)):
             yield first.lineno + offset, text
 
 
@@ -336,6 +348,16 @@ PROSE_FORM_MATRIX = (
     ("multi-line non-ASCII docstring + trailing code",
      'def g():\n    """\n    当前 9999"""; z = 1\n',
      [(2, '"""'), (3, '    当前 9999"""')], [[], HIT]),
+    # --- line terminators inside a docstring segment ------------------------
+    # Bare CR and CRLF must split exactly like LF; U+2028 must NOT split, or
+    # a fragment gets cut where Python does not cut it.
+    ("bare CR docstring", '"""\r%s\r"""\n' % MARK,
+     [(1, '"""'), (2, MARK), (3, '"""')], [[], HIT, []]),
+    ("CRLF docstring", '"""\r\n%s\r\n"""\n' % MARK,
+     [(1, '"""'), (2, MARK), (3, '"""')], [[], HIT, []]),
+    ("U+2028 inside a docstring does not split",
+     '"""\u2028%s\u2028"""\n' % MARK,
+     [(1, '"""\u2028%s\u2028"""' % MARK)], [HIT]),
     # --- reading layer: the parser must see the file's real bytes ---
     ("U+2028 inside a legal comment",
      "# note\u2028%s\nx = 1\n" % MARK,
