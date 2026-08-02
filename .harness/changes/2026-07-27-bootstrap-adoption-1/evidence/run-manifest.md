@@ -108,10 +108,10 @@ _digest 被打桩：failures=47  digest 改变
 
 | 项 | 现状 |
 | --- | --- |
-| 检查域 | Change Record 内全部 `.md`（生成表除外）全文；全部 `.py` 的**全部注释（整行与行尾行内）** 与 **真实 docstring**（module / class / function / async function 的首条语句字符串，**任意合法前缀与引号形态**——`r` / `u` / `U` / `R` 及其组合、三引号与单引号；**`b` / `f` 前缀的首条语句按 Python 定义就不是 docstring**（`ast.get_docstring` 对二者均返回 `None`），故落在域外，实现与该定义一致）。**赋值给名字的字符串、调用实参里的字符串、以及首条语句之外的字符串常量**属开放轴，不扫。语法分类由标准库 `tokenize`（COMMENT）与 `ast`（`Expr` 首条语句的 `Constant` 字符串）给出，不再手写三引号状态机；**无法 tokenize/parse 的 `.py` 一律 fail closed**，计为具名违规而非静默跳过 |
+| 检查域 | Change Record 内全部 `.md`（生成表除外）全文；全部 `.py` 的**全部注释（整行与行尾行内）** 与 **真实 docstring**（module / class / function / async function 的首条语句字符串，**任意合法前缀与引号形态**——`r` / `u` / `U` / `R` 及其组合、三引号与单引号；**`b` / `f` 前缀的首条语句按 Python 定义就不是 docstring**（`ast.get_docstring` 对二者均返回 `None`），故落在域外，实现与该定义一致）。**赋值给名字的字符串、调用实参里的字符串、以及首条语句之外的字符串常量**属开放轴，不扫。语法分类由标准库 `tokenize`（COMMENT）与 `ast`（`Expr` 首条语句的 `Constant` 字符串）给出，不再手写三引号状态机。**受检对象是源码片段，不是物理行**：COMMENT 取 token 的 `string`；docstring 取 `ast.get_source_segment` 给出的**字面量源码段**再按物理行拆分——**不自行按列切片**，因为 `col_offset` 是 **UTF-8 字节偏移**而非字符下标，拿它切 `str` 在非 ASCII 行上必然错位（既连坐开放代码，也会把真 docstring 切成空串而静默漏报）。因此同行的 `def f(): "..."` 头部、`;` 之后的语句、注释左侧的代码**都不进入片段**——「代码=开放」这条轴是**双向**的，同行出现注释不改变代码片段的域归属。**解析输入是文件的原始源码**：以 `tokenize.open` 读取（原生识别编码声明与 BOM），**不得先 `splitlines()` 再拼接**——`str.splitlines()` 把 U+2028 等当行边界而 Python tokenizer 在注释内不当，那样既会把合法注释洗成代码（覆盖域漏报），也会把不可解析源码洗成可解析（绕过 fail closed）。行号仅用于报告定位。**读取与解析都在 fail-closed 边界内**：编码声明不可满足记为 `UNREADABLE`，无法 tokenize/parse 记为 `UNPARSABLE`，均为**具名违规**而非静默跳过或裸 traceback |
 | 判定 | 同行出现「现刻标记词 + 数字」即违规；标记词表与计数词规则见脚本常量 |
 | 豁免（三族，逐条列全——SSOT 不许写「等」） | **①历史绑定**：行内含 `历史@<hex>`，**整行放行**（已知宽豁免：合法历史值会连带放行同行其他数字）。**②产物不变量**：64 位十六进制指纹（脚本 SHA-256 与结果摘要共用此形）。**③结构性数字（15 条，全列）**：Change Record 目录名；`U+XXXX` 码点；`0x` 字节字面量；`Python 3.x[.y]`；`SHA-256` / `SHA256`；`第 N 步`；`第 N 轮`；表格行首编号 `\| N \|`；`§N`；轮次标签 `RN[a]`；版本标签 `vN`；`Errno N`；finding 标签（如 `I1` / `A-C1` / `B-S-I2`）；`exit N`；`退出 N`。 |
-| 自检 | **两层**，缺一不可。**①语法形态矩阵** `PROSE_FORM_MATRIX`：对 `.py` 的每个语法位置逐条断言，期望值**逐行写死**（**载体片段 + violations 两列**，不只行号），不由被测函数生成——正向含 bare/`r`/`u`/`U`/`R` 的单行与多行 docstring、单引号形态、module/class/function/async function 四类宿主、整行/缩进/行内注释；反向含赋值字符串、调用实参、首条语句之外的字符串常量（须**不**入域）；另含**同行双轴**用例（代码串 + 无害注释、代码数字 + 仅 marker 注释、代码 marker + 仅数字注释、同行 docstring + 数字函数名、`;` 后代码），**读取层**回归（U+2028 合法注释、CRLF、UTF-8 BOM、编码声明、无尾换行），以及两条不可解析源码须 `raises UnparsablePython` 的 fail-closed 用例。**②文件 × 记法叉积**注入：每个被扫文件 × 每个变体，全部须被捕获；变体含裸数字、逗号格式、反引号包裹、两条历史豁免逃逸样本、英文注释形态、单行 docstring 形态、**行内注释形态**。 |
+| 自检 | **两层**，缺一不可。**①语法形态矩阵** `PROSE_FORM_MATRIX`：对 `.py` 的每个语法位置逐条断言，期望值**逐行写死**（**载体片段 + violations 两列**，不只行号），不由被测函数生成——正向含 bare/`r`/`u`/`U`/`R` 的单行与多行 docstring、单引号形态、module/class/function/async function 四类宿主、整行/缩进/行内注释；反向含赋值字符串、调用实参、首条语句之外的字符串常量（须**不**入域）；另含**同行双轴**用例（代码串 + 无害注释、代码数字 + 仅 marker 注释、代码 marker + 仅数字注释、同行 docstring + 数字函数名、`;` 后代码），**非 ASCII 片段边界**用例（非 ASCII docstring + 同行尾随代码、非 ASCII 默认值参数 + 同行 docstring、多行非 ASCII docstring 末行 + 尾随代码），**读取层**回归（U+2028 合法注释、CRLF、UTF-8 BOM、编码声明、无尾换行），两条编码不可满足须记为 `UNREADABLE` 的用例，以及两条不可解析源码须 `raises UnparsablePython` 的 fail-closed 用例。**②文件 × 记法叉积**注入：每个被扫文件 × 每个变体，全部须被捕获；变体含裸数字、逗号格式、反引号包裹、两条历史豁免逃逸样本、英文注释形态、单行 docstring 形态、**行内注释形态**。 |
 | 退出码 | 覆盖域内无违规 = 0；有违规 = 1；**参数错误或 Change Record 目录缺失 = 2** |
 
 ### Group E fixture 的历史绑定（自 `carrier_sweep.py` 移入）
@@ -192,7 +192,7 @@ grep -rnE --exclude-dir=__pycache__ \
 ```
 
 本表**基于最终提交态的收集器命中集 + 人工分类**：收集器在本次提交的最终内容上重跑，
-命中 **472 行**，分布见下表。（上一版记录的 175 行是**跨状态混合值**——
+命中 **481 行**，分布见下表。（上一版记录的 175 行是**跨状态混合值**——
 自验会话 B 证明：同一命令在该 HEAD 上得 191、在其前一状态得 157，记录的分布两者都不匹配。
 根因是收集器在编辑中途运行、随后文本又被改动。现改为**提交前最后一步**重跑并记录。）
 
@@ -201,12 +201,12 @@ grep -rnE --exclude-dir=__pycache__ \
 | `customization-record.md` | 5 |
 | `evidence/boundary-cases.md` | 8 |
 | `evidence/carrier_sweep.py` | 151 |
-| `evidence/check_current_numbers.py` | 18 |
+| `evidence/check_current_numbers.py` | 23 |
 | `evidence/protocol-runs.md` | 44 |
-| `evidence/run-manifest.md` | 71 |
+| `evidence/run-manifest.md` | 72 |
 | `spec.md` | 6 |
-| `summary.md` | 123 |
-| `tasks.md` | 46 |
+| `summary.md` | 125 |
+| `tasks.md` | 47 |
 
 命中集中**每一条承载能力声明的句子**都在下表拥有自己的行；本节不再使用
 「其余命中不构成全称能力声明」这类概括性兜底句——那本身又是一个未经逐条检验的全称句。
@@ -270,6 +270,9 @@ grep -rnE --exclude-dir=__pycache__ \
 | 41 | 「语法形态矩阵覆盖全部 Python 语法位置」 | **已限定** | 矩阵是**枚举**，不是证明：它覆盖已列出的前缀、引号形态与四类 docstring 宿主，以及四条反向用例；未列出的语法位置不在其覆盖内。但域的判定已交给标准库，故实现不再依赖该枚举的完整性——枚举只用于**证明实现符合声明**。 |
 | 42 | 「`.py` 的注释与 docstring 已在检查域内，且代码字符串在域外」（R28 形态） | **已重述并使实现等于它** | 外审第 13 轮证明 R28 只把语法分类提升到**行号集合**：按行号回传整条物理行、对整行判定，于是同行的开放代码与受检 prose 互相污染，三个双向反例全部误报。现改为**源码片段**载体（COMMENT token 的 `string`；docstring 按 AST 坐标逐行切片），判定只作用于片段，行号仅用于报告。 |
 | 43 | 「解析看到的就是文件里的源码」 | **构造保证（R30 起）+ 已限定** | 此前先 `splitlines()` 再以换行重建，等于在解析前改写源码：U+2028 被 `str.splitlines()` 当行边界、而 Python tokenizer 在注释内不当，既漏报也绕过 fail closed。现以 `tokenize.open` 读取原始源码直接喂 tokenize/ast。**限定**：编码由 Python 的编码声明机制决定，非法字节序列按 fail closed 处理，不再自行猜测编码。 |
+| 44 | 「判定只作用于载体片段，同行开放代码不被连坐」（R30 形态） | **已修正实现使其为真** | R30 把缺陷从**行空间**搬到了**列空间**：`ast` 的 `col_offset` 是 **UTF-8 字节偏移**，用它切字符 `str`，在中文语料上边界必错——既把开放代码连坐进片段，也会让真 docstring 的片段变成空串而**静默漏报且不 fail closed**。现改用 `ast.get_source_segment`，由标准库负责偏移语义转换。**教训：标准库坐标的单位语义必须查证——`col_offset` 论字节，`lineno` 论行。** |
+| 45 | 「矩阵覆盖了双向边界」（R30 形态） | **已限定 → 补齐** | R30 的双向用例边界**全部落在 ASCII 上**，因此字符下标切片全绿而缺陷仍在；另有一行样本源码里根本没有字符串，什么都没断言。现补三条非 ASCII 边界用例并修正该样本；其可失败性由**把切片退回字符下标**的变异实测：恰好这三行变红，其余保持不变。 |
+| 46 | 「SSOT 已随实现更新」 | **已限定** | R30 的 SSOT 编辑脚本在中途断言失败即整体未写入，重跑时又漏掉了检查域那一行，于是**实现已改而 SSOT 仍描述上一形态**，直到 R31 才发现。SSOT 与实现的同步没有机械守护，只有「每轮重跑并逐行核对」这一人工环节。 |
 
 ### 未覆盖与已知不足（诚实声明）
 

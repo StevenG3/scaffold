@@ -148,7 +148,6 @@ def _comment_carriers(source):
 def _docstring_carriers(source):
     """Yield (line_number, source_fragment) for docstring nodes."""
     tree = ast.parse(source)
-    lines = source.split("\n")
     holders = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
     for node in ast.walk(tree):
         if not isinstance(node, holders):
@@ -162,14 +161,16 @@ def _docstring_carriers(source):
         value = first.value
         if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
             continue
-        start, end = first.lineno, getattr(first, "end_lineno", first.lineno)
-        col, end_col = first.col_offset, getattr(first, "end_col_offset", None)
-        for number in range(start, end + 1):
-            text = lines[number - 1]
-            # Only the literal's own columns are prose (SSOT).
-            left = col if number == start else 0
-            right = end_col if (number == end and end_col is not None) else len(text)
-            yield number, text[left:right]
+        # ast's col_offset is a UTF-8 BYTE offset, not a character index, so
+        # slicing a str with it splits non-ASCII lines in the wrong place.
+        # get_source_segment owns that conversion; take the literal's own text
+        # from it and never compute a column here.
+        segment = ast.get_source_segment(source, first)
+        if segment is None:
+            raise ValueError("no source segment for docstring at line %d"
+                             % first.lineno)
+        for offset, text in enumerate(segment.split("\n")):
+            yield first.lineno + offset, text
 
 
 def prose_carriers(path, source):
@@ -197,14 +198,14 @@ def _strip_exempt(line):
     return stripped
 
 
-def line_violations(line):
-    """Return (marker, token) pairs that make this line a violation."""
-    if HISTORY_BINDING.search(line):
+def fragment_violations(fragment):
+    """Return (marker, token) pairs that make this fragment a violation."""
+    if HISTORY_BINDING.search(fragment):
         return []                      # exemption 1: explicitly bound to a HEAD
-    markers = [marker for marker in CURRENT_STATE_MARKERS if marker in line]
+    markers = [marker for marker in CURRENT_STATE_MARKERS if marker in fragment]
     if not markers:
         for counter in COUNTING_MARKERS:
-            probe = line
+            probe = fragment
             for compound in COUNTING_COMPOUNDS:
                 probe = probe.replace(compound, " ")
             if counter in probe and any(q in probe for q in QUANTIFIERS):
@@ -212,14 +213,14 @@ def line_violations(line):
                 break
     if not markers:
         return []
-    tokens = NUMBER_TOKEN.findall(_strip_exempt(line))
+    tokens = NUMBER_TOKEN.findall(_strip_exempt(fragment))
     if not tokens:
         return []
     return [(markers[0], token) for token in tokens]
 
 
 def read_source(path):
-    """Return a file's source text unchanged, honouring its coding cookie."""
+    """Return a file's source text unchanged. Encoding: see SSOT."""
     if path.endswith(".py"):
         with tokenize.open(path) as handle:
             return handle.read()
@@ -231,7 +232,15 @@ def scan(injections=None):
     """Scan the corpus. injections maps a path to source text to append."""
     violations = []
     for path in scanned_files():
-        source = read_source(path)
+        try:
+            source = read_source(path)
+        except (SyntaxError, UnicodeError, LookupError, ValueError) as exc:
+            # A file we cannot even read is an unknown, not a pass. Reading is
+            # inside the fail-closed boundary because the coding cookie is
+            # itself part of the source under analysis.
+            violations.append((os.path.relpath(path, RECORD_DIR), 0,
+                               "UNREADABLE", "-", "%s: %s" % (path, exc)))
+            continue
         if injections and path in injections:
             suffix = injections[path]
             if not source.endswith("\n"):
@@ -245,7 +254,7 @@ def scan(injections=None):
                                "UNPARSABLE", "-", str(exc)))
             continue
         for number, fragment in carriers:
-            for marker, token in line_violations(fragment):
+            for marker, token in fragment_violations(fragment):
                 violations.append((os.path.relpath(path, RECORD_DIR),
                                    number, marker, token, fragment.strip()))
     return violations
@@ -307,8 +316,26 @@ PROSE_FORM_MATRIX = (
      'payload = "当前"  # 9999 items\n', [(1, "# 9999 items")], [[]]),
     ("same-line docstring + numeric name",
      'def f9999(): "当前配置"\n', [(1, '"当前配置"')], [[]]),
-    ("docstring after semicolon code",
-     'x = 9999; y = 2\n', [], []),
+    # This row used to carry a source with no string at all, so it asserted
+    # nothing. The source below carries one after a semicolon, which makes it
+    # a later statement rather than the first, and therefore not a docstring.
+    # Expectation: empty.
+    # The mirror case (a real docstring with code after the semicolon) is the
+    # non-ASCII row below, where the fragment must stop at the literal.
+    ("string after semicolon is not a docstring",
+     'x = 9999; "当前配置"\n', [], []),
+    # --- non-ASCII fragment boundaries -------------------------------------
+    # ast's col_offset is a UTF-8 BYTE offset. Every bidirectional row above
+    # has its boundary on ASCII, so a character-index slice passed all of them
+    # while cutting Chinese lines in the wrong place. These rows put the
+    # boundary behind non-ASCII text in both directions.
+    ("non-ASCII docstring + trailing code",
+     '"当前配置"; x = 9999\n', [(1, '"当前配置"')], [[]]),
+    ("non-ASCII default arg + docstring",
+     'def f(n="中文默认值"): "当前 9999"\n', [(1, '"当前 9999"')], [HIT]),
+    ("multi-line non-ASCII docstring + trailing code",
+     'def g():\n    """\n    当前 9999"""; z = 1\n',
+     [(2, '"""'), (3, '    当前 9999"""')], [[], HIT]),
     # --- reading layer: the parser must see the file's real bytes ---
     ("U+2028 inside a legal comment",
      "# note\u2028%s\nx = 1\n" % MARK,
@@ -324,6 +351,15 @@ PROSE_FORM_MATRIX = (
 UNPARSABLE_SAMPLES = (
     ("broken def", "def f(:\n    pass\n"),
     ("U+2028 between statements", "x = 1\u2028payload = 2"),
+)
+
+# Sources whose ENCODING declaration cannot be honoured. Reading happens
+# inside the fail-closed boundary, so these must surface as a named violation
+# rather than a bare traceback.
+UNREADABLE_SAMPLES = (
+    ("BOM with a conflicting cookie",
+     "\ufeff# -*- coding: latin-1 -*-\nx = 1\n"),
+    ("undeclared illegal bytes", None),
 )
 
 # The reading layer is exercised through a real file, because a coding cookie
@@ -346,7 +382,7 @@ def form_matrix_check():
             print("  %-34s UNEXPECTED UnparsablePython: %s" % (label, exc))
             failures.append((label, "carriers", want_carriers, "UnparsablePython"))
             continue
-        got_violations = [line_violations(f) for _, f in got_carriers]
+        got_violations = [fragment_violations(f) for _, f in got_carriers]
         ok = (got_carriers == list(want_carriers)
               and got_violations == list(want_violations))
         print("  %-34s carriers=%-2d violations=%-2d %s"
@@ -362,6 +398,25 @@ def form_matrix_check():
         else:
             print("  %-34s DID NOT FAIL CLOSED" % label)
             failures.append((label, "UnparsablePython", "no exception"))
+    for label, source in UNREADABLE_SAMPLES:
+        directory = tempfile.mkdtemp()
+        try:
+            probe = os.path.join(directory, "probe.py")
+            if source is None:
+                with open(probe, "wb") as raw:
+                    raw.write(b"# -*- coding: ascii -*-\n# \xe4\xb8\xad\n")
+            else:
+                with open(probe, "w", encoding="utf-8") as handle:
+                    handle.write(source)
+            try:
+                read_source(probe)
+            except (SyntaxError, UnicodeError, LookupError, ValueError):
+                print("  %-34s read fails closed (named violation)" % label)
+            else:
+                print("  %-34s READ DID NOT FAIL CLOSED" % label)
+                failures.append((label, "encoding error", "no exception"))
+        finally:
+            shutil.rmtree(directory)
     for label, source, want in READ_LAYER_SAMPLES:
         directory = tempfile.mkdtemp()
         try:
@@ -369,7 +424,7 @@ def form_matrix_check():
             with open(probe, "w", encoding="utf-8") as handle:
                 handle.write(source)
             carriers = list(prose_carriers(probe, read_source(probe)))
-            got = [line_violations(f) for _, f in carriers]
+            got = [fragment_violations(f) for _, f in carriers]
             ok = got == list(want)
             print("  %-34s read-layer violations=%-2d %s"
                   % (label, sum(len(v) for v in got), "ok" if ok else "MISMATCH"))
@@ -456,7 +511,7 @@ def main(argv):
     violations = scan()
     if not violations:
         print("no current-state numeric assertion outside %s" % GENERATED_ARTIFACT)
-        print("scanned %d file(s) (.md in full, .py prose lines)"
+        print("scanned %d file(s) (.md in full, .py prose fragments)"
               % len(scanned_files()))
         return 0
     print("current-state numeric assertion(s) outside %s:" % GENERATED_ARTIFACT)
