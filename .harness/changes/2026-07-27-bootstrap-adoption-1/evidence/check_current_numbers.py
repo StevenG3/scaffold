@@ -146,16 +146,7 @@ def _comment_lines(source):
 
 
 def _docstring_lines(source):
-    """Line numbers spanned by REAL docstrings.
-
-    Real means: the first statement of a module, class, function or async
-    function, and a plain string constant. ast resolves prefixes (u/U/r/R/b
-    and their cases) and quote forms for us, so no prefix has to be enumerated
-    here -- that enumeration is precisely what the hand-written scanner got
-    wrong. A string assigned to a name is NOT a docstring and never enters
-    this set, which is the '.py code strings' axis the carrier table marks
-    open.
-    """
+    """Line numbers spanned by real docstrings, as ast defines them."""
     tree = ast.parse(source)
     numbers = set()
     holders = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
@@ -177,21 +168,11 @@ def _docstring_lines(source):
 
 
 def prose_lines(path, lines):
-    """Yield (line_number, line) for lines that carry PROSE.
+    """Yield (line_number, line) for lines carrying prose.
 
-    Markdown: every line. Python: every comment (whole-line or trailing) plus
-    every real docstring body. A number inside code is the code's business; a
-    number inside a comment or docstring is an assertion aimed at a reader.
-
-    Domain authority is the SSOT section of run-manifest.md; this function is
-    written so the implementation equals that definition rather than
-    approximating it. Syntax classification comes from the standard library
-    (tokenize for comments, ast for docstrings) so that no prefix or quote
-    form has to be enumerated by hand.
-
-    A .py file that will not tokenize or parse raises UnparsablePython. The
-    caller turns that into a named violation: failing closed matters more than
-    scanning the rest, because an unscannable file is an unknown, not a pass.
+    Domain: see the SSOT section of run-manifest.md. This function implements
+    it via tokenize (comments) and ast (docstrings), and raises
+    UnparsablePython so the caller can fail closed.
     """
     if not path.endswith(".py"):
         for number, line in enumerate(lines, start=1):

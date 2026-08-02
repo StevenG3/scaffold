@@ -108,10 +108,10 @@ _digest 被打桩：failures=47  digest 改变
 
 | 项 | 现状 |
 | --- | --- |
-| 检查域 | Change Record 内全部 `.md`（生成表除外）全文；全部 `.py` 的**全部注释（整行与行尾行内）** 与 **真实 docstring**（module / class / function / async function 的首条语句字符串，**任意合法前缀与引号形态**——`r` / `u` / `U` / `R` 及其组合、三引号与单引号）。**赋值给名字的字符串、调用实参里的字符串、以及首条语句之外的字符串常量**属开放轴，不扫。语法分类由标准库 `tokenize`（COMMENT）与 `ast`（`Expr` 首条语句的 `Constant` 字符串）给出，不再手写三引号状态机；**无法 tokenize/parse 的 `.py` 一律 fail closed**，计为具名违规而非静默跳过 |
+| 检查域 | Change Record 内全部 `.md`（生成表除外）全文；全部 `.py` 的**全部注释（整行与行尾行内）** 与 **真实 docstring**（module / class / function / async function 的首条语句字符串，**任意合法前缀与引号形态**——`r` / `u` / `U` / `R` 及其组合、三引号与单引号；**`b` / `f` 前缀的首条语句按 Python 定义就不是 docstring**（`ast.get_docstring` 对二者均返回 `None`），故落在域外，实现与该定义一致）。**赋值给名字的字符串、调用实参里的字符串、以及首条语句之外的字符串常量**属开放轴，不扫。语法分类由标准库 `tokenize`（COMMENT）与 `ast`（`Expr` 首条语句的 `Constant` 字符串）给出，不再手写三引号状态机；**无法 tokenize/parse 的 `.py` 一律 fail closed**，计为具名违规而非静默跳过 |
 | 判定 | 同行出现「现刻标记词 + 数字」即违规；标记词表与计数词规则见脚本常量 |
 | 豁免（三族，逐条列全——SSOT 不许写「等」） | **①历史绑定**：行内含 `历史@<hex>`，**整行放行**（已知宽豁免：合法历史值会连带放行同行其他数字）。**②产物不变量**：64 位十六进制指纹（脚本 SHA-256 与结果摘要共用此形）。**③结构性数字（15 条，全列）**：Change Record 目录名；`U+XXXX` 码点；`0x` 字节字面量；`Python 3.x[.y]`；`SHA-256` / `SHA256`；`第 N 步`；`第 N 轮`；表格行首编号 `\| N \|`；`§N`；轮次标签 `RN[a]`；版本标签 `vN`；`Errno N`；finding 标签（如 `I1` / `A-C1` / `B-S-I2`）；`exit N`；`退出 N`。 |
-| 自检 | 每个被扫文件 × 每个记法变体的**叉积**注入，全部须被捕获；变体含裸数字、逗号格式、反引号包裹、两条历史豁免逃逸样本、英文注释形态、单行 docstring 形态 |
+| 自检 | **两层**，缺一不可。**①语法形态矩阵** `PROSE_FORM_MATRIX`：对 `.py` 的每个语法位置逐条断言，期望值**逐行写死**、不由被测的 `prose_lines()` 生成——正向含 bare/`r`/`u`/`U`/`R` 的单行与多行 docstring、单引号形态、module/class/function/async function 四类宿主、整行/缩进/行内注释；反向含赋值字符串、调用实参、首条语句之外的字符串常量（须**不**入域）；另含一条不可解析源码须 `raises UnparsablePython` 的 fail-closed 用例。**②文件 × 记法叉积**注入：每个被扫文件 × 每个变体，全部须被捕获；变体含裸数字、逗号格式、反引号包裹、两条历史豁免逃逸样本、英文注释形态、单行 docstring 形态、**行内注释形态**。 |
 | 退出码 | 覆盖域内无违规 = 0；有违规 = 1；**参数错误或 Change Record 目录缺失 = 2** |
 
 ### Group E fixture 的历史绑定（自 `carrier_sweep.py` 移入）
@@ -192,7 +192,7 @@ grep -rnE --exclude-dir=__pycache__ \
 ```
 
 本表**基于最终提交态的收集器命中集 + 人工分类**：收集器在本次提交的最终内容上重跑，
-命中 **469 行**，分布见下表。（上一版记录的 175 行是**跨状态混合值**——
+命中 **468 行**，分布见下表。（上一版记录的 175 行是**跨状态混合值**——
 自验会话 B 证明：同一命令在该 HEAD 上得 191、在其前一状态得 157，记录的分布两者都不匹配。
 根因是收集器在编辑中途运行、随后文本又被改动。现改为**提交前最后一步**重跑并记录。）
 
@@ -201,11 +201,11 @@ grep -rnE --exclude-dir=__pycache__ \
 | `customization-record.md` | 5 |
 | `evidence/boundary-cases.md` | 8 |
 | `evidence/carrier_sweep.py` | 151 |
-| `evidence/check_current_numbers.py` | 21 |
-| `evidence/protocol-runs.md` | 43 |
+| `evidence/check_current_numbers.py` | 18 |
+| `evidence/protocol-runs.md` | 44 |
 | `evidence/run-manifest.md` | 70 |
 | `spec.md` | 6 |
-| `summary.md` | 120 |
+| `summary.md` | 121 |
 | `tasks.md` | 45 |
 
 命中集中**每一条承载能力声明的句子**都在下表拥有自己的行；本节不再使用
