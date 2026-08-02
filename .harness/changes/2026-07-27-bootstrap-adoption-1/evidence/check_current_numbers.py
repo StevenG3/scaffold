@@ -7,10 +7,6 @@ vocabulary, the exemption families, the self-test form and the freeze clause
 are described; this docstring deliberately does not restate them, because a
 second description is a second thing that can go stale.
 
-In outline: markdown files are scanned in full and Python files in their prose
-lines; a line pairing a current-state marker with a number is a violation;
-exemptions fall into three families. Details live in the SSOT section.
-
 Usage:  python3 check_current_numbers.py            # scan
         python3 check_current_numbers.py --self-test  # prove it can fail
 
@@ -21,9 +17,12 @@ its source is hashed and attested. THIS file is not pure ASCII and cannot be:
 the marker words it forbids are Chinese, so they appear here verbatim.
 """
 
+import ast
+import io
 import os
 import re
 import sys
+import tokenize
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RECORD_DIR = os.path.dirname(HERE)
@@ -132,53 +131,79 @@ def scanned_files():
     return sorted(found)
 
 
-TRIPLE_QUOTE = re.compile(r'\"\"\"|\'\'\'')
+class UnparsablePython(Exception):
+    """A .py file in the domain could not be tokenized or parsed."""
+
+
+def _comment_lines(source):
+    """Line numbers carrying a COMMENT token -- whole-line AND trailing."""
+    numbers = set()
+    reader = io.StringIO(source).readline
+    for token in tokenize.generate_tokens(reader):
+        if token.type == tokenize.COMMENT:
+            numbers.add(token.start[0])
+    return numbers
+
+
+def _docstring_lines(source):
+    """Line numbers spanned by REAL docstrings.
+
+    Real means: the first statement of a module, class, function or async
+    function, and a plain string constant. ast resolves prefixes (u/U/r/R/b
+    and their cases) and quote forms for us, so no prefix has to be enumerated
+    here -- that enumeration is precisely what the hand-written scanner got
+    wrong. A string assigned to a name is NOT a docstring and never enters
+    this set, which is the '.py code strings' axis the carrier table marks
+    open.
+    """
+    tree = ast.parse(source)
+    numbers = set()
+    holders = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    for node in ast.walk(tree):
+        if not isinstance(node, holders):
+            continue
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if not isinstance(first, ast.Expr):
+            continue
+        value = first.value
+        if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
+            continue
+        end = getattr(first, "end_lineno", first.lineno)
+        numbers.update(range(first.lineno, end + 1))
+    return numbers
 
 
 def prose_lines(path, lines):
     """Yield (line_number, line) for lines that carry PROSE.
 
-    For markdown that is every line. For Python it is comment lines and
-    docstring bodies only: a number inside code is the code's business, but a
-    number inside a comment is an assertion aimed at a reader, and that is
-    exactly where the seventh recurrence lived.
+    Markdown: every line. Python: every comment (whole-line or trailing) plus
+    every real docstring body. A number inside code is the code's business; a
+    number inside a comment or docstring is an assertion aimed at a reader.
+
+    Domain authority is the SSOT section of run-manifest.md; this function is
+    written so the implementation equals that definition rather than
+    approximating it. Syntax classification comes from the standard library
+    (tokenize for comments, ast for docstrings) so that no prefix or quote
+    form has to be enumerated by hand.
+
+    A .py file that will not tokenize or parse raises UnparsablePython. The
+    caller turns that into a named violation: failing closed matters more than
+    scanning the rest, because an unscannable file is an unknown, not a pass.
     """
     if not path.endswith(".py"):
         for number, line in enumerate(lines, start=1):
             yield number, line
         return
-    in_doc = False
+    source = "".join(line + "\n" for line in lines)
+    try:
+        carriers = _comment_lines(source) | _docstring_lines(source)
+    except (SyntaxError, tokenize.TokenError, IndentationError) as exc:
+        raise UnparsablePython("%s: %s" % (path, exc))
     for number, line in enumerate(lines, start=1):
-        quotes = len(TRIPLE_QUOTE.findall(line))
-        stripped = line.strip()
-        if in_doc:
-            yield number, line
-            if quotes % 2 == 1:
-                in_doc = False
-            continue
-        if stripped.startswith("#"):
-            yield number, line
-            continue
-        if quotes % 2 == 1:
-            yield number, line
-            in_doc = True
-            continue
-        opens_docstring = (
-            stripped.startswith('\"\"\"')
-            or stripped.startswith("'''")
-            or stripped.startswith('r\"\"\"')
-            or stripped.startswith("r'''")
-        )
-        if quotes >= 2 and opens_docstring:
-            # A single-line docstring: """text""" opens and closes on one line,
-            # so the odd-count test never saw it and the line was skipped
-            # entirely. The axis table claimed docstrings were covered, so this
-            # is a gap inside a stated construction guarantee, not an
-            # expansion of the detector. The line must OPEN with the
-            # quotes: a code line that merely contains a triple-quoted
-            # literal -- this file's own self-test variants, say --
-            # stays code, which is the '.py code strings' axis the
-            # carrier table marks open.
+        if number in carriers:
             yield number, line
 
 
@@ -218,11 +243,80 @@ def scan(injections=None):
             lines = handle.read().splitlines()
         if injections and path in injections:
             lines = list(lines) + list(injections[path])
-        for number, line in prose_lines(path, lines):
+        try:
+            carriers = list(prose_lines(path, lines))
+        except UnparsablePython as exc:
+            # Fail closed: an unscannable file is an unknown, not a pass.
+            violations.append((os.path.relpath(path, RECORD_DIR), 0,
+                               "UNPARSABLE", "-", str(exc)))
+            continue
+        for number, line in carriers:
             for marker, token in line_violations(line):
                 violations.append((os.path.relpath(path, RECORD_DIR),
                                    number, marker, token, line.strip()))
     return violations
+
+
+# Independent syntactic-form matrix for the .py domain (R28).
+#
+# Each row is (label, source lines, expected-prose line numbers). The
+# expectation is WRITTEN DOWN, never produced by prose_lines() -- a test whose
+# oracle is the code under test proves only self-consistency. Rows whose
+# expectation is empty are the negative direction: they must NOT be pulled
+# into the domain, which is how the '.py code strings' open axis is held open.
+#
+# The prefix set is enumerated here on purpose even though ast resolves
+# prefixes for us: the review's counterexample was exactly an unenumerated
+# prefix, so the matrix states each one rather than trusting a class.
+PROSE_FORM_MATRIX = (
+    ("bare single-line docstring", ['"""当前定向用例为 9999"""'], {1}),
+    ("r single-line docstring", ['r"""当前定向用例为 9999"""'], {1}),
+    ("u single-line docstring", ['u"""当前定向用例为 9999"""'], {1}),
+    ("U single-line docstring", ['U"""当前定向用例为 9999"""'], {1}),
+    ("R single-line docstring", ['R"""当前定向用例为 9999"""'], {1}),
+    ("single-quote docstring", [chr(39)*3 + "当前定向用例为 9999" + chr(39)*3], {1}),
+    ("bare multi-line docstring", ['"""', "当前定向用例为 9999", '"""'], {1, 2, 3}),
+    ("r multi-line docstring", ['r"""', "当前定向用例为 9999", '"""'], {1, 2, 3}),
+    ("u multi-line docstring", ['u"""', "当前定向用例为 9999", '"""'], {1, 2, 3}),
+    ("U multi-line docstring", ['U"""', "当前定向用例为 9999", '"""'], {1, 2, 3}),
+    ("R multi-line docstring", ['R"""', "当前定向用例为 9999", '"""'], {1, 2, 3}),
+        ("whole-line comment", ["# 当前定向用例为 9999"], {1}),
+    ("indented whole-line comment", ["    # 当前定向用例为 9999"], {1}),
+    ("inline comment", ["x = 1  # 当前定向用例为 9999"], {1}),
+    ("function docstring", ["def f():", '    """当前定向用例为 9999"""', "    return 1"], {2}),
+    ("class docstring", ["class C:", '    """当前定向用例为 9999"""'], {2}),
+    ("async function docstring",
+     ["async def f():", '    """当前定向用例为 9999"""', "    return 1"], {2}),
+    # Negative direction -- the open axis must stay open.
+    ("assigned multi-line string", ['PAYLOAD = """', "当前定向用例为 9999", '"""'], set()),
+    ("assigned single-line string", ['PAYLOAD = "当前定向用例为 9999"'], set()),
+    ("string in a call", ['print("当前定向用例为 9999")'], set()),
+    ("second statement string",
+     ["x = 1", '"""当前定向用例为 9999"""'], set()),
+)
+
+# A file that will not parse must fail closed, not be skipped silently.
+UNPARSABLE_SAMPLE = ["def f(:", "    pass"]
+
+
+def form_matrix_check():
+    """Run the syntactic-form matrix against written-down expectations."""
+    failures = []
+    for label, lines, expected in PROSE_FORM_MATRIX:
+        got = {number for number, _ in prose_lines("probe.py", lines)}
+        ok = got == expected
+        print("  %-32s expected=%-12s got=%-12s %s"
+              % (label, sorted(expected), sorted(got), "ok" if ok else "MISMATCH"))
+        if not ok:
+            failures.append((label, sorted(expected), sorted(got)))
+    try:
+        list(prose_lines("broken.py", UNPARSABLE_SAMPLE))
+    except UnparsablePython:
+        print("  %-32s raises UnparsablePython (fail closed)" % "unparsable source")
+    else:
+        print("  %-32s DID NOT FAIL CLOSED" % "unparsable source")
+        failures.append(("unparsable source", "UnparsablePython", "no exception"))
+    return failures
 
 
 SELF_TEST_VARIANTS = (
@@ -237,6 +331,10 @@ SELF_TEST_VARIANTS = (
     "# directed cases (69 of them at the time; 9999 now)",
     # Single-line docstring, the shape C2 showed was never scanned.
     '    """当前定向用例为 9999"""',
+    # R28: a trailing comment. The hand-written scanner only saw whole-line
+    # comments, so this shape rode through the real scan path unseen while the
+    # SSOT claimed '.py comments' were covered.
+    "x = 1  # 当前定向用例为 9999",
 )
 
 
@@ -248,6 +346,8 @@ def self_test():
     A check shown to fail on one file in one notation has only been shown to
     fail there. Everything goes through the real scan path; nothing is written.
     """
+    print("form matrix (.py syntactic positions, expectations written down):")
+    form_failures = form_matrix_check()
     baseline = scan()
     print("clean scan violations: %d" % len(baseline))
     files = scanned_files()
@@ -258,7 +358,12 @@ def self_test():
     for path in files:
         rel = os.path.relpath(path, RECORD_DIR)
         for variant in SELF_TEST_VARIANTS:
-            already_python = variant.lstrip().startswith(("#", '"""'))
+            # A line appended at EOF is a trailing expression, not a
+            # docstring -- the old scanner counted one as prose, which was a
+            # false positive in the other direction. Only comments are prose
+            # wherever they land; real docstrings are covered by the form
+            # matrix above, which places them where the grammar puts them.
+            already_python = variant.lstrip().startswith("#") or "  # " in variant
             injected = variant if (not path.endswith(".py") or already_python) \
                 else "# " + variant
             dirty = scan(injections={path: [injected]})
@@ -266,6 +371,9 @@ def self_test():
             print("  %-26s variant=%-30s caught=%s" % (rel, variant[:30], caught))
             if not caught:
                 misses.append((rel, variant))
+    if form_failures:
+        print("SELF-TEST FAILED: form matrix mismatches: %r" % (form_failures,))
+        return 1
     if misses:
         print("SELF-TEST FAILED: injections not caught: %r" % (misses,))
         return 1

@@ -921,6 +921,21 @@ SSOT + 节级作用域被终验证实有效——但**缺陷迁移到了重构�
 | **扩域后的域缩面（本轮的实质决定）** | 扩域后新命中集中在 `run-manifest.md`：两个流、五个分支标签、两份码点集、四个模式……**几乎全是构造常量**，由脚本内的交叉断言守护，改一处即 `AssertionError`。把它们逐个塞进白名单只会催生一张越来越长的无理由清单——那正是被反复证伪的方向。因此**把域缩到逐轮汇报面**，并把缩面本身写进「已知残余」披露，而不是假装闭合。 |
 | **Minor 六项** | 全收：whitelist 补齐无理由条目、删死条目、修正「三个平台投影」的理由；域描述如实（点明「历史条目」节仍在域内）；行级豁免写进盲区披露；「R22、R23 两轮未触碰」改为**命令背书**（`git log -1 … carrier_sweep.py` 输出即真值）；PR 正文钉针 `summary.md@351c70aa` / `customization-record.md@351c70aa` 改跟随 HEAD（那份快照是**去镜像之前**的内容，点开会读到已被撤下的旧统计），而 `rules/project.md@4c0a6efc` 的钉针**保留**——那是条款生效的那一版，钉针在此是正确的；正文里那句以「当下」口吻描述的 `diff` 结论改为绑定其所在提交的时点表述；入口的块输出顺序改为与实际一致。 |
 
+## 整改记录（外部第 12 轮复审，f5efce2）
+
+> **本节为该轮历史（历史@f5efce28）**：节内现在时均指**当轮时点**，不描述现状；
+> 机制现状见 `evidence/run-manifest.md` 的「检查器现状（SSOT）」节。
+
+审阅记录：`docs/reviews/2026-07-29-pr-7-scaffold-self-adoption-rereview-f5efce2.md`，
+结论 Request changes（16/24）。上轮三个 Important 与哨兵原文 Minor 经审阅方逐字复跑确认关闭。
+
+| Finding | 处置 |
+| --- | --- |
+| **[Important] Python prose 扫描器未实现 SSOT 已声称的覆盖域** | 接受。审阅第 7 节的四个探针在旧实现上给出：`u docstring` `[]`、`R docstring` `[]`、`inline comment` `[]`、`assigned multiline string` `[(1,…),(2,…),(3,…)]`——**双向不符**：合法前缀的真实 docstring 与行内注释漏报，而赋值给名字的多行字符串反被当作 docstring 扫入，与轴表「代码字符串=开放」正相反。整改按裁决五条逐条落：**①域决策**取最宽自然语义——「`.py` prose = 全部注释（整行 + 行内）+ 真实 docstring（module/class/function/async，任意合法前缀与引号形态）」，赋值/调用/非首条语句的字符串明确开放，SSOT 措辞同步为此定义；**②实现重写**弃手写三引号状态机，改标准库 `tokenize`（COMMENT token，天然含行内注释）+ `ast`（`get_docstring` 对应节点的真实源码行范围，据此区分 docstring 与赋值字符串），不可 tokenize/parse 的 `.py` **fail closed**，计为具名违规而非静默跳过——这同时回应 Standards 的 Primitive Obsession 意见；**③④自检**新增独立语法形态矩阵 `PROSE_FORM_MATRIX`（bare/r/u/U/R × 单行/多行真 docstring、整行/行内注释、四类 docstring 宿主，加四条反向用例与一条 fail-closed 用例），**期望值逐行写死、不由被测函数生成**；审阅第 7 节的四个探针原样纳入并翻转；**⑤**重跑审阅记录第 4–9 节全部命令并绑定新 HEAD/CI。 |
+| **顺带修正的一处反向假阳** | 旧实现把**追加在文件末尾**的三引号行当作 docstring 捕获，而按 Python 语法那是尾随表达式、不是 docstring。叉积注入据此改为：只有注释形态原样注入 `.py`，其余一律注释包装；真实 docstring 的覆盖改由形态矩阵在**语法给定的位置**证明。 |
+| **[Minor] 检查器 docstring 复述 SSOT** | 接受，outline 段删除，只留权威指针与 usage。这是第二事实源纪律的又一实例：同一份 docstring 上半段说「不复述」，下半段就复述了。 |
+| **[Minor] 提审提交数与 Git 真值不一致** | 接受。本轮及以后的整改报告一律附 `git rev-list --count` 的**命令输出**，不手写计数。 |
+
 ## Decision
 
 待独立审阅方在精确 HEAD 上裁定（Approve，可以合入 / Request changes，禁止合入），审阅记录归档于 `docs/reviews/`。
